@@ -1,0 +1,24 @@
+[project]
+name = "aida"
+version = "0.1.0"
+description = "A local CAD agent with mesh vision"
+requires-python = ">=3.12,<3.13"
+dependencies = ["claude-agent-sdk", "build123d-mcp", "mcp>=2,<3", "pillow", "vtk>=9.3,<10"]
+
+[project.scripts]
+aida = "aida.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend/aida"]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+asyncio_mode = "auto"
+markers = ["integration: real local CAD tools", "live: paid Claude API test"]
