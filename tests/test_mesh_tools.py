@@ -116,8 +116,9 @@ async def test_bridge_tessellates_through_ungated_export(tmp_path, plate_stl):
     name, args = bridge.session.calls[-1]
     assert name == 'export' and args['format'] == 'stl' and args['object_name'] == 'generated_cad'
     assert path.parent == bridge.artifacts.temp and path.stat().st_size > 84
-    with pytest.raises(ValueError, match='reference_mesh'):
-        await bridge.tessellate('reference_mesh')
+    for name in ('reference_mesh', 'ref_plate'):
+        with pytest.raises(ValueError, match='reference mesh'):
+            await bridge.tessellate(name)
 
 
 async def test_frame_and_stats(tmp_path, plate_stl):

@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import type { ModelFeature, ModelParam, ModelState } from '../lib/events';
-import { useStore } from '../store';
+import type { AssemblyState, ModelFeature, ModelParam, ModelState, ParamValue, WorkspaceState } from '../lib/events';
+import { partOf, useStore } from '../store';
 
 const SOURCE_STYLE = {
   measured: 'bg-ok/16 text-ok',
@@ -15,27 +15,126 @@ const TREND_STYLE: Record<string, string> = {
   restored: 'text-muted',
 };
 
-const fmt = (v: number | string) =>
-  typeof v === 'number' ? String(Math.round(v * 10000) / 10000) : v;
+const fmt = (v: ParamValue): string => {
+  if (Array.isArray(v)) {
+    const text = `[${v.map(fmt).join(', ')}]`;
+    return text.length > 28 ? `${text.slice(0, 26)}…]` : text;
+  }
+  return typeof v === 'number' ? String(Math.round(v * 10000) / 10000) : v;
+};
 
-/** The Model tab: parameters with provenance, features in build order, and revision history. */
+/** The Model tab: pick a part (or the assembly), then its parameters, features and history. */
 export function ModelTab() {
-  const model = useStore((s) => s.model);
-  if (!model) {
+  const workspace = useStore((s) => s.workspace);
+  const selected = useStore((s) => s.selectedPart);
+  if (!workspace || (!workspace.parts.length && !workspace.assembly.features.length)) {
     return (
       <div className="flex flex-1 items-center justify-center px-6 text-center text-[13px] leading-[1.45] text-faint">
         The parametric model appears here once the agent records its first measurements.
       </div>
     );
   }
+  const showAssembly = selected === 'assembly';
+  const part = showAssembly ? null : partOf(workspace, selected) ?? workspace.parts[0] ?? null;
+  return (
+    <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-1">
+      <PartPicker workspace={workspace} current={showAssembly ? 'assembly' : part?.name ?? null} />
+      {showAssembly ? (
+        <AssemblyView assembly={workspace.assembly} />
+      ) : part ? (
+        <ModelView model={part} owner={part.name} note={part.description || undefined}
+          unchecked={!part.has_reference} />
+      ) : null}
+    </div>
+  );
+}
+
+/** Chips for every part plus the assembly; the agent's active part is marked. */
+function PartPicker({ workspace, current }: { workspace: WorkspaceState; current: string | null }) {
+  const selectPart = useStore((s) => s.selectPart);
+  const selected = useStore((s) => s.selectedPart);
+  const hasAssembly = workspace.assembly.features.length > 0;
+  if (workspace.parts.length < 2 && !hasAssembly) return null;
+  const chip = (name: string, label: string, extra?: React.ReactNode) => (
+    <button
+      key={name}
+      type="button"
+      aria-pressed={current === name}
+      onClick={() => selectPart(selected === name ? null : name)}
+      className={`flex items-center gap-1 rounded-lg px-2 py-0.5 font-mono text-[11px] ${
+        current === name ? 'bg-cad/20 text-cad' : 'bg-line text-muted hover:text-ink'
+      }`}
+    >
+      {label}
+      {extra}
+    </button>
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 pb-2" role="group" aria-label="Parts">
+      {workspace.parts.map((p) =>
+        chip(p.name, p.name, <>
+          {p.has_reference && <span title="Has a reference scan" className="size-1.5 rounded-full bg-mesh" />}
+          {workspace.active === p.name && <span title="The agent is working on this part" className="text-[9px] text-faint">●</span>}
+        </>),
+      )}
+      {hasAssembly && chip('assembly', `Assembly · ${workspace.assembly.instance_count}`)}
+    </div>
+  );
+}
+
+function AssemblyView({ assembly }: { assembly: AssemblyState }) {
+  const counts = Object.entries(assembly.instances);
+  return (
+    <>
+      <Heading>Instances</Heading>
+      {counts.length === 0 && <Empty>Nothing placed yet.</Empty>}
+      {counts.map(([part, count]) => (
+        <div key={part} className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
+          <span className="font-mono">{part}</span>
+          <span className="flex-1" />
+          <span className="font-mono text-muted">× {count}</span>
+        </div>
+      ))}
+      {assembly.variants.length > 1 && (
+        <>
+          <Heading className="pt-3">Variants</Heading>
+          {assembly.variants.map((v) => {
+            const overrides = Object.entries(v.overrides);
+            return (
+              <div key={v.name} className="flex items-center gap-2 px-3 py-1.5 text-[11px]">
+                <span className="font-mono text-[12px]">{v.part}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-muted">
+                  {overrides.length ? overrides.map(([k, val]) => `${k}=${fmt(val)}`).join(', ') : 'defaults'}
+                </span>
+                <span className="font-mono text-muted">× {v.count}</span>
+              </div>
+            );
+          })}
+        </>
+      )}
+      <div className="pt-3" />
+      <ModelView model={assembly} owner="assembly" unchecked featuresLabel="Layout" />
+    </>
+  );
+}
+
+/** Parameters with provenance, features in build order, and revision history of one model. */
+function ModelView({ model, owner, note, unchecked = false, featuresLabel = 'Features' }: {
+  model: ModelState;
+  owner: string;
+  note?: string;
+  unchecked?: boolean;
+  featuresLabel?: string;
+}) {
   const params = Object.entries(model.params);
   const counts = { measured: 0, estimated: 0, assumed: 0 };
   for (const [, p] of params) counts[p.source]++;
 
   return (
-    <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-1">
+    <>
       <div className="flex flex-wrap items-center gap-1.5 pb-2 text-[11px]">
         <span className="font-mono text-muted">revision {model.revision}</span>
+        {unchecked && owner !== 'assembly' && <span className="text-faint">· designed, no scan</span>}
         <span className="flex-1" />
         {(['measured', 'estimated', 'assumed'] as const).map((source) => (
           <span key={source} className={`rounded-sm px-1.5 py-0.5 font-medium ${SOURCE_STYLE[source]}`}>
@@ -43,14 +142,15 @@ export function ModelTab() {
           </span>
         ))}
       </div>
+      {note && <p className="px-3 pb-2 text-[12px] leading-[1.45] text-muted">{note}</p>}
 
       <Heading>Parameters</Heading>
       {params.length === 0 && <Empty>No parameters yet.</Empty>}
       {params.map(([name, param]) => (
-        <ParamRow key={name} name={name} param={param} revision={model.revision} />
+        <ParamRow key={name} name={name} owner={owner} param={param} revision={model.revision} />
       ))}
 
-      <Heading className="pt-4">Features</Heading>
+      <Heading className="pt-4">{featuresLabel}</Heading>
       {model.features.length === 0 && <Empty>No features yet.</Empty>}
       {model.features.map((feature, index) => (
         <FeatureRow key={feature.id} feature={feature} index={index + 1} model={model} />
@@ -60,7 +160,7 @@ export function ModelTab() {
       )}
 
       <History model={model} />
-    </div>
+    </>
   );
 }
 
@@ -72,9 +172,9 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 /** Figma: ParamRow (2:112). Click for the evidence behind the number. */
-function ParamRow({ name, param, revision }: { name: string; param: ModelParam; revision: number }) {
+function ParamRow({ name, owner, param, revision }: { name: string; owner: string; param: ModelParam; revision: number }) {
   const [open, setOpen] = useState(false);
-  const changed = useStore((s) => s.changedParams.includes(name));
+  const changed = useStore((s) => s.changedParams.includes(`${owner}.${name}`));
   const rounded = param.measured !== null && typeof param.value === 'number' && param.measured !== param.value;
   return (
     <div
@@ -98,6 +198,7 @@ function ParamRow({ name, param, revision }: { name: string; param: ModelParam; 
       {open && (
         <div className="flex flex-col gap-1 px-3 pb-2 text-[12px] leading-[1.45] text-muted">
           {rounded && <span className="font-mono text-[11px]">measured {fmt(param.measured!)}, rounded to {fmt(param.value)}</span>}
+          {Array.isArray(param.value) && <span className="break-all font-mono text-[11px]">{JSON.stringify(param.value)}</span>}
           <span>{param.evidence || 'No evidence recorded.'}</span>
           {param.note && <span className="text-faint">{param.note}</span>}
         </div>

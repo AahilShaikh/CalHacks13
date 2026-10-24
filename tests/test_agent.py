@@ -73,8 +73,12 @@ async def test_sdk_error_flag(tmp_path):
 async def test_model_tools_registered(tmp_path):
     tools = {t.name: t for t in make_tools(FakeCad(), Artifacts(tmp_path))}
     assert MODEL_TOOLS <= set(tools)
+    assert {'workspace_add_part', 'assembly_add_feature', 'assembly_check'} <= MODEL_TOOLS
+    empty = await tools['model_status'].handler({})
+    assert empty['is_error'] is True and 'workspace_add_part' in empty['content'][0]['text']
+    await tools['workspace_add_part'].handler({'name': 'plate', 'description': 'a flat plate'})
     status = await tools['model_status'].handler({})
-    assert status['is_error'] is False and 'class P' in status['content'][0]['text']
+    assert status['is_error'] is False and 'def build_plate' in status['content'][0]['text']
     undo = await tools['model_undo'].handler({})
     assert undo['is_error'] is True and 'Nothing to undo' in undo['content'][0]['text']
 
@@ -99,6 +103,8 @@ async def test_model_tools_stream_model_state(tmp_path):
     await tools['model_undo'].handler({})  # fails: nothing to undo, state still streamed
     result, state = events[-2], events[-1]
     assert result['type'] == 'tool_result' and result['ok'] is False
-    assert state['type'] == 'model_state'
-    assert state['revision'] == 0 and state['params'] == {} and state['features'] == []
-    assert state['history'] == [] and state['can_undo'] is False
+    assert state['type'] == 'workspace_state'
+    assert state['parts'] == [] and state['active'] is None and state['instances'] == []
+    assembly = state['assembly']
+    assert assembly['revision'] == 0 and assembly['params'] == {} and assembly['features'] == []
+    assert assembly['history'] == [] and assembly['can_undo'] is False

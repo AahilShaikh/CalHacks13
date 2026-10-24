@@ -1,12 +1,13 @@
 """Live CAD sessions for the web viewer: streamed events and GLB mesh revisions.
 
-One session owns one artifacts directory and one long-lived CAD + Claude run.
-Every agent/CAD activity is appended to an in-memory event log that SSE clients
-consume (with replay after reconnect). Every successful ``execute`` snapshots
-the generated CAD: named objects (excluding ``reference_mesh``) are exported to
-STL through the CAD server, converted to one GLB, and announced with a
-revisioned binary URL. The viewer fetches that GLB and animates the transition
-from the previous mesh while the export/convert step runs.
+One session owns one artifacts directory (a workspace of parts) and one
+long-lived CAD + Claude run. Every agent/CAD activity is appended to an
+in-memory event log that SSE clients consume (with replay after reconnect).
+Every model change (and every scratch ``execute``) snapshots the generated CAD:
+each part, or each assembly variant, is exported to STL through the CAD server
+and written into one GLB scene whose nodes are named ``<part>|<instance>``, so
+sixty keycaps share one keycap mesh. The viewer fetches that GLB and animates
+the transition from the previous one while the export/convert step runs.
 
 Routes are mounted by :mod:`aida.api.server`; the runner is a plain module
 function so tests can substitute their own.
@@ -33,6 +34,9 @@ DEFAULT_STORAGE = Path('artifacts/cad')
 EXAMPLES_DIR = Path(__file__).resolve().parents[3] / 'examples'
 
 MAX_MESH_BYTES = 64 * 1024 * 1024
+MAX_MESHES = 12
+# Pieces of one uploaded mesh smaller than this share of its surface are scan debris.
+DEBRIS_SHARE = 0.02
 MAX_IMAGES = 8
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MESH_SUFFIXES = {'.stl', '.glb', '.obj', '.ply'}
@@ -78,11 +82,121 @@ def mesh_stats(mesh) -> dict:
     }
 
 
-def write_reference(mesh, artifacts: Artifacts) -> Path:
-    """Write the uploaded mesh as reference.stl in session coordinates."""
-    target = artifacts.root / 'reference.stl'
+def _group_overlapping(pieces):
+    """Merge pieces whose bounding boxes overlap: a stem inside a keycap shell, or the
+    inner wall of a hollow part, belongs to the same part. Separate parts sit apart."""
+    import trimesh
+
+    groups = [[p] for p in pieces]
+    bounds = [p.bounds.copy() for p in pieces]
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                a, b = bounds[i], bounds[j]
+                if (a[0] <= b[1]).all() and (b[0] <= a[1]).all():
+                    groups[i] += groups.pop(j)
+                    bounds[i] = [a[0].clip(max=b[0]), a[1].clip(min=b[1])]
+                    bounds.pop(j)
+                    merged = True
+                    break
+            if merged:
+                break
+    return [g[0] if len(g) == 1 else trimesh.util.concatenate(g) for g in groups]
+
+
+def split_mesh(mesh, min_share=DEBRIS_SHARE):
+    """Separate parts in one mesh: (pieces, dropped debris count).
+
+    Pieces that touch, or whose bounding boxes overlap, stay one part. A mesh that
+    falls apart into many pieces is more likely a broken scan than a set of parts,
+    so it is kept whole."""
+    pieces = mesh.split(only_watertight=False)
+    if len(pieces) <= 1:
+        return [mesh], 0
+    total = sum(p.area for p in pieces) or 1.0
+    kept = [p for p in pieces if p.area / total >= min_share]
+    dropped = len(pieces) - len(kept)
+    if not kept:
+        return [mesh], 0
+    kept = _group_overlapping(kept)
+    if len(kept) > MAX_MESHES:
+        return [mesh], 0
+    kept.sort(key=lambda p: tuple(round(float(v), 3) for v in p.bounds[0]))
+    return kept, dropped
+
+
+def write_reference(mesh, artifacts: Artifacts, part: str | None = None) -> Path:
+    """Write a reference mesh in session coordinates: parts/<part>/reference.stl."""
+    if part is None:
+        target = artifacts.root / 'reference.stl'
+    else:
+        folder = artifacts.root / 'parts' / part
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / 'reference.stl'
     mesh.export(str(target), file_type='stl')
     return target
+
+
+def plan_parts(uploads: list[tuple[str, object]]) -> tuple[list[tuple[str, object]], list[str]]:
+    """[(file name, mesh)] -> ([(part name, mesh)], notes). One file may hold several parts."""
+    from ..workspace import part_name_from
+
+    parts, notes, taken = [], [], set()
+    for file_name, mesh in uploads:
+        pieces, dropped = split_mesh(mesh) if len(uploads) == 1 else ([mesh], 0)
+        base = part_name_from(file_name, taken)
+        if dropped:
+            notes.append(f'{file_name}: ignored {dropped} small fragment{"s" if dropped > 1 else ""} '
+                         '(scan debris)')
+        if len(pieces) > 1:
+            notes.append(f'{file_name} holds {len(pieces)} separate pieces; each is its own part')
+        for index, piece in enumerate(pieces, start=1):
+            name = base if len(pieces) == 1 else part_name_from(f'{base}_{index}', taken)
+            taken.add(name)
+            parts.append((name, piece))
+    if len(parts) > MAX_MESHES:
+        raise ValueError(f'At most {MAX_MESHES} parts per workspace')
+    return parts, notes
+
+
+def write_scene(items, glb_path: Path) -> dict:
+    """Write a GLB scene: items are (geometry name, mesh or STL path, [(node name, 4x4 matrix)]).
+
+    Each geometry is stored once however many nodes place it (glTF instancing)."""
+    import numpy as np
+    import trimesh
+
+    scene = trimesh.Scene()
+    triangles = 0
+    for geometry, source, nodes in items:
+        mesh = source if isinstance(source, trimesh.Trimesh) else trimesh.load(str(source), force='mesh')
+        if mesh.is_empty or len(mesh.faces) == 0 or not nodes:
+            continue
+        scene.add_geometry(mesh, geom_name=geometry, node_name=nodes[0][0],
+                           transform=np.asarray(nodes[0][1], dtype=float))
+        for node, matrix in nodes[1:]:
+            scene.graph.update(frame_to=node, frame_from=scene.graph.base_frame,
+                               matrix=np.asarray(matrix, dtype=float), geometry=geometry)
+        triangles += len(mesh.faces) * len(nodes)
+    if not scene.geometry:
+        raise ValueError('snapshot produced no triangles')
+    scene.export(str(glb_path), file_type='glb')
+    bounds = scene.bounds
+    return {'triangles': int(triangles),
+            'vertices': int(sum(len(g.vertices) for g in scene.geometry.values())),
+            'bbox': [round(float(v), 3) for v in (*bounds[0], *bounds[1])],
+            'extents': [round(float(v), 3) for v in scene.extents],
+            'bytes': glb_path.stat().st_size}
+
+
+def _matrix4(rows):
+    """A 3x4 affine matrix (as the assembly reports it) padded to 4x4."""
+    return [list(rows[0]), list(rows[1]), list(rows[2]), [0.0, 0.0, 0.0, 1.0]]
+
+
+IDENTITY = _matrix4([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]])
 
 
 def write_glb(mesh, path: Path) -> dict:
@@ -125,6 +239,9 @@ class CadSession:
         self.error: str | None = None
         self.events: list[dict] = []
         self.meshes: list[dict] = []    # one entry per revision: path + stats
+        self.parts: list[str] = []      # part names in the workspace at upload
+        self.notes: list[str] = []      # what upload did with the meshes (splits, debris)
+        self.workspace = None           # live Workspace while the runner is active
         self.turns: asyncio.Queue = asyncio.Queue()
         self.task: asyncio.Task | None = None
         # Live handles while the runner is active: CAD bridge (downloads) and
@@ -136,8 +253,8 @@ class CadSession:
         self._waiters: set[asyncio.Future] = set()
 
     # -- URLs ---------------------------------------------------------------
-    def heatmap_url(self, revision: int) -> str:
-        return f'/api/v1/cad-sessions/{self.id}/heatmap.glb?rev={revision}'
+    def heatmap_url(self, revision: int, part: str) -> str:
+        return f'/api/v1/cad-sessions/{self.id}/heatmap.glb?rev={revision}&part={part}'
 
     def mesh_url(self, revision: int | None = None) -> str:
         base = f'/api/v1/cad-sessions/{self.id}/mesh.glb'
@@ -159,6 +276,7 @@ class CadSession:
                         'triangles': m['triangles'], 'extents': m['extents']}
                        for m in self.meshes],
             'images': list(self.images),
+            'parts': list(self.parts),
             'events_url': self.events_url,
             'created_at': self.created_at,
             'updated_at': self.updated_at,
@@ -240,18 +358,33 @@ class CadSessionManager:
         self._warm = None
 
     # -- lifecycle ----------------------------------------------------------
-    def create(self, mesh_bytes: bytes, mesh_name: str,
+    def create(self, meshes: list[tuple[str, bytes]],
                images: list[tuple[str, bytes]], prompt: str,
                units: str | None) -> CadSession:
-        """Blocking preparation: validate uploads and build revision 0."""
+        """Blocking preparation: validate uploads, lay out the workspace's parts
+        (one per file, or one per separate piece of a single file) and build revision 0."""
+        from ..workspace import write_workspace
+
+        if not meshes:
+            raise ValueError('Upload at least one mesh')
+        if len(meshes) > MAX_MESHES:
+            raise ValueError(f'At most {MAX_MESHES} meshes')
         artifacts = Artifacts(self.storage_dir)
         session = CadSession(artifacts, prompt, units)
         session.record({'type': 'stage', 'stage': 'preparing'})
 
-        upload = artifacts.root / f'upload{Path(mesh_name).suffix.lower()}'
-        upload.write_bytes(mesh_bytes)
-        mesh = load_mesh(mesh_bytes, mesh_name)
-        write_reference(mesh, artifacts)
+        loaded = []
+        for index, (mesh_name, data) in enumerate(meshes, start=1):
+            upload = artifacts.root / f'upload-{index:02d}{Path(mesh_name).suffix.lower()}'
+            upload.write_bytes(data)
+            loaded.append((mesh_name, load_mesh(data, mesh_name)))
+        parts, notes = plan_parts(loaded)
+        specs = [{'name': name, 'reference': write_reference(mesh, artifacts, name)} for name, mesh in parts]
+        write_workspace(artifacts.root, specs)
+        session.parts = [name for name, _ in parts]
+        session.notes = notes
+        for note in notes:
+            session.record({'type': 'notice', 'text': note})
 
         image_names = []
         for index, (name, data) in enumerate(images, start=1):
@@ -263,13 +396,13 @@ class CadSessionManager:
         session.images = image_names
 
         glb = artifacts.root / 'mesh-000.glb'
-        stats = write_glb(mesh, glb)
+        stats = write_scene([(name, mesh, [(f'{name}|reference', IDENTITY)]) for name, mesh in parts], glb)
         session.meshes.append({'revision': 0, 'path': glb, 'generated': False, **stats})
         session.record({'type': 'mesh', 'revision': 0, 'url': session.mesh_url(0),
-                        'generated': False, **stats})
+                        'generated': False, 'parts': session.parts, **stats})
 
-        artifacts.log('session', {'mesh': mesh_name, 'units': units,
-                                  'images': image_names, 'prompt': prompt})
+        artifacts.log('session', {'meshes': [name for name, _ in meshes], 'parts': session.parts,
+                                  'units': units, 'images': image_names, 'prompt': prompt})
         with self._mutex:
             self._sessions[session.id] = session
         return session
@@ -385,38 +518,64 @@ def agent_event_bridge(session: CadSession):
     return bridge
 
 
-def snapshot_hook(cad, session: CadSession):
-    """After each execute: export generated CAD and publish the new GLB."""
+def snapshot_hook(cad, session: CadSession, workspace=None):
+    """Export the generated CAD and publish the new GLB scene (plus per-part heatmaps)."""
     async def snapshot():
         revision = len(session.meshes)
         session.set_stage('exporting_mesh')
+        root = session.artifacts.root
         try:
-            names = await generated_object_names(cad)
+            names = await generated_object_names(cad, workspace)
             if not names:
                 session.publish({'type': 'mesh_skipped',
                                  'reason': 'no generated CAD objects yet'})
                 return
-            parts = []
-            for index, name in enumerate(names):
-                part = session.artifacts.root / f'mesh-{revision:03d}-{index}.stl'
-                try:
-                    await cad.snapshot_stl(part, name)
-                    parts.append(part)
-                except Exception:
-                    continue  # 2D sketches etc. cannot become a mesh
-            if not parts:
+            exported = {}
+
+            async def export(object_name):
+                if object_name not in exported:
+                    target = root / f'mesh-{revision:03d}-{len(exported)}.stl'
+                    try:
+                        await cad.snapshot_stl(target, object_name)
+                        exported[object_name] = target
+                    except Exception:
+                        exported[object_name] = None  # 2D sketches etc. cannot become a mesh
+                return exported[object_name]
+
+            items = []
+            layout = workspace.assembly.layout if workspace is not None else None
+            if names == ['assembly'] and layout and layout['instances']:
+                for variant in layout['variants']:
+                    stl = await export(variant['name'])
+                    nodes = [(f"{i['part']}|{i['id']}", _matrix4(i['matrix']))
+                             for i in layout['instances'] if i['variant'] == variant['name']]
+                    if stl is not None:
+                        items.append((variant['name'], stl, nodes))
+            else:
+                for name in names:
+                    stl = await export(name)
+                    part = name[len('part_'):] if name.startswith('part_') else name
+                    if stl is not None:
+                        items.append((name, stl, [(f'{part}|{part}', IDENTITY)]))
+            if not items:
                 session.publish({'type': 'mesh_skipped',
                                  'reason': 'generated objects could not be meshed'})
                 return
-            glb = session.artifacts.root / f'mesh-{revision:03d}.glb'
-            stats = await asyncio.to_thread(_stls_to_glb, parts, glb)
+            glb = root / f'mesh-{revision:03d}.glb'
+            stats = await asyncio.to_thread(write_scene, items, glb)
+            parts = sorted({node.split('|')[0] for _, _, nodes in items for node, _ in nodes})
             session.meshes.append({'revision': revision, 'path': glb,
-                                   'generated': True, **stats})
+                                   'generated': True, 'parts': parts, **stats})
             session.publish({'type': 'mesh', 'revision': revision,
                              'url': session.mesh_url(revision), 'generated': True,
-                             **stats})
+                             'parts': parts, **stats})
             # After the mesh event, so the CAD preview never waits for the distances.
-            await publish_heatmap(session, revision, parts)
+            for part, reference in (workspace.references() if workspace is not None else []):
+                model = workspace.parts[part]
+                if model.state['features']:
+                    stl = await export(model.object)
+                    if stl is not None:
+                        await publish_heatmap(session, revision, part, reference, stl)
         except Exception as exc:
             session.publish({'type': 'mesh_skipped', 'reason': str(exc)[:400]})
         finally:
@@ -425,48 +584,34 @@ def snapshot_hook(cad, session: CadSession):
     return snapshot
 
 
-async def publish_heatmap(session: CadSession, revision: int, cad_parts: list[Path]):
-    """Colour the reference by distance to this revision; best effort."""
+async def publish_heatmap(session: CadSession, revision: int, part: str, reference: Path, cad_stl: Path):
+    """Colour one part's reference by distance to its CAD in this revision; best effort."""
     from .heatmap import build_heatmap
 
-    reference = session.artifacts.root / 'reference.stl'
-    glb = session.artifacts.root / f'heatmap-{revision:03d}.glb'
+    glb = session.artifacts.root / f'heatmap-{revision:03d}-{part}.glb'
     try:
-        scale = await asyncio.to_thread(build_heatmap, reference, cad_parts, glb)
+        scale = await asyncio.to_thread(build_heatmap, reference, [cad_stl], glb)
     except Exception as exc:
-        session.publish({'type': 'heatmap_skipped', 'revision': revision, 'reason': str(exc)[:400]})
+        session.publish({'type': 'heatmap_skipped', 'revision': revision, 'part': part,
+                         'reason': str(exc)[:400]})
         return
     for entry in session.meshes:
         if entry['revision'] == revision:
-            entry['heatmap_path'] = glb
-    session.publish({'type': 'heatmap', 'revision': revision, 'url': session.heatmap_url(revision),
-                     **scale})
+            entry.setdefault('heatmaps', {})[part] = glb
+    session.publish({'type': 'heatmap', 'revision': revision, 'part': part,
+                     'url': session.heatmap_url(revision, part), **scale})
 
 
-async def generated_object_names(cad) -> list[str]:
-    """What the viewer shows as generated CAD: the parametric model's object
-    once it exists (so scratch experiments stay out of the view), otherwise
-    every named object except the imported reference mesh."""
-    from ..model import OBJECT
+async def generated_object_names(cad, workspace=None) -> list[str]:
+    """What the viewer shows as generated CAD: the workspace's objects once a part
+    is built (so scratch experiments stay out of the view), otherwise every named
+    object except reference meshes and assembly internals."""
+    from ..cad import is_reference
 
+    if workspace is not None and workspace.objects():
+        return workspace.objects()
     names = await cad.session_object_names()
-    if OBJECT in names:
-        return [OBJECT]
-    return [name for name in names if name != 'reference_mesh']
-
-
-def _stls_to_glb(stl_paths: list[Path], glb_path: Path) -> dict:
-    import trimesh
-
-    meshes = []
-    for path in stl_paths:
-        mesh = trimesh.load(str(path), force='mesh')
-        if not mesh.is_empty and len(mesh.faces) > 0:
-            meshes.append(mesh)
-    if not meshes:
-        raise ValueError('snapshot produced no triangles')
-    merged = meshes[0] if len(meshes) == 1 else trimesh.util.concatenate(meshes)
-    return write_glb(merged, glb_path)
+    return [name for name in names if not is_reference(name) and not name.startswith('variant_')]
 
 
 async def run_cad_session(session: CadSession):
@@ -478,10 +623,15 @@ async def run_cad_session(session: CadSession):
         session.set_status('running')
         session.set_stage('cad_starting')
         async with _manager().cad_for(session) as cad:
-            await cad.load_reference(session.artifacts.root / 'reference.stl')
-            cad.on_execute = snapshot_hook(cad, session)
-            session.cad = cad
-            options = options_for(cad, session.artifacts, session.units, on_event=bridge)
+            from ..workspace import Workspace
+
+            workspace = Workspace.load(cad, session.artifacts)
+            for part, reference in workspace.references():
+                await cad.load_reference(reference, part)
+            cad.on_execute = snapshot_hook(cad, session, workspace)
+            session.cad, session.workspace = cad, workspace
+            options = options_for(cad, session.artifacts, session.units, on_event=bridge,
+                                  workspace=workspace)
             from claude_agent_sdk import ClaudeSDKClient
 
             async with ClaudeSDKClient(options=options) as client:
@@ -517,6 +667,9 @@ def explain_error(exc: BaseException) -> str:
 def first_prompt(session: CadSession) -> str:
     """The user's prompt, plus pointers to any uploaded reference photos."""
     text = session.prompt
+    if len(session.parts) > 1 or session.notes:
+        text += ('\n\nUploaded meshes became these parts: ' + ', '.join(session.parts) + '. '
+                 + ' '.join(f'{note}.' for note in session.notes))
     if session.images:
         text += ('\n\nReference photos uploaded with this request: '
                  f"{', '.join(session.images)}. "
@@ -546,7 +699,7 @@ def _session_or_404(session_id: str) -> CadSession:
 
 @router.post('/api/v1/cad-sessions', status_code=202)
 async def create_cad_session(
-    mesh: UploadFile = File(...),
+    mesh: list[UploadFile] = File(...),
     prompt: str = Form(...),
     units: str | None = Form(None),
     images: list[UploadFile] | None = File(None),
@@ -560,14 +713,13 @@ async def create_cad_session(
             '(copy .env.example), then restart `uv run aida-api`.'))
     if units is not None and units not in UNITS:
         raise HTTPException(status_code=400, detail=f'units must be one of {sorted(UNITS)}')
-    mesh_bytes = await mesh.read()
+    mesh_uploads = [(upload.filename or 'mesh.stl', await upload.read()) for upload in mesh]
     image_uploads = []
     for upload in images or []:
         image_uploads.append((upload.filename or 'image', await upload.read()))
 
     def prepare():
-        return _manager().create(mesh_bytes, mesh.filename or 'mesh.stl',
-                                 image_uploads, prompt.strip(), units)
+        return _manager().create(mesh_uploads, image_uploads, prompt.strip(), units)
 
     try:
         session = await asyncio.to_thread(prepare)
@@ -581,7 +733,8 @@ async def create_cad_session(
     return {'session_id': session.id,
             'status_url': f'/api/v1/cad-sessions/{session.id}',
             'events_url': session.events_url,
-            'mesh_url': session.mesh_url(0)}
+            'mesh_url': session.mesh_url(0),
+            'parts': session.parts}
 
 
 @router.get('/api/v1/examples')
@@ -636,17 +789,17 @@ def get_cad_mesh(session_id: str, rev: int | None = None):
 
 
 @router.get('/api/v1/cad-sessions/{session_id}/heatmap.glb')
-def get_cad_heatmap(session_id: str, rev: int):
+def get_cad_heatmap(session_id: str, rev: int, part: str):
     session = _session_or_404(session_id)
     entry = next((m for m in session.meshes if m['revision'] == rev), None)
-    path = entry.get('heatmap_path') if entry else None
+    path = (entry.get('heatmaps') or {}).get(part) if entry else None
     if path is None or not path.is_file():
-        raise HTTPException(status_code=404, detail=f'No heatmap for revision {rev}')
+        raise HTTPException(status_code=404, detail=f'No heatmap of {part!r} for revision {rev}')
     return FileResponse(path, media_type='model/gltf-binary',
                         headers={'Cache-Control': 'public, max-age=31536000, immutable'})
 
 
-@router.get('/api/v1/cad-sessions/{session_id}/files/{filename}')
+@router.get('/api/v1/cad-sessions/{session_id}/files/{filename:path}')
 def get_cad_file(session_id: str, filename: str):
     session = _session_or_404(session_id)
     path = (session.artifacts.root / filename).resolve()
@@ -683,15 +836,16 @@ DOWNLOADS = {'step', 'stl', 'model.py'}
 @router.get('/api/v1/cad-sessions/{session_id}/download/{kind}')
 async def download_cad(session_id: str, kind: str):
     """The generated CAD: STEP (exported by the live CAD engine, validation-gated),
-    STL (the latest revision's mesh), or model.py (the parametric build123d script)."""
-    from ..model import OBJECT
+    STL (the latest revision's mesh), or model.py (every part's parametric build123d
+    script, then the assembly's)."""
+    from ..workspace import COMBINED_SCRIPT
 
     session = _session_or_404(session_id)
     root = session.artifacts.root
     if kind not in DOWNLOADS:
         raise HTTPException(status_code=404, detail=f'Download one of {sorted(DOWNLOADS)}')
     if kind == 'model.py':
-        script = root / 'model.py'
+        script = root / COMBINED_SCRIPT
         if not script.is_file():
             raise HTTPException(status_code=404, detail='No parametric model yet')
         return FileResponse(script, filename='aida_model.py', media_type='text/x-python')
@@ -702,30 +856,36 @@ async def download_cad(session_id: str, kind: str):
     if kind == 'stl':
         target = root / f'aida-r{revision:03d}.stl'
         if not target.is_file():
-            parts = sorted(root.glob(f'mesh-{revision:03d}-*.stl'))
-            if not parts:
+            glb = generated[-1]['path']
+            if not glb.is_file():
                 raise HTTPException(status_code=404, detail='The latest revision has no mesh')
-            await asyncio.to_thread(_merge_stls, parts, target)
+            await asyncio.to_thread(_scene_to_stl, glb, target)
         return FileResponse(target, filename=target.name, media_type='model/stl')
     target = root / f'aida-r{revision:03d}.step'
     if not target.is_file():
         if session.cad is None or session.cad.broken:
             raise HTTPException(status_code=409, detail='STEP export needs the CAD engine, which is not '
                                                         'running for this session. Download STL instead.')
+        workspace = session.workspace
+        objects = workspace.objects() if workspace is not None else []
+        if len(objects) != 1:
+            # Several loose parts: the active one (the assembly holds them all once it exists).
+            objects = [workspace.part().object] if workspace is not None and workspace.parts else []
+        if not objects:
+            raise HTTPException(status_code=404, detail='No generated CAD yet')
         result = await session.cad.call('export', {'filename': target.name, 'format': 'step',
-                                                   'object_name': OBJECT})
+                                                   'object_name': objects[0]})
         if result.get('isError') or not target.is_file():
             from ..cad import text_of
             raise HTTPException(status_code=409, detail=f'STEP export failed: {text_of(result)[:600]}')
     return FileResponse(target, filename=target.name, media_type='application/step')
 
 
-def _merge_stls(parts: list[Path], target: Path):
+def _scene_to_stl(glb: Path, target: Path):
+    """Every instance of a GLB scene, placed, as one STL."""
     import trimesh
 
-    meshes = [trimesh.load(str(p), force='mesh') for p in parts]
-    merged = meshes[0] if len(meshes) == 1 else trimesh.util.concatenate(meshes)
-    merged.export(str(target), file_type='stl')
+    trimesh.load(str(glb), force='mesh').export(str(target), file_type='stl')
 
 
 @router.post('/api/v1/cad-sessions/{session_id}/close', status_code=202)

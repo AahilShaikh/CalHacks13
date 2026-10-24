@@ -4,24 +4,24 @@ import sendIcon from '../assets/icons/send.svg';
 import stopIcon from '../assets/icons/stop.svg';
 import { isMeshFile, useStore } from '../store';
 
-/** Figma: Composer (4:32). Prompt box; Attach takes a mesh or reference photos. */
+/** Figma: Composer (4:32). Prompt box; Attach takes meshes (one part each) or reference photos. */
 export function Composer() {
   const [text, setText] = useState('');
   const input = useRef<HTMLInputElement>(null);
   const status = useStore((s) => s.status);
   const stage = useStore((s) => s.stage);
-  const meshFile = useStore((s) => s.meshFile);
+  const meshFiles = useStore((s) => s.meshFiles);
   const images = useStore((s) => s.images);
   const error = useStore((s) => s.error);
   const units = useStore((s) => s.units);
-  const { setMesh, setUnits, addImages, removeImage, submit, stop } = useStore.getState();
+  const { addMeshes, removeMesh, setUnits, addImages, removeImage, submit, stop } = useStore.getState();
 
   const live = status === 'running' || status === 'queued';
   // The session stays open between turns; only say "working" while a turn runs.
   const working = live && stage !== 'idle';
   const ended = status === 'done' || status === 'failed';
   const busy = status === 'starting';
-  const canSend = !busy && !ended && text.trim().length > 0 && (live || meshFile !== null);
+  const canSend = !busy && !ended && text.trim().length > 0 && (live || meshFiles.length > 0);
   const placeholder = working
     ? 'Aida is working. You can queue a follow-up…'
     : live
@@ -40,8 +40,8 @@ export function Composer() {
   const onFiles = (files: FileList | null) => {
     if (!files) return;
     const list = [...files];
-    const mesh = list.find(isMeshFile);
-    if (mesh && !live) setMesh(mesh);
+    const meshes = list.filter(isMeshFile);
+    if (meshes.length && !live) addMeshes(meshes);
     const photos = list.filter((f) => f.type.startsWith('image/'));
     if (photos.length && !live) addImages(photos);
   };
@@ -50,11 +50,11 @@ export function Composer() {
     <div className="flex shrink-0 flex-col gap-2">
       {error && <p className="text-[12px] text-error">{error}</p>}
       <div className="flex flex-col gap-2 rounded-md border border-line-strong bg-sunken p-3 focus-within:border-cad/60">
-        {!live && !ended && (meshFile || images.length > 0) && (
+        {!live && !ended && (meshFiles.length > 0 || images.length > 0) && (
           <div className="flex flex-wrap gap-1.5">
-            {meshFile && (
-              <Chip label={meshFile.name} tone="cad" onRemove={() => setMesh(null)} />
-            )}
+            {meshFiles.map((mesh, index) => (
+              <Chip key={`${mesh.name}-${index}`} label={mesh.name} tone="cad" onRemove={() => removeMesh(index)} />
+            ))}
             {images.map((image, index) => (
               <Chip key={`${image.name}-${index}`} label={image.name} tone="muted" onRemove={() => removeImage(index)} />
             ))}

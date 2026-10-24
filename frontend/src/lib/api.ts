@@ -6,13 +6,13 @@ async function json<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export async function createSession(mesh: File, prompt: string, images: File[], units?: string) {
+export async function createSession(meshes: File[], prompt: string, images: File[], units?: string) {
   const form = new FormData();
-  form.append('mesh', mesh);
+  for (const mesh of meshes) form.append('mesh', mesh);
   form.append('prompt', prompt);
   if (units) form.append('units', units);
   for (const image of images) form.append('images', image);
-  return json<{ session_id: string }>(await fetch('/api/v1/cad-sessions', { method: 'POST', body: form }));
+  return json<{ session_id: string; parts: string[] }>(await fetch('/api/v1/cad-sessions', { method: 'POST', body: form }));
 }
 
 export async function sendTurn(sessionId: string, prompt: string) {

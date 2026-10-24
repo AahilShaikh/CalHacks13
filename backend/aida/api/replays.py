@@ -49,7 +49,8 @@ def _rewrite(event: dict, replay_id: str) -> dict:
     if kind == 'mesh':
         return {**event, 'url': f"{files}mesh-{event['revision']:03d}.glb"}
     if kind == 'heatmap':
-        return {**event, 'url': f"{files}heatmap-{event['revision']:03d}.glb"}
+        part = f"-{event['part']}" if event.get('part') else ''  # one heatmap per part since workspaces
+        return {**event, 'url': f"{files}heatmap-{event['revision']:03d}{part}.glb"}
     if kind == 'render':
         return {**event, 'url': _SESSION_FILES.sub(files, event['url'])}
     return event
