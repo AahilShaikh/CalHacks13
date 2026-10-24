@@ -77,6 +77,30 @@ CAD object to a temporary STL first):
 - `view_mesh` with `compare_to` draws the CAD in opaque green over a translucent
   reference, and works with slicing too.
 
+`mesh_frame` checks whether the reference is aligned with the world axes. It
+lists flat-face plane levels (such as `Z=3`) and, for a tilted mesh, returns a
+`Location(...)` placement for the model.
+
+### Parametric model
+
+Aida builds `generated_cad` through a parametric model rather than ad-hoc
+`execute` calls:
+
+- `model_set_params` records named dimensions. Each records its source (`measured`,
+  `estimated` or `assumed`), its evidence and, when rounded, the raw measured value.
+- `model_add_feature` and `model_edit_feature` manage the feature code blocks. Each
+  block runs inside `build()`, reads `P.name` and updates `part`.
+- Every change regenerates one script and rebuilds `generated_cad` from scratch. It
+  then checks the result against the mesh and reports whether the deviation got
+  better or worse.
+- A failed build is rolled back and names the failing feature. `model_undo` reverts
+  any revision.
+- `model_status` shows the current state. `model_report` writes `report.md` with the
+  verdict, a parameter table with sources, the features and the revision history.
+
+The session folder keeps `model.py` (the current script), `model.json`, and every
+revision under `model-history/`.
+
 To try the tools without Claude:
 `uv run python -m aida.mesh_probe slice examples/asymmetric.stl --spec '{"axis": "z", "at": 1}' --out section.png`
 

@@ -99,3 +99,30 @@ show(plate, "generated_cad")'''
         assert not overlay.get('isError'), overlay
         missing = await cad.mesh.compare({'object_name': 'no_such_part'})
         assert missing['isError']
+
+
+async def test_parametric_model_in_live_session(tmp_path):
+    from build123d import Box, Cylinder, Pos, export_stl
+    from aida.model import ModelError, ParametricModel
+    reference = tmp_path / 'plate.stl'
+    export_stl(Box(60, 40, 6) - Pos(15, 5, 0) * Cylinder(4, 10), str(reference))
+    artifacts = Artifacts(tmp_path / 'sessions')
+    mesh = artifacts.copy_mesh(reference)
+    async with open_cad(artifacts, 'mm') as cad:
+        await cad.startup(mesh)
+        model = ParametricModel(cad, artifacts)
+        await model.set_params({'width': 60, 'depth': 40, 'thickness': 6,
+                                'hole_x': 15, 'hole_y': 5, 'hole_d': 8})
+        first = await model.add_feature('base plate', 'part = Box(P.width, P.depth, P.thickness)')
+        assert first['deviation']['verdict'] == 'deviates'
+        second = await model.add_feature(
+            'hole', 'part -= Pos(P.hole_x, P.hole_y, 0) * Cylinder(P.hole_d / 2, P.thickness * 2)')
+        assert second['trend'] == 'better' and second['deviation']['verdict'] == 'within_threshold'
+        with pytest.raises(ModelError, match=r'F3 \(bad fillet\)'):
+            await model.add_feature('bad fillet', 'part = part.fillet(50, part.edges())')
+        worse = await model.set_params({'hole_x': 20})
+        assert worse['trend'] == 'worse'
+        await model.undo()
+        report = json.loads(text_of(await cad.call('measure', {'object_name': 'generated_cad'})))
+        assert report['volume'] == pytest.approx((60 * 40 - math.pi * 16) * 6, rel=1e-3)
+        assert 'within_threshold' in model.report('mm')

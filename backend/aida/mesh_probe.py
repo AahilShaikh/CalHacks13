@@ -507,6 +507,119 @@ def _brief(sample):
     return out
 
 
+# ---------------------------------------------------------------- frame
+
+def closest_rotation(axes):
+    """Signed permutation of the column ``axes`` that is a proper rotation nearest identity."""
+    import itertools
+    best = None
+    for order in itertools.permutations(range(3)):
+        for signs in itertools.product((1, -1), repeat=3):
+            rotation = axes[:, order] * np.array(signs)
+            if np.linalg.det(rotation) < 0:
+                continue
+            if best is None or np.trace(rotation) > best[0]:
+                best = (np.trace(rotation), rotation)
+    return best[1]
+
+
+def euler_xyz(rotation):
+    """Angles (deg) with rotation = Rx(a) Ry(b) Rz(c), build123d's Location((x,y,z),(a,b,c))."""
+    b = math.asin(max(-1.0, min(1.0, rotation[0, 2])))
+    a = math.atan2(-rotation[1, 2], rotation[2, 2])
+    c = math.atan2(-rotation[0, 1], rotation[0, 0])
+    return [math.degrees(a), math.degrees(b), math.degrees(c)]
+
+
+def _axis_tilt(vector):
+    """Angle in degrees between ``vector`` and its nearest world axis."""
+    return math.degrees(math.acos(min(1.0, float(np.abs(vector).max() / np.linalg.norm(vector)))))
+
+
+def planar_groups(mesh, angle_deg=3.0, limit=6, min_share=0.01):
+    """Dominant flat-face directions with the distinct plane levels in each."""
+    normals, areas, centers = mesh.face_normals, mesh.area_faces, mesh.triangles_center
+    total = float(areas.sum())
+    level_tol = float(np.linalg.norm(mesh.extents)) * 0.002
+    cos = math.cos(math.radians(angle_deg))
+    taken = np.zeros(len(areas), bool)
+    groups = []
+    for index in np.argsort(-areas):
+        if taken[index] or len(groups) >= limit:
+            continue
+        members = ~taken & (normals @ normals[index] > cos)
+        taken |= members
+        share = float(areas[members].sum()) / total
+        if share < min_share:
+            continue
+        normal = (normals[members] * areas[members, None]).sum(axis=0)
+        normal /= np.linalg.norm(normal)
+        offsets, weights = centers[members] @ normal, areas[members]
+        levels = []
+        for i in np.argsort(offsets):
+            if levels and offsets[i] - levels[-1]['last'] <= level_tol:
+                level = levels[-1]
+                level['area'] += weights[i]
+                level['sum'] += weights[i] * offsets[i]
+                level['last'] = offsets[i]
+            else:
+                levels.append({'area': weights[i], 'sum': weights[i] * offsets[i], 'last': offsets[i]})
+        levels = [l for l in sorted(levels, key=lambda l: -l['area'])[:8] if l['area'] / total >= 0.001]
+        tilt = _axis_tilt(normal)
+        axis = int(np.argmax(np.abs(normal)))
+        records = []
+        for level in levels:
+            offset = float(level['sum'] / level['area'])  # along the normal: dot(point, normal)
+            record = {'offset_along_normal': round(offset, 6),
+                      'area_share': round(float(level['area']) / total, 4)}
+            if tilt < 0.5:
+                record['plane'] = f"{'XYZ'[axis]}={_r(offset * np.sign(normal[axis]))}"
+            records.append(record)
+        groups.append({'normal': normal.round(5).tolist(), 'area_share': round(share, 4),
+                       'tilt_deg': round(tilt, 3),
+                       'levels': sorted(records, key=lambda r: r['offset_along_normal'])})
+    return groups
+
+
+def mesh_frame(mesh, tolerance_deg=1.0):
+    """Report whether the mesh is aligned with the world axes and how to place a local model."""
+    obb = mesh.bounding_box_oriented
+    transform = np.asarray(obb.primitive.transform)
+    rotation = closest_rotation(transform[:3, :3])
+    # Extents along the chosen local axes: project the hull onto them.
+    hull = mesh.convex_hull.vertices if len(mesh.vertices) > 8 else mesh.vertices
+    local = (hull - transform[:3, 3]) @ rotation
+    local_extents = local.max(axis=0) - local.min(axis=0)
+    local_center = transform[:3, 3] + rotation @ ((local.max(axis=0) + local.min(axis=0)) / 2)
+    groups = planar_groups(mesh)
+    flat_share = sum(g['area_share'] for g in groups)
+    major = [g for g in groups if g['area_share'] >= 0.05]
+    if major:
+        tilt = max(g['tilt_deg'] for g in major)
+        basis = 'flat faces'
+    else:
+        tilt = max(_axis_tilt(rotation[:, i]) for i in range(3))
+        basis = 'oriented bounding box (few flat faces)'
+    angles = [round(a, 4) for a in euler_xyz(rotation)]
+    aligned = tilt <= tolerance_deg
+    result = {
+        'aligned_with_world': aligned, 'max_tilt_deg': round(tilt, 3), 'judged_from': basis,
+        'world_bbox': mesh.bounds.round(6).tolist(), 'world_extents': mesh.extents.round(6).tolist(),
+        'oriented_box': {'center': local_center.round(6).tolist(), 'axes': rotation.T.round(6).tolist(),
+                         'extents': local_extents.round(6).tolist()},
+        'flat_face_share': round(flat_share, 4), 'planar_groups': groups,
+    }
+    if not aligned:
+        center = ', '.join(_r(c) for c in local_center)
+        result['placement'] = f"Location(({center}), ({', '.join(_r(a, 3) for a in angles)}))"
+        result['hint'] = ('The mesh is tilted. Build the part axis-aligned and centred on the origin using '
+                          'oriented_box extents, then set model placement to the placement expression. '
+                          'Slice along oriented_box axes with slice_normal.')
+    else:
+        result['hint'] = 'Aligned: model directly in world coordinates. planar_groups levels give face heights.'
+    return result
+
+
 # ---------------------------------------------------------------- comparison
 
 def polyline_distance(points, loop, chunk=256):
@@ -709,7 +822,7 @@ def public(result):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Slice a mesh and fit CAD primitives')
-    parser.add_argument('command', choices=['slice', 'series'])
+    parser.add_argument('command', choices=['slice', 'series', 'frame'])
     parser.add_argument('mesh')
     parser.add_argument('--spec', default='{}')
     parser.add_argument('--out', help='PNG drawing path (slice only)')
@@ -726,6 +839,10 @@ def main(argv=None):
         if args.out:
             draw_section(result, args.out, args.units)
         print(json.dumps(public(result)))
+    elif args.command == 'frame':
+        if set(spec) - {'tolerance_deg'}:
+            raise ProbeError(f'Unknown frame options: {sorted(set(spec) - {"tolerance_deg"})}')
+        print(json.dumps(mesh_frame(mesh, **spec)))
     else:
         allowed = {'axis', 'count', 'start', 'stop', 'tolerance', 'refine'}
         if set(spec) - allowed:

@@ -118,3 +118,15 @@ async def test_bridge_tessellates_through_ungated_export(tmp_path, plate_stl):
     assert path.parent == bridge.artifacts.temp and path.stat().st_size > 84
     with pytest.raises(ValueError, match='reference_mesh'):
         await bridge.tessellate('reference_mesh')
+
+
+async def test_frame_and_stats(tmp_path, plate_stl):
+    artifacts = session(tmp_path, plate_stl)
+    tessellate, _ = _copying_tessellator(plate_stl, artifacts)
+    tools = MeshTools(artifacts, tessellate=tessellate)
+    frame = json.loads((await tools.frame({}))['content'][0]['text'])
+    assert frame['aligned_with_world']
+    bad = await tools.frame({'angle': 3})
+    assert bad['isError'] and 'Unknown frame options' in bad['content'][0]['text']
+    stats = await tools.stats('generated_cad', 2000)
+    assert stats['verdict'] == 'within_threshold' and 'heatmap' not in stats

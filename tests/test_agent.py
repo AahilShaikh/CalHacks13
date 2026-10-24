@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from aida.agent import MESH_TOOLS, make_tools, options_for
+from aida.agent import MESH_TOOLS, MODEL_TOOLS, make_tools, options_for
 from aida.artifacts import Artifacts
 from aida.cad import EXPOSED
 
@@ -15,8 +15,13 @@ class FakeMesh:
     async def series(self, args):
         return {'isError': True, 'content': [{'type': 'text', 'text': 'slice_series'}]}
 
+    units = 'mm'
+
     async def compare(self, args):
         return {'content': [{'type': 'text', 'text': 'compare_to_mesh'}]}
+
+    async def frame(self, args):
+        return {'content': [{'type': 'text', 'text': 'mesh_frame'}]}
 
 
 class FakeCad:
@@ -36,13 +41,13 @@ def test_runtime_restricted(tmp_path):
     assert opts.permission_mode == 'dontAsk'
     assert opts.max_turns == 30
     assert set(opts.mcp_servers) == {'aida'}
-    assert set(opts.allowed_tools) == {f'mcp__aida__{n}' for n in EXPOSED | MESH_TOOLS | {'view_image'}}
+    assert set(opts.allowed_tools) == {f'mcp__aida__{n}' for n in EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image'}}
 
 
 async def test_dynamic_handlers_keep_correct_tool_names(tmp_path):
     tools = make_tools(FakeCad(), Artifacts(tmp_path))
     for item in tools:
-        if item.name != 'view_image':
+        if item.name != 'view_image' and item.name not in MODEL_TOOLS:
             result = await item.handler({})
             assert result['content'][0]['text'] == item.name
 
@@ -63,3 +68,12 @@ async def test_sdk_error_flag(tmp_path):
     assert (await execute.handler({}))['is_error'] is True
     viewer = next(t for t in tools if t.name == 'view_image')
     assert (await viewer.handler({'path': '/outside.png'}))['is_error'] is True
+
+
+async def test_model_tools_registered(tmp_path):
+    tools = {t.name: t for t in make_tools(FakeCad(), Artifacts(tmp_path))}
+    assert MODEL_TOOLS <= set(tools)
+    status = await tools['model_status'].handler({})
+    assert status['is_error'] is False and 'class P' in status['content'][0]['text']
+    undo = await tools['model_undo'].handler({})
+    assert undo['is_error'] is True and 'Nothing to undo' in undo['content'][0]['text']

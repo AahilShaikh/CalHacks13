@@ -78,7 +78,16 @@ SERIES_SCHEMA = {
     'required': ['axis'],
 }
 
+FRAME_SCHEMA = {
+    'type': 'object',
+    'properties': {'tolerance_deg': {'type': 'number', 'description': 'Tilt that still counts as aligned (default 1).'}},
+}
+
 DESCRIPTIONS = {
+    'mesh_frame': (
+        'Check whether reference_mesh is aligned with the world axes. Returns the dominant flat-face '
+        'directions with their plane levels (e.g. Z=3), the oriented bounding box, and for a tilted '
+        'mesh a placement expression for the model. Run it first.'),
     'view_mesh': (
         'Render reference_mesh with exact framing. Zoom/pan with fit_box, or center plus view_width; '
         'orbit with direction/view_dir plus azimuth/elevation. A slice cuts the mesh and shades the cut '
@@ -247,6 +256,28 @@ class MeshTools:
         finally:
             _discard(cad)
         self.artifacts.log('tool_result', {'name': 'compare_to_mesh', **result})
+        return result
+
+    async def stats(self, object_name, samples=8000):
+        """Deviation report for a CAD object without the heatmap image (for model checks)."""
+        cad = await self._cad_stl(object_name)
+        try:
+            async with self.lock:
+                out = await self._run('aida.mesh_compare', [str(self.mesh), str(cad), '--spec',
+                                                            json.dumps({'samples': samples})])
+            return json.loads(out)
+        finally:
+            _discard(cad)
+
+    async def frame(self, args):
+        try:
+            self.artifacts.log('tool_call', {'name': 'mesh_frame', 'arguments': args})
+            async with self.lock:
+                out = await self._run('aida.mesh_probe', ['frame', str(self.mesh), '--spec', json.dumps(args)])
+            result = {'content': [{'type': 'text', 'text': out.strip()}]}
+        except (ValueError, RuntimeError, OSError) as exc:
+            result = _error(str(exc))
+        self.artifacts.log('tool_result', {'name': 'mesh_frame', **result})
         return result
 
 

@@ -8,9 +8,12 @@ from claude_agent_sdk import (
 )
 
 from .cad import EXPOSED
-from .mesh_tools import COMPARE_SCHEMA, DESCRIPTIONS, SERIES_SCHEMA, SLICE_SCHEMA, VIEW_SCHEMA
+from .mesh_tools import (COMPARE_SCHEMA, DESCRIPTIONS, FRAME_SCHEMA, SERIES_SCHEMA, SLICE_SCHEMA,
+                         VIEW_SCHEMA)
+from .model_tools import SCHEMAS as MODEL_SCHEMAS, model_tools
 
-MESH_TOOLS = {'view_mesh', 'slice_mesh', 'slice_series', 'compare_to_mesh'}
+MESH_TOOLS = {'view_mesh', 'slice_mesh', 'slice_series', 'compare_to_mesh', 'mesh_frame'}
+MODEL_TOOLS = set(MODEL_SCHEMAS)
 
 
 def make_tools(cad, artifacts):
@@ -44,22 +47,32 @@ def make_tools(cad, artifacts):
     for name, schema, method in (('view_mesh', VIEW_SCHEMA, mesh.view),
                                  ('slice_mesh', SLICE_SCHEMA, mesh.slice),
                                  ('slice_series', SERIES_SCHEMA, mesh.series),
-                                 ('compare_to_mesh', COMPARE_SCHEMA, mesh.compare)):
+                                 ('compare_to_mesh', COMPARE_SCHEMA, mesh.compare),
+                                 ('mesh_frame', FRAME_SCHEMA, mesh.frame)):
         async def mesh_handler(args, method=method):
             result = await method(args)
             return {**result, 'is_error': result.get('isError', False)}
         tools.append(tool(name, DESCRIPTIONS[name], schema)(mesh_handler))
+
+    _, table = model_tools(cad, artifacts)
+    for name, description, schema, operation in table:
+        async def model_handler(args, operation=operation):
+            result = await operation(args)
+            return {**result, 'is_error': result.get('isError', False)}
+        tools.append(tool(name, description, schema)(model_handler))
     return tools
 
 
 def options_for(cad, artifacts, units=None):
     server = create_sdk_mcp_server(name='aida', version='0.1.0', tools=make_tools(cad, artifacts))
-    names = [f'mcp__aida__{name}' for name in sorted(EXPOSED | MESH_TOOLS | {'view_image'})]
+    names = [f'mcp__aida__{name}' for name in sorted(EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image'})]
     prompt = f'''You are Aida, a CAD assistant. Use your CAD tools to inspect meshes and build CAD.
 The STL is registered as reference_mesh. Preserve it; create generated CAD under a different name.
 Input units: {units or "unknown; do not claim physical dimensions"}. Never rescale implicitly.
 
 Inspecting the reference mesh:
+- mesh_frame first: it says whether the mesh is aligned with the world axes and lists flat-face
+  directions with their plane levels (e.g. Z=3), which are exact heights for extrusions.
 - view_mesh renders it with exact framing and returns the image directly. Start with whole-part
   views, then zoom/pan with fit_box (or center plus view_width) onto features you need to see.
   Slice it (slice_axis/slice_normal plus slice_at) to see inside; the cut face is orange.
@@ -71,15 +84,23 @@ Inspecting the reference mesh:
 - mesh_holes finds drilled holes (axis, diameter, depth, through) on the mesh.
 - render_view still renders generated CAD; render reference_mesh with view_mesh instead.
 
-Building CAD from the mesh:
-- Keep one script with a PARAMS dict of named dimensions and rebuild the whole part from it on
-  each execute. Build feature by feature: base extrusion from the dominant section, then cuts,
-  holes and fillets, each traced to a slice or series result.
-- Verify after each feature: compare_to_mesh gives the deviation heatmap, statistics and the
-  worst regions; slice_mesh with compare_to overlays the CAD section on the mesh section and
-  reports per-loop gaps; view_mesh with compare_to overlays the CAD in 3D. Fix the worst region
-  first, then re-compare. Stop when the verdict is within_threshold or the remaining deviation
-  is explained (scan noise, features you chose to simplify).
+Building CAD from the mesh, always through the parametric model:
+- Record every dimension with model_set_params, with source (measured / estimated / assumed) and
+  evidence naming the tool result. If you round a measured value to a nominal one, keep the raw
+  number in measured.
+- Add features one at a time with model_add_feature: code runs inside build(), reads P.name and
+  updates part. Order them like a machinist would: base body from the dominant section, then
+  cuts, holes, then fillets and chamfers. Each change rebuilds generated_cad from the whole
+  script and checks it against the mesh; the trend says better, worse, same or mixed. If a change
+  makes it worse, model_undo it and rethink. Use model_edit_feature to fix a feature.
+- For a tilted mesh, model the part axis-aligned and set placement from mesh_frame.
+- Do not show generated_cad from execute; use execute only for scratch experiments under other
+  names, then move what works into a model feature.
+- Look closer where the model check reports worst regions: compare_to_mesh gives the heatmap;
+  slice_mesh with compare_to overlays the CAD section on the mesh section with per-loop gaps;
+  view_mesh with compare_to overlays the CAD in 3D. Fix the worst region first. Stop when the
+  verdict is within_threshold or the remaining deviation is explained (scan noise, features you
+  chose to simplify), then call model_report and summarise it.
 - Fits with large max_deviation are guesses; say so.
 - After render_view returns a PNG path or [SEND: path], call view_image to inspect it.
   Do not claim to have seen an image before you have it.

@@ -111,3 +111,38 @@ def test_series_finds_bracket_step(bracket_stl):
     first, last = result['constant_segments'][0], result['constant_segments'][-1]
     assert first['profile']['material_area'] == pytest.approx(800, rel=1e-3)
     assert last['profile']['material_area'] == pytest.approx(100, rel=1e-2)
+
+
+def test_frame_of_aligned_plate(plate_stl):
+    from aida.mesh_probe import mesh_frame
+    frame = mesh_frame(load(plate_stl))
+    assert frame['aligned_with_world'] and frame['max_tilt_deg'] < 0.01
+    assert sorted(frame['oriented_box']['extents']) == pytest.approx([6, 40, 60], abs=1e-3)
+    planes = {level['plane'] for group in frame['planar_groups'] for level in group['levels']}
+    assert {'Z=3', 'Z=-3', 'X=30', 'X=-30', 'Y=20', 'Y=-20'} <= planes
+    assert 'placement' not in frame
+
+
+def test_frame_of_tilted_plate_gives_placement(mesh_dir):
+    from build123d import Box, Cylinder, Location, Pos, export_stl
+    from aida.mesh_probe import mesh_frame
+    path = mesh_dir / 'tilted.stl'
+    export_stl(Location((5, -3, 10), (12, -7, 25)) * (Box(60, 40, 6) - Pos(15, 5, 0) * Cylinder(4, 10)), str(path))
+    frame = mesh_frame(load(path))
+    assert not frame['aligned_with_world'] and frame['max_tilt_deg'] > 10
+    assert frame['oriented_box']['extents'] == pytest.approx([60, 40, 6], abs=1e-3)
+    placed = eval(frame['placement'], {'Location': Location})
+    assert placed.position.X == pytest.approx(5, abs=1e-3) and placed.position.Z == pytest.approx(10, abs=1e-3)
+    assert [placed.orientation.X, placed.orientation.Y, placed.orientation.Z] == pytest.approx([12, -7, 25], abs=1e-2)
+
+
+def test_euler_roundtrip_matches_build123d():
+    from build123d import Location, Vector
+    from aida.mesh_probe import euler_xyz
+    angles = (-40, 25, 130)
+    loc = Location((0, 0, 0), angles)
+    columns = []
+    for axis in np.eye(3):
+        p = (loc * Location(Vector(*axis))).position
+        columns.append([p.X, p.Y, p.Z])
+    assert euler_xyz(np.array(columns).T) == pytest.approx(angles, abs=1e-6)
