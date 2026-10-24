@@ -206,43 +206,45 @@ def _section_plane(spec, mesh_min, mesh_max, look_from):
             'label': label}
 
 
-def render(path, output, spec=None, units=None):
-    """Render ``path`` to ``output`` PNG and return the camera/window metadata."""
-    import vtk
+# Signed-distance colours: blue = CAD has extra material, red = CAD is missing material.
+DIVERGING = ((0.15, 0.35, 0.85), (1.0, 1.0, 1.0), (0.85, 0.15, 0.12))
 
-    spec = normalize_spec(spec)
+
+def diverging_color(t):
+    """Colour for t in [-1, 1] on the blue-white-red deviation scale."""
+    t = max(-1.0, min(1.0, t))
+    far = DIVERGING[0] if t < 0 else DIVERGING[2]
+    return tuple(w + (f - w) * abs(t) for w, f in zip(DIVERGING[1], far))
+
+
+def _read_stl(vtk, path, label='STL'):
     reader = vtk.vtkSTLReader()
     reader.SetFileName(str(path))
     reader.Update()
     mesh = reader.GetOutput()
     if mesh.GetNumberOfCells() == 0:
-        raise ValueError('STL contains no renderable triangles')
+        raise ValueError(f'{label} contains no renderable triangles')
     bounds = mesh.GetBounds()
     if not all(math.isfinite(x) for x in bounds):
-        raise ValueError('STL contains invalid bounds')
-    mesh_min, mesh_max = tuple(bounds[0::2]), tuple(bounds[1::2])
-    if max(b - a for a, b in zip(mesh_min, mesh_max)) <= 0:
-        raise ValueError('STL has zero extent')
+        raise ValueError(f'{label} contains invalid bounds')
+    return mesh
 
-    vtk.vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
-    renderer = vtk.vtkRenderer()
-    renderer.SetBackground(1, 1, 1)
-    surface = mesh
-    look_from, view_label = _look_from(spec)
-    section = _section_plane(spec, mesh_min, mesh_max, look_from)
+
+def _add_surface(vtk, renderer, poly, section, color, opacity=1.0, cap_color=None,
+                 line_color=None, lut=None):
+    """Add a (possibly clipped) surface; return how many section segments it has."""
+    surface, cut_cells = poly, 0
     if section:
         plane = vtk.vtkPlane()
         plane.SetOrigin(*section['origin'])
         plane.SetNormal(*section['removed_side'])
         cutter = vtk.vtkCutter()
         cutter.SetCutFunction(plane)
-        cutter.SetInputData(mesh)
+        cutter.SetInputData(poly)
         cutter.Update()
-        if cutter.GetOutput().GetNumberOfCells() == 0:
-            raise SpecError(f"Slice {section['label']} misses the mesh; "
-                            f'mesh bounds are {list(mesh_min)} to {list(mesh_max)}')
+        cut_cells = cutter.GetOutput().GetNumberOfCells()
         clip = vtk.vtkClipPolyData()
-        clip.SetInputData(mesh)
+        clip.SetInputData(poly)
         clip.SetClipFunction(plane)
         clip.InsideOutOn()  # keep the side opposite the removed side
         clip.Update()
@@ -250,15 +252,18 @@ def render(path, output, spec=None, units=None):
         stripper = vtk.vtkStripper()
         stripper.SetInputConnection(cutter.GetOutputPort())
         stripper.JoinContiguousSegmentsOn()
-        cap = vtk.vtkContourTriangulator()
-        cap.SetInputConnection(stripper.GetOutputPort())
-        for source, color, lines in ((cap, (.93, .42, .3), False), (stripper, (.45, .08, .04), True)):
+        layers = [(stripper, line_color, True)]
+        if cap_color:
+            cap = vtk.vtkContourTriangulator()
+            cap.SetInputConnection(stripper.GetOutputPort())
+            layers.insert(0, (cap, cap_color, False))
+        for source, layer_color, lines in layers:
             mapper = vtk.vtkPolyDataMapper()
             mapper.SetInputConnection(source.GetOutputPort())
             mapper.ScalarVisibilityOff()
             actor = vtk.vtkActor()
             actor.SetMapper(mapper)
-            actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetColor(*layer_color)
             if lines:
                 actor.GetProperty().LightingOff()
                 actor.GetProperty().SetLineWidth(2)
@@ -272,14 +277,99 @@ def render(path, output, spec=None, units=None):
     normals.AutoOrientNormalsOn()
     mapper = vtk.vtkPolyDataMapper()
     mapper.SetInputConnection(normals.GetOutputPort())
-    mapper.ScalarVisibilityOff()
+    if lut is not None:
+        mapper.SetLookupTable(lut)
+        mapper.SetScalarRange(*lut.GetTableRange())
+        mapper.SetScalarModeToUsePointData()
+        mapper.ScalarVisibilityOn()
+    else:
+        mapper.ScalarVisibilityOff()
     actor = vtk.vtkActor()
     actor.SetMapper(mapper)
-    actor.GetProperty().SetColor(.25, .55, .85)
+    actor.GetProperty().SetColor(*color)
+    actor.GetProperty().SetOpacity(opacity)
     actor.GetProperty().SetAmbient(.25)
     actor.GetProperty().SetDiffuse(.75)
     actor.GetProperty().BackfaceCullingOff()
     renderer.AddActor(actor)
+    return cut_cells
+
+
+def _deviation_lut(vtk, limit):
+    lut = vtk.vtkLookupTable()
+    lut.SetNumberOfTableValues(256)
+    lut.SetTableRange(-limit, limit)
+    lut.Build()
+    for i in range(256):
+        lut.SetTableValue(i, *diverging_color(i / 255 * 2 - 1), 1.0)
+    return lut
+
+
+def signed_distance_to(vtk, mesh, target):
+    """Point data 'Distance' on ``mesh``: signed distance to ``target`` (negative inside it)."""
+    distance = vtk.vtkDistancePolyDataFilter()
+    distance.SetInputData(0, mesh)
+    distance.SetInputData(1, target)
+    distance.SignedDistanceOn()
+    distance.ComputeSecondDistanceOff()
+    distance.Update()
+    output = vtk.vtkPolyData()
+    output.DeepCopy(distance.GetOutput())
+    output.GetPointData().SetActiveScalars('Distance')
+    return output
+
+
+def render(path, output, spec=None, units=None, overlay=None, heatmap=None):
+    """Render ``path`` to ``output`` PNG and return the camera/window metadata.
+
+    ``overlay`` is a CAD STL drawn opaque green over a translucent reference.
+    ``heatmap`` is ``{'cad': stl_path, 'range': limit}``: the reference is coloured by
+    signed distance to that CAD surface. Neither is part of the agent's view spec;
+    the tool layer supplies them from a tessellated CAD object.
+    """
+    import vtk
+
+    spec = normalize_spec(spec)
+    mesh = _read_stl(vtk, path)
+    bounds = mesh.GetBounds()
+    mesh_min, mesh_max = tuple(bounds[0::2]), tuple(bounds[1::2])
+    if max(b - a for a, b in zip(mesh_min, mesh_max)) <= 0:
+        raise ValueError('STL has zero extent')
+
+    vtk.vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
+    renderer = vtk.vtkRenderer()
+    renderer.SetBackground(1, 1, 1)
+    look_from, view_label = _look_from(spec)
+    section = _section_plane(spec, mesh_min, mesh_max, look_from)
+
+    reference, lut = mesh, None
+    if heatmap:
+        cad = _read_stl(vtk, heatmap['cad'], 'CAD tessellation')
+        # Colours are per vertex; split long edges so large flat faces and tall
+        # walls are sampled, not just their corners.
+        sampled = mesh
+        if mesh.GetNumberOfCells() < 100_000:  # dense scans are already sampled finely
+            subdivide = vtk.vtkAdaptiveSubdivisionFilter()
+            subdivide.SetInputData(mesh)
+            subdivide.SetMaximumEdgeLength(math.dist(mesh_min, mesh_max) / 50)
+            subdivide.SetMaximumNumberOfPasses(10)
+            subdivide.Update()
+            sampled = subdivide.GetOutput()
+        reference = signed_distance_to(vtk, sampled, cad)
+        lut = _deviation_lut(vtk, heatmap['range'])
+    cut = _add_surface(vtk, renderer, reference, section, (.25, .55, .85),
+                       opacity=.3 if overlay else 1.0,
+                       cap_color=None if overlay else (.93, .42, .3),
+                       line_color=(.6, .05, .05) if overlay else (.45, .08, .04), lut=lut)
+    if section and cut == 0:
+        raise SpecError(f"Slice {section['label']} misses the mesh; "
+                        f'mesh bounds are {list(mesh_min)} to {list(mesh_max)}')
+    if overlay:
+        cad = _read_stl(vtk, overlay, 'CAD tessellation')
+        _add_surface(vtk, renderer, cad, section, (.35, .72, .38), cap_color=(.62, .88, .6),
+                     line_color=(.02, .32, .08))
+        renderer.SetUseDepthPeeling(1)
+        renderer.SetMaximumNumberOfPeels(8)
 
     if spec['azimuth'] or spec['elevation']:
         view_label += f" az {spec['azimuth']:g} el {spec['elevation']:g}"
@@ -292,6 +382,9 @@ def render(path, output, spec=None, units=None):
     window = vtk.vtkRenderWindow()
     window.SetOffScreenRendering(1)
     window.SetSize(WIDTH, HEIGHT)
+    if overlay:
+        window.SetAlphaBitPlanes(1)
+        window.SetMultiSamples(0)
     window.AddRenderer(renderer)
     try:
         window.Render()
@@ -311,6 +404,13 @@ def render(path, output, spec=None, units=None):
                  'mesh_bounds': [list(mesh_min), list(mesh_max)],
                  'pixel_to_world': 'point = focal_point + (px - 400) * units_per_pixel * screen_right'
                                    ' + (300 - py) * units_per_pixel * screen_up'})
+    if overlay:
+        meta['overlay'] = ('reference mesh: translucent blue, cut outline dark red; '
+                           'CAD: opaque green, cut outline dark green')
+    if heatmap:
+        meta['heatmap'] = {'range': heatmap['range'],
+                           'red': 'reference outside the CAD: CAD is missing material',
+                           'blue': 'reference inside the CAD: CAD has extra material'}
     if section:
         meta['slice'] = {'normal': list(section['normal']), 'offset': section['offset'],
                          'removed_side': list(section['removed_side']), 'label': section['label']}
@@ -384,6 +484,19 @@ def _annotate(output, meta, grid):
         draw.line([(ox, oy), (ox + dx, oy + dy)], fill=(*color, 255), width=3)
         draw.text((ox + dx * 1.2 - 4, oy + dy * 1.2 - 7), AXIS_NAMES[index], fill=(*color, 255), font=font)
 
+    if 'heatmap' in meta:
+        limit = meta['heatmap']['range']
+        top, bottom, left = 70, 330, WIDTH - 34
+        draw.rectangle([left - 150, top - 22, WIDTH - 4, bottom + 22], fill=(255, 255, 255, 215))
+        for y in range(top, bottom + 1):
+            t = 1 - 2 * (y - top) / (bottom - top)
+            draw.line([(left, y), (left + 18, y)],
+                      fill=tuple(int(255 * c) for c in diverging_color(t)) + (255,))
+        for y, text in ((top, f'+{_fmt(limit, limit / 10)} CAD missing'), ((top + bottom) / 2, '0'),
+                        (bottom, f'-{_fmt(limit, limit / 10)} CAD extra')):
+            draw.text((left - 6, y), text, fill=(0, 0, 0, 255), font=font, anchor='rm')
+        draw.text((left + 9, top - 18), unit, fill=(0, 0, 0, 255), font=font, anchor='ma')
+
     caption = (f"{meta['view']} | window {meta['visible_width']:.4g} x {meta['visible_height']:.4g} {unit}"
                f" | {upp:.3g} {unit}/px")
     if 'slice' in meta:
@@ -400,8 +513,9 @@ def main(argv=None):
     parser.add_argument('output')
     parser.add_argument('--spec', default='{}', help='JSON view options (see SPEC_KEYS)')
     parser.add_argument('--units')
+    parser.add_argument('--overlay', help='CAD STL drawn over a translucent reference')
     args = parser.parse_args(argv)
-    meta = render(args.mesh, args.output, json.loads(args.spec), args.units)
+    meta = render(args.mesh, args.output, json.loads(args.spec), args.units, overlay=args.overlay)
     print(json.dumps(meta))
 
 

@@ -60,6 +60,23 @@ matplotlib, each run in a subprocess):
 The CAD server's `mesh_holes` is exposed too. `render_view` of `reference_mesh`
 with `clip_plane`/`clip_at` now renders a sliced view.
 
+Three ways to check generated CAD against the mesh (each tessellates the named
+CAD object to a temporary STL first):
+
+- `compare_to_mesh` samples both surfaces and returns:
+  - a heatmap of the reference: red where the CAD is missing material, blue where
+    it has extra;
+  - distance statistics in both directions;
+  - bounding-box and volume differences;
+  - the worst regions, each with a bounding box to zoom or slice into;
+  - a `within_threshold` / `deviates` verdict.
+- `slice_mesh` with `compare_to` slices the CAD on the same plane, draws it over
+  the mesh section, and matches the loops. It reports each loop's boundary gap,
+  centroid offset and size difference, plus any loops missing from or extra in
+  the CAD.
+- `view_mesh` with `compare_to` draws the CAD in opaque green over a translucent
+  reference, and works with slicing too.
+
 To try the tools without Claude:
 `uv run python -m aida.mesh_probe slice examples/asymmetric.stl --spec '{"axis": "z", "at": 1}' --out section.png`
 

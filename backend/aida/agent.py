@@ -8,9 +8,9 @@ from claude_agent_sdk import (
 )
 
 from .cad import EXPOSED
-from .mesh_tools import DESCRIPTIONS, SERIES_SCHEMA, SLICE_SCHEMA, VIEW_SCHEMA
+from .mesh_tools import COMPARE_SCHEMA, DESCRIPTIONS, SERIES_SCHEMA, SLICE_SCHEMA, VIEW_SCHEMA
 
-MESH_TOOLS = {'view_mesh', 'slice_mesh', 'slice_series'}
+MESH_TOOLS = {'view_mesh', 'slice_mesh', 'slice_series', 'compare_to_mesh'}
 
 
 def make_tools(cad, artifacts):
@@ -43,7 +43,8 @@ def make_tools(cad, artifacts):
     mesh = cad.mesh
     for name, schema, method in (('view_mesh', VIEW_SCHEMA, mesh.view),
                                  ('slice_mesh', SLICE_SCHEMA, mesh.slice),
-                                 ('slice_series', SERIES_SCHEMA, mesh.series)):
+                                 ('slice_series', SERIES_SCHEMA, mesh.series),
+                                 ('compare_to_mesh', COMPARE_SCHEMA, mesh.compare)):
         async def mesh_handler(args, method=method):
             result = await method(args)
             return {**result, 'is_error': result.get('isError', False)}
@@ -74,8 +75,12 @@ Building CAD from the mesh:
 - Keep one script with a PARAMS dict of named dimensions and rebuild the whole part from it on
   each execute. Build feature by feature: base extrusion from the dominant section, then cuts,
   holes and fillets, each traced to a slice or series result.
-- Check each step with measure on the generated CAD and compare its size and sections with
-  the reference. Fits with large max_deviation are guesses; say so.
+- Verify after each feature: compare_to_mesh gives the deviation heatmap, statistics and the
+  worst regions; slice_mesh with compare_to overlays the CAD section on the mesh section and
+  reports per-loop gaps; view_mesh with compare_to overlays the CAD in 3D. Fix the worst region
+  first, then re-compare. Stop when the verdict is within_threshold or the remaining deviation
+  is explained (scan noise, features you chose to simplify).
+- Fits with large max_deviation are guesses; say so.
 - After render_view returns a PNG path or [SEND: path], call view_image to inspect it.
   Do not claim to have seen an image before you have it.
 Use from build123d import * when necessary. Validate before exporting and export only when

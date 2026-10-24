@@ -46,7 +46,7 @@ class CadBridge:
         self.session = session
         self.artifacts = artifacts
         self.timeout = timeout
-        self.mesh = MeshTools(artifacts, units, timeout)
+        self.mesh = MeshTools(artifacts, units, timeout, tessellate=self.tessellate)
         self.lock = asyncio.Lock()
         self.broken = False
         self.schemas = {}
@@ -109,6 +109,26 @@ class CadBridge:
                     result['isError'] = True
                     result['content'].append({'type': 'text', 'text': f'PNG render failed: {exc}'})
             return result
+
+    async def tessellate(self, object_name):
+        """Write a named CAD object to a temporary STL for comparison; return its path."""
+        if object_name == 'reference_mesh':
+            raise ValueError('Compare a generated CAD object, not reference_mesh itself')
+        target = self.artifacts.temp / f'compare-{uuid4().hex[:8]}.stl'
+        fields = self.schemas['export'].input_schema.get('properties', {})
+        field = next((f for f in ('path', 'filename', 'file_path') if f in fields), None)
+        if field is None:
+            raise RuntimeError('CAD export tool has no path argument')
+        args = {field: str(target), 'object_name': object_name}
+        if 'format' in fields:
+            args['format'] = 'stl'
+        async with self.lock:
+            # Not the gated export(): a comparison needs the shape even when it is not yet valid.
+            result = await self._call('export', args)
+        if failed(result) or not target.is_file() or target.stat().st_size <= 84:
+            target.unlink(missing_ok=True)
+            raise ValueError(f'Could not tessellate {object_name}: {text_of(result)[:1500]}')
+        return target
 
     async def _render_reference(self, args):
         if args['objects'] != 'reference_mesh':

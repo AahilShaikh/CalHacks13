@@ -71,3 +71,31 @@ async def test_corrupt_stl_rejected(tmp_path):
             return ' '.join(messages(e) for e in exc.exceptions)
         return str(exc)
     assert 'no renderable triangles' in messages(caught.value)
+
+
+async def test_compare_generated_cad_with_reference(tmp_path):
+    from build123d import Box, Cylinder, Pos, export_stl
+    reference = tmp_path / 'plate.stl'
+    export_stl(Box(60, 40, 6) - Pos(15, 5, 0) * Cylinder(4, 10), str(reference))
+    artifacts = Artifacts(tmp_path / 'sessions')
+    mesh = artifacts.copy_mesh(reference)
+    async with open_cad(artifacts, 'mm') as cad:
+        await cad.startup(mesh)
+        code = '''from build123d import *
+hole_x = 15
+plate = Box(60, 40, 6) - Pos(hole_x, 5, 0) * Cylinder(4, 10)
+show(plate, "generated_cad")'''
+        for hole_x, verdict in ((15, 'within_threshold'), (17, 'deviates')):
+            result = await cad.call('execute', {'code': code.replace('hole_x = 15', f'hole_x = {hole_x}')})
+            assert not failed(result), text_of(result)
+            report = await cad.mesh.compare({'object_name': 'generated_cad', 'samples': 4000})
+            assert not report.get('isError'), report
+            assert json.loads(report['content'][1]['text'])['verdict'] == verdict
+        sliced = await cad.mesh.slice({'axis': 'z', 'at': 1, 'compare_to': 'generated_cad'})
+        comparison = json.loads(sliced['content'][1]['text'])['comparison']
+        hole = next(m for m in comparison['matched'] if m['role'] == 'hole')
+        assert hole['centroid_offset'][0] == pytest.approx(2, abs=0.05)
+        overlay = await cad.mesh.view({'compare_to': 'generated_cad'})
+        assert not overlay.get('isError'), overlay
+        missing = await cad.mesh.compare({'object_name': 'no_such_part'})
+        assert missing['isError']

@@ -507,6 +507,91 @@ def _brief(sample):
     return out
 
 
+# ---------------------------------------------------------------- comparison
+
+def polyline_distance(points, loop, chunk=256):
+    """Distance from each point to the closed polyline ``loop``."""
+    starts, ends = loop, np.roll(loop, -1, axis=0)
+    edge = ends - starts
+    length2 = np.maximum((edge ** 2).sum(axis=1), 1e-24)
+    out = np.empty(len(points))
+    for i in range(0, len(points), chunk):
+        p = points[i:i + chunk, None, :]
+        t = np.clip(((p - starts) * edge).sum(axis=2) / length2, 0, 1)
+        nearest = starts + t[..., None] * edge
+        out[i:i + chunk] = np.sqrt(((p - nearest) ** 2).sum(axis=2)).min(axis=1)
+    return out
+
+
+def _thin(points, limit=1500):
+    return points[::max(1, len(points) // limit)]
+
+
+def compare_sections(reference, cad):
+    """Match reference loops to CAD loops on the same plane and measure the gap.
+
+    ``reference`` and ``cad`` are slice_mesh results (with their internal point
+    lists). Loops are matched greedily by role and nearest centroid, requiring
+    their bounding boxes to overlap; the rest are reported as missing or extra.
+    """
+    tol = reference['tolerance']
+    ref_loops = [np.array(p) for p in reference['_points']]
+    cad_loops = [np.array(p) for p in cad.get('_points', [])]
+    used, matched, missing = set(), [], []
+    for record, points in zip(reference['loops'], ref_loops):
+        best = None
+        for j, other in enumerate(cad.get('loops', [])):
+            if j in used or other['role'] != record['role']:
+                continue
+            overlap = all(a <= d and c <= b for a, b, c, d in zip(
+                record['bbox_min'], record['bbox_max'], other['bbox_min'], other['bbox_max']))
+            if not overlap:
+                continue
+            gap = float(np.linalg.norm(np.subtract(record['centroid'], other['centroid'])))
+            if best is None or gap < best[0]:
+                best = (gap, j)
+        if best is None:
+            missing.append({'id': record['id'], 'role': record['role'], 'centroid': record['centroid'],
+                            'size': record['size'], 'area': record['area']})
+            continue
+        j = best[1]
+        used.add(j)
+        other = cad['loops'][j]
+        forward = polyline_distance(_thin(points), cad_loops[j])
+        backward = polyline_distance(_thin(cad_loops[j]), points)
+        deviation = float(max(forward.max(), backward.max()))
+        matched.append({
+            'reference': record['id'], 'role': record['role'],
+            'centroid_offset': np.subtract(other['centroid'], record['centroid']).tolist(),
+            'size_delta': np.subtract(other['size'], record['size']).tolist(),
+            'area_delta': other['area'] - record['area'],
+            'max_boundary_deviation': deviation,
+            'mean_boundary_deviation': float(np.concatenate([forward, backward]).mean()),
+            'within_tolerance': deviation <= tol})
+    extra = [{'role': other['role'], 'centroid': other['centroid'], 'size': other['size'],
+              'area': other['area']}
+             for j, other in enumerate(cad.get('loops', [])) if j not in used]
+    worst = max([m['max_boundary_deviation'] for m in matched], default=0.0)
+    return {'matched': matched, 'missing_in_cad': missing, 'extra_in_cad': extra,
+            'max_boundary_deviation': worst,
+            'material_area_delta': cad.get('material_area', 0.0) - reference['material_area'],
+            'within_tolerance': not missing and not extra and worst <= tol}
+
+
+def slice_and_compare(reference_mesh, cad_mesh, axis=None, normal=None, at=None, tolerance=None,
+                      weld=None):
+    """Slice the reference (with fits) and the CAD on the same plane, then compare them."""
+    result = slice_mesh(reference_mesh, axis=axis, normal=normal, at=at, tolerance=tolerance, weld=weld)
+    try:
+        cad = slice_mesh(cad_mesh, axis=axis, normal=normal, at=result['plane']['offset'],
+                         tolerance=result['tolerance'], weld=weld, fit=False)
+    except ProbeError:
+        cad = {'loops': [], '_points': [], 'material_area': 0.0}
+    result['comparison'] = compare_sections(result, cad)
+    result['_cad_points'] = cad['_points']
+    return result
+
+
 # ---------------------------------------------------------------- drawing
 
 def draw_section(result, output, units=None):
@@ -529,14 +614,25 @@ def draw_section(result, output, units=None):
         ax.annotate(f"{record['id']} {_describe(record, unit)}", (x, y), fontsize=8, ha='center',
                     va='center', zorder=6, bbox={'boxstyle': 'round,pad=0.2', 'fc': 'white',
                                                  'ec': '#888', 'alpha': 0.85})
+    for index, points in enumerate(result.get('_cad_points', [])):
+        loop = np.vstack([points, points[:1]])
+        ax.plot(loop[:, 0], loop[:, 1], color='#14852b', linewidth=1.8, zorder=4,
+                label='generated CAD' if index == 0 else None)
+    if result.get('_cad_points'):
+        ax.legend(loc='upper right', fontsize=8)
     plane = result['plane']
     u, v = plane['coordinates']
     ax.set_xlabel(f'{u} ({unit})')
     ax.set_ylabel(f'{v} ({unit})')
     label = f"{plane['axis'].upper()} = {plane['offset']:.4g}" if plane['axis'] else \
         f"normal {[round(c, 3) for c in plane['normal']]} at {plane['offset']:.4g}"
-    ax.set_title(f"Section {label} | {result['outer_count']} outer, {result['hole_count']} holes | "
-                 f"fit tol {result['tolerance']:.3g} {unit}", fontsize=10)
+    title = (f"Section {label} | {result['outer_count']} outer, {result['hole_count']} holes | "
+             f"fit tol {result['tolerance']:.3g} {unit}")
+    if 'comparison' in result:
+        comparison = result['comparison']
+        title += (f"\nCAD (green) max gap {comparison['max_boundary_deviation']:.3g} {unit}, "
+                  f"{len(comparison['missing_in_cad'])} missing, {len(comparison['extra_in_cad'])} extra")
+    ax.set_title(title, fontsize=10)
     ax.set_aspect('equal', adjustable='datalim')
     ax.grid(True, color='#ccd', linewidth=0.6)
     ax.minorticks_on()
@@ -618,6 +714,7 @@ def main(argv=None):
     parser.add_argument('--spec', default='{}')
     parser.add_argument('--out', help='PNG drawing path (slice only)')
     parser.add_argument('--units')
+    parser.add_argument('--cad', help='CAD STL to compare against (slice only)')
     args = parser.parse_args(argv)
     spec = json.loads(args.spec)
     mesh = load(args.mesh)
@@ -625,7 +722,7 @@ def main(argv=None):
         allowed = {'axis', 'normal', 'at', 'tolerance', 'weld'}
         if set(spec) - allowed:
             raise ProbeError(f'Unknown slice options: {sorted(set(spec) - allowed)}')
-        result = slice_mesh(mesh, **spec)
+        result = slice_and_compare(mesh, load(args.cad), **spec) if args.cad else slice_mesh(mesh, **spec)
         if args.out:
             draw_section(result, args.out, args.units)
         print(json.dumps(public(result)))

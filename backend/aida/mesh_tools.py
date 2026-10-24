@@ -30,6 +30,8 @@ VIEW_SCHEMA = {
         'slice_at': {'type': 'number', 'description': 'Plane position along the normal (default mesh centre).'},
         'slice_flip': {'type': 'boolean', 'description': 'Remove the other half of the cut.'},
         'grid': {'type': 'boolean', 'description': 'Coordinate grid on axis-aligned views (default true).'},
+        'compare_to': {'type': 'string', 'description': 'Generated CAD object to overlay: CAD opaque green, '
+                                                        'reference translucent blue.'},
     },
 }
 
@@ -43,7 +45,24 @@ SLICE_SCHEMA = {
         'tolerance': {'type': 'number', 'description': 'Max fit deviation (default 0.25% of the mesh diagonal). '
                                                        'Raise it for noisy scans.'},
         'weld': {'type': 'number', 'description': 'Point-merge distance when chaining section segments.'},
+        'compare_to': {'type': 'string', 'description': 'Generated CAD object to slice on the same plane and '
+                                                        'compare loop by loop.'},
     },
+}
+
+COMPARE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'object_name': {'type': 'string', 'description': 'Generated CAD object (from show()) to compare.'},
+        'threshold': {'type': 'number', 'description': 'Deviation that counts as a mismatch '
+                                                       '(default 0.5% of the mesh diagonal).'},
+        'samples': {'type': 'integer', 'minimum': 1000, 'maximum': 200000,
+                    'description': 'Surface samples per side (default 20000).'},
+        'view': {'type': 'object', 'properties': {k: v for k, v in VIEW_SCHEMA['properties'].items()
+                                                  if k != 'compare_to'},
+                 'description': 'view_mesh framing options for the heatmap (default iso).'},
+    },
+    'required': ['object_name'],
 }
 
 SERIES_SCHEMA = {
@@ -75,6 +94,11 @@ DESCRIPTIONS = {
         'Slice reference_mesh at evenly spaced positions along an axis and report constant-profile '
         'ranges plus the transitions between them (refined to the tolerance). Use it to find where '
         'extrusions, steps, pockets and holes start and end, then slice_mesh near each one.'),
+    'compare_to_mesh': (
+        'Measure how far a generated CAD object is from reference_mesh. Returns a heatmap of the '
+        'reference coloured by signed distance (red = CAD missing material, blue = CAD has extra '
+        'material), distance statistics both ways, bounding box and volume deltas, and the worst '
+        'regions with bounding boxes to zoom or slice into. verdict is within_threshold or deviates.'),
 }
 
 
@@ -83,10 +107,11 @@ def _error(text):
 
 
 class MeshTools:
-    def __init__(self, artifacts, units=None, timeout=180):
+    def __init__(self, artifacts, units=None, timeout=180, tessellate=None):
         self.artifacts = artifacts
         self.units = units
         self.timeout = timeout
+        self.tessellate = tessellate  # async (object_name) -> STL path of generated CAD
         self.lock = asyncio.Lock()
 
     @property
@@ -116,8 +141,9 @@ class MeshTools:
             lines = [line for line in errors.strip().splitlines() if line.strip()]
             last = lines[-1] if lines else 'no error output'
             # Validation errors are the agent's to fix; show just the message.
-            for prefix in ('__main__.SpecError: ', '__main__.ProbeError: ',
-                           'SpecError: ', 'ProbeError: ', 'ValueError: '):
+            for prefix in ('__main__.SpecError: ', '__main__.ProbeError: ', '__main__.CompareError: ',
+                           'aida.mesh_render.SpecError: ', 'aida.mesh_probe.ProbeError: ',
+                           'SpecError: ', 'ProbeError: ', 'CompareError: ', 'ValueError: '):
                 if last.startswith(prefix):
                     raise ValueError(last[len(prefix):])
             raise RuntimeError(f'{module} failed: {errors[-2000:]}')
@@ -126,12 +152,20 @@ class MeshTools:
     def _units_args(self):
         return ['--units', self.units] if self.units else []
 
-    async def render(self, spec, save_to):
+    async def _cad_stl(self, object_name):
+        if self.tessellate is None:
+            raise ValueError('CAD comparison is not available in this session')
+        if not isinstance(object_name, str) or not object_name.strip():
+            raise ValueError('Name the generated CAD object to compare (as passed to show())')
+        return await self.tessellate(object_name.strip())
+
+    async def render(self, spec, save_to, overlay=None):
         """Render reference_mesh to ``save_to`` and return image + metadata content."""
         normalize_spec(spec)  # fail fast with a clean message
+        extra = ['--overlay', str(overlay)] if overlay else []
         async with self.lock:
-            out = await self._run('aida.mesh_render', [str(self.mesh), str(save_to),
-                                                       '--spec', json.dumps(spec), *self._units_args()])
+            out = await self._run('aida.mesh_render', [str(self.mesh), str(save_to), '--spec',
+                                                       json.dumps(spec), *self._units_args(), *extra])
         meta = json.loads(out)
         result = self.artifacts.image(str(save_to))
         result['content'].append({'type': 'text', 'text': json.dumps(meta)})
@@ -139,27 +173,44 @@ class MeshTools:
         return result
 
     async def view(self, args):
+        cad = None
         try:
             self.artifacts.log('tool_call', {'name': 'view_mesh', 'arguments': args})
+            spec = dict(args)
+            target = spec.pop('compare_to', None)
+            normalize_spec(spec)
+            if target:
+                cad = await self._cad_stl(target)
             path = self.artifacts.output_path(f'view-{uuid4().hex[:8]}.png')
-            result = await self.render(dict(args), path)
+            result = await self.render(spec, path, overlay=cad)
         except (SpecError, ValueError, RuntimeError, OSError) as exc:
             result = _error(str(exc))
+        finally:
+            _discard(cad)
         self.artifacts.log('tool_result', {'name': 'view_mesh', **result})
         return result
 
     async def slice(self, args):
+        cad = None
         try:
             self.artifacts.log('tool_call', {'name': 'slice_mesh', 'arguments': args})
+            spec = dict(args)
+            target = spec.pop('compare_to', None)
+            extra = []
+            if target:
+                cad = await self._cad_stl(target)
+                extra = ['--cad', str(cad)]
             path = self.artifacts.output_path(f'slice-{uuid4().hex[:8]}.png')
             async with self.lock:
-                out = await self._run('aida.mesh_probe', ['slice', str(self.mesh), '--spec', json.dumps(args),
-                                                          '--out', str(path), *self._units_args()])
+                out = await self._run('aida.mesh_probe', ['slice', str(self.mesh), '--spec', json.dumps(spec),
+                                                          '--out', str(path), *self._units_args(), *extra])
             result = self.artifacts.image(str(path))
             result['content'].append({'type': 'text', 'text': out.strip()})
             result['content'].append({'type': 'text', 'text': f'[SEND: {path}]'})
         except (ValueError, RuntimeError, OSError) as exc:
             result = _error(str(exc))
+        finally:
+            _discard(cad)
         self.artifacts.log('tool_result', {'name': 'slice_mesh', **result})
         return result
 
@@ -173,3 +224,35 @@ class MeshTools:
             result = _error(str(exc))
         self.artifacts.log('tool_result', {'name': 'slice_series', **result})
         return result
+
+    async def compare(self, args):
+        cad = None
+        try:
+            self.artifacts.log('tool_call', {'name': 'compare_to_mesh', 'arguments': args})
+            spec = dict(args)
+            target = spec.pop('object_name', None)
+            normalize_spec(spec.get('view') or {})
+            cad = await self._cad_stl(target)
+            path = self.artifacts.output_path(f'deviation-{uuid4().hex[:8]}.png')
+            async with self.lock:
+                out = await self._run('aida.mesh_compare', [str(self.mesh), str(cad), '--spec', json.dumps(spec),
+                                                            '--out', str(path), *self._units_args()])
+            report = json.loads(out)
+            report['object_name'] = target
+            result = self.artifacts.image(str(path))
+            result['content'].append({'type': 'text', 'text': json.dumps(report)})
+            result['content'].append({'type': 'text', 'text': f'[SEND: {path}]'})
+        except (SpecError, ValueError, RuntimeError, OSError) as exc:
+            result = _error(str(exc))
+        finally:
+            _discard(cad)
+        self.artifacts.log('tool_result', {'name': 'compare_to_mesh', **result})
+        return result
+
+
+def _discard(path):
+    if path is not None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass

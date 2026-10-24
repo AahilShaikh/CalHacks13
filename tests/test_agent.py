@@ -15,6 +15,9 @@ class FakeMesh:
     async def series(self, args):
         return {'isError': True, 'content': [{'type': 'text', 'text': 'slice_series'}]}
 
+    async def compare(self, args):
+        return {'content': [{'type': 'text', 'text': 'compare_to_mesh'}]}
+
 
 class FakeCad:
     schemas = {name: SimpleNamespace(description=name, input_schema={
