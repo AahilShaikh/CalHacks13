@@ -3,7 +3,7 @@ import { Canvas } from '@react-three/fiber';
 import { Suspense, useEffect, useRef } from 'react';
 import { activeTool, generatedRevisions, heatmapOf, referenceRevision, useStore } from '../../store';
 import { AgentCamera, AgentPlanes } from './AgentFocus';
-import { GlbModel, StlPreview } from './Models';
+import { GlbModel, MeshPreview } from './Models';
 
 /** Re-frame the camera when the reference geometry changes (not on every CAD revision). */
 function Refit({ token }: { token: string }) {
@@ -18,7 +18,7 @@ function Models() {
   const revisions = useStore((s) => s.revisions);
   const shownRevision = useStore((s) => s.shownRevision);
   const viewMode = useStore((s) => s.viewMode);
-  const previews = useStore((s) => s.meshPreviewUrls);
+  const previews = useStore((s) => s.meshPreviews);
   const workspace = useStore((s) => s.workspace);
   const selectedPart = useStore((s) => s.selectedPart);
   const selectPart = useStore((s) => s.selectPart);
@@ -65,10 +65,10 @@ function Models() {
         ) : (
           previews.length > 0 && (
             <Suspense fallback={null}>
-              {previews.map((url) => (
-                <StlPreview key={url} url={url} />
+              {previews.map((preview) => (
+                <MeshPreview key={preview.url} {...preview} />
               ))}
-              <Refit token={previews.join('|')} />
+              <Refit token={previews.map((p) => p.url).join('|')} />
             </Suspense>
           )
         )}

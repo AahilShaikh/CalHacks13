@@ -2,6 +2,9 @@ import { useGLTF } from '@react-three/drei';
 import { invalidate as invalidateFrame, useLoader, type ThreeEvent } from '@react-three/fiber';
 import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 
 // Shared materials: one instance each, however many revisions are shown.
@@ -131,8 +134,28 @@ export function GlbModel({ url, look, x = 0, selected = null, onPick }: {
   );
 }
 
-/** The user's STL before a session starts, read straight from the dropped file. */
-export function StlPreview({ url }: { url: string }) {
-  const geometry = useLoader(STLLoader, url);
+/** A dropped mesh before a session starts, read straight from the file; drawn like the reference. */
+export function MeshPreview({ url, kind }: { url: string; kind: 'stl' | 'obj' | 'ply' | 'glb' }) {
+  if (kind === 'glb') return <ScenePreview url={url} gltf />;
+  if (kind === 'obj') return <ScenePreview url={url} />;
+  return <GeometryPreview url={url} ply={kind === 'ply'} />;
+}
+
+function GeometryPreview({ url, ply }: { url: string; ply: boolean }) {
+  const geometry = useLoader(ply ? PLYLoader : STLLoader, url);
   return <mesh geometry={geometry} material={materials.solid} />;
+}
+
+function ScenePreview({ url, gltf }: { url: string; gltf?: boolean }) {
+  // Loaders are picked by flag, not URL: object URLs have no file extension.
+  const loaded = useLoader(gltf ? GLTFLoader : OBJLoader, url) as { scene?: THREE.Object3D } & THREE.Object3D;
+  const scene = useMemo(() => {
+    const copy = (loaded.scene ?? loaded).clone(true);
+    copy.traverse((node) => {
+      const mesh = node as THREE.Mesh;
+      if (mesh.isMesh) mesh.material = materials.solid;
+    });
+    return copy;
+  }, [loaded]);
+  return <primitive object={scene} />;
 }

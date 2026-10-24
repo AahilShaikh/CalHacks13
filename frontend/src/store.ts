@@ -60,7 +60,7 @@ export type AppStatus = 'idle' | 'starting' | SessionStatus;
 type State = {
   // Before a session: what the user picked. Each mesh becomes a part.
   meshFiles: File[];
-  meshPreviewUrls: string[];
+  meshPreviews: MeshPreview[];
   images: File[];
   /** Units of the uploaded mesh; '' tells the agent not to claim physical sizes. */
   units: 'mm' | '';
@@ -132,12 +132,13 @@ const freshSession = {
 } satisfies Partial<State>;
 
 export const MESH_EXTENSIONS = ['.stl', '.obj', '.ply', '.glb'];
+export type MeshPreview = { url: string; kind: 'stl' | 'obj' | 'ply' | 'glb' };
 export const isMeshFile = (file: File) => MESH_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext));
 export const MAX_MESHES = 12;
 
 export const useStore = create<State>((set, get) => ({
   meshFiles: [],
-  meshPreviewUrls: [],
+  meshPreviews: [],
   images: [],
   units: 'mm',
   sessionId: null,
@@ -411,12 +412,15 @@ function scheduleReplay() {
   replayTimer = window.setTimeout(scheduleReplay, Math.max(16, (gap * 1000) / replay.speed));
 }
 
-let previewUrls: string[] = [];
-/** Object URLs for previewing dropped STLs before a session starts. */
+let previews: MeshPreview[] = [];
+/** Object URLs for previewing dropped meshes before a session starts (the URL has no extension, so keep the kind). */
 function setPreviews(files: File[]) {
-  for (const url of previewUrls) URL.revokeObjectURL(url);
-  previewUrls = files.filter((f) => f.name.toLowerCase().endsWith('.stl')).map((f) => URL.createObjectURL(f));
-  useStore.setState({ meshPreviewUrls: previewUrls });
+  for (const preview of previews) URL.revokeObjectURL(preview.url);
+  previews = files.map((file) => ({
+    url: URL.createObjectURL(file),
+    kind: file.name.toLowerCase().split('.').pop() as MeshPreview['kind'],
+  }));
+  useStore.setState({ meshPreviews: previews });
 }
 
 const EMPTY_MODEL: ModelState = {
