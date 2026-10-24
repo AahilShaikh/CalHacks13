@@ -1,6 +1,10 @@
 """Job-based HTTP API for the image-to-metric-mesh scan pipeline, live CAD
 sessions (``/api/v1/cad-sessions`` in :mod:`aida.api.cad_sessions`), and the
-web viewer served from ``aida/web`` at ``/``.
+web UI at ``/``.
+
+The UI is the React app in ``frontend/`` once it has been built (``npm run build``
+writes ``frontend/dist``); the older single-file viewer in ``aida/web`` is then
+served at ``/legacy``. Without a build, ``aida/web`` is served at ``/``.
 
 Scan endpoints:
 
@@ -14,13 +18,14 @@ Submission accepts 1-4 turntable photos (``front_image`` required,
 form field: ``known_height_mm``, ``known_base_dia_mm``, or ``scale_factor``.
 """
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..config import load_local_env
+from ..config import REPO_ROOT, load_local_env
 from ..scan.comfy import ComfyClient, ComfyConfig
 from ..scan.pipeline import run_scan
 from .cad_sessions import CadSessionManager, router as cad_sessions_router
@@ -33,11 +38,25 @@ from ..scan.charuco import CalibrationError
 
 load_local_env()
 
-DEFAULT_STORAGE = Path(os.environ.get('AIDA_SCAN_STORAGE', 'artifacts/scans'))
-CAD_STORAGE = Path(os.environ.get('AIDA_CAD_STORAGE', 'artifacts/cad'))
+# Relative to the repository root, so starting the server from another folder
+# (e.g. frontend/) does not scatter session artifacts there.
+DEFAULT_STORAGE = Path(os.environ.get('AIDA_SCAN_STORAGE', REPO_ROOT / 'artifacts' / 'scans'))
+CAD_STORAGE = Path(os.environ.get('AIDA_CAD_STORAGE', REPO_ROOT / 'artifacts' / 'cad'))
 WEB_DIR = Path(__file__).resolve().parent.parent / 'web'
+FRONTEND_DIST = Path(os.environ.get('AIDA_FRONTEND_DIST',
+                                    Path(__file__).resolve().parents[3] / 'frontend' / 'dist'))
+
+@asynccontextmanager
+async def lifespan(_app):
+    # Start a CAD engine now so the first prompt does not wait ~10 s for it.
+    if os.environ.get('ANTHROPIC_API_KEY'):
+        cad_manager.prewarm()
+    yield
+    await cad_manager.shutdown()
+
 
 app = FastAPI(
+    lifespan=lifespan,
     title='Aida Scan API',
     description='Images to 1:1 metric mesh and CAD handoff artifacts (Pixal3D + ChArUco).',
     version='1.0.0',
@@ -75,6 +94,7 @@ def health():
         'comfy_host': config.host,
         'comfy_reachable': ComfyClient(config).health(),
         'active_jobs': manager.count_active(),
+        'agent_ready': bool(os.environ.get('ANTHROPIC_API_KEY')),
     }
 
 

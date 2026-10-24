@@ -91,3 +91,14 @@ def test_max_turns_configuration(tmp_path, monkeypatch):
     for bad in ('lots', 0, 5000):
         with pytest.raises(ValueError):
             resolve_max_turns(bad)
+
+
+async def test_model_tools_stream_model_state(tmp_path):
+    events = []
+    tools = {t.name: t for t in make_tools(FakeCad(), Artifacts(tmp_path), on_event=events.append)}
+    await tools['model_undo'].handler({})  # fails: nothing to undo, state still streamed
+    result, state = events[-2], events[-1]
+    assert result['type'] == 'tool_result' and result['ok'] is False
+    assert state['type'] == 'model_state'
+    assert state['revision'] == 0 and state['params'] == {} and state['features'] == []
+    assert state['history'] == [] and state['can_undo'] is False

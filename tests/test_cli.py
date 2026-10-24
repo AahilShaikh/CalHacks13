@@ -19,6 +19,8 @@ def test_missing_credentials(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(sys, 'argv', ['aida', '--mesh', str(mesh)])
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    from aida import config
+    monkeypatch.setattr(config, 'REPO_ROOT', tmp_path)  # ignore the developer's real .env
     with pytest.raises(SystemExit) as exc:
         main()
     assert exc.value.code == 2

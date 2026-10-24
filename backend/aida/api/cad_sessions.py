@@ -14,10 +14,12 @@ function so tests can substitute their own.
 import asyncio
 import io
 import json
+import os
 import re
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -27,6 +29,8 @@ from pydantic import BaseModel, Field
 from ..artifacts import Artifacts
 
 DEFAULT_STORAGE = Path('artifacts/cad')
+# Sample meshes offered by the UI's empty state ("Try the example part").
+EXAMPLES_DIR = Path(__file__).resolve().parents[3] / 'examples'
 
 MAX_MESH_BYTES = 64 * 1024 * 1024
 MAX_IMAGES = 8
@@ -35,6 +39,7 @@ MESH_SUFFIXES = {'.stl', '.glb', '.obj', '.ply'}
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 UNITS = {'mm'}
 SSE_HEARTBEAT_S = 15.0
+REPLAY_LOG = 'ui-events.jsonl'
 # Tools whose results name a PNG the feed should show.
 IMAGE_TOOLS = {'render_view', 'view_mesh', 'slice_mesh', 'compare_to_mesh'}
 
@@ -122,11 +127,18 @@ class CadSession:
         self.meshes: list[dict] = []    # one entry per revision: path + stats
         self.turns: asyncio.Queue = asyncio.Queue()
         self.task: asyncio.Task | None = None
+        # Live handles while the runner is active: CAD bridge (downloads) and
+        # Claude client (interrupt). None before start and after the session ends.
+        self.cad = None
+        self.client = None
         self.created_at = time.time()
         self.updated_at = self.created_at
         self._waiters: set[asyncio.Future] = set()
 
     # -- URLs ---------------------------------------------------------------
+    def heatmap_url(self, revision: int) -> str:
+        return f'/api/v1/cad-sessions/{self.id}/heatmap.glb?rev={revision}'
+
     def mesh_url(self, revision: int | None = None) -> str:
         base = f'/api/v1/cad-sessions/{self.id}/mesh.glb'
         return base if revision is None else f'{base}?rev={revision}'
@@ -159,6 +171,12 @@ class CadSession:
         stamped = {'seq': len(self.events) + 1, 'at': time.time(), **event}
         self.events.append(stamped)
         self.updated_at = stamped['at']
+        # Kept on disk too, so the session can be replayed later (aida.api.replays).
+        try:
+            with (self.artifacts.root / REPLAY_LOG).open('a', encoding='utf-8') as log:
+                log.write(json.dumps(stamped, default=str) + '\n')
+        except OSError:
+            pass  # a replay log is a convenience; never break the live session for it
         return stamped
 
     def publish(self, event: dict) -> dict:
@@ -219,6 +237,7 @@ class CadSessionManager:
         self._runner = runner
         self._sessions: dict[str, CadSession] = {}
         self._mutex = threading.Lock()
+        self._warm = None
 
     # -- lifecycle ----------------------------------------------------------
     def create(self, mesh_bytes: bytes, mesh_name: str,
@@ -254,6 +273,80 @@ class CadSessionManager:
         with self._mutex:
             self._sessions[session.id] = session
         return session
+
+    # -- warm CAD engine -----------------------------------------------------
+    # Starting a CAD server and running its render/export self-test takes ~10 s.
+    # One is kept started and checked in the background, and the next session
+    # adopts it, so the first prompt does not wait for it.
+
+    def prewarm(self):
+        """Start a warm CAD engine if none is running (needs a running event loop)."""
+        if not self.uses_real_agent or os.environ.get('AIDA_PREWARM', '1') == '0':
+            return
+        if self._warm is not None and not self._warm['task'].done():
+            return
+        ready = asyncio.get_running_loop().create_future()
+        release = asyncio.Event()
+        task = asyncio.create_task(self._keep_warm(ready, release))
+        self._warm = {'ready': ready, 'release': release, 'task': task}
+
+    async def _keep_warm(self, ready, release):
+        from ..cad import open_cad
+
+        try:
+            # Working directory = the folder holding every session folder, so the
+            # session that adopts this engine can read its own reference mesh.
+            async with open_cad(Artifacts(self.storage_dir / '_warm'),
+                                cwd=self.storage_dir.resolve()) as bridge:
+                await bridge.discover()
+                await bridge.check_health()
+                ready.set_result(bridge.session)
+                await release.wait()
+        except Exception as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+
+    def take_warm(self):
+        """The warm engine's MCP session and its release event, if one is ready."""
+        warm = self._warm
+        if warm is None or not warm['ready'].done() or warm['ready'].exception() is not None                 or warm['task'].done():
+            return None
+        self._warm = None
+        return warm['ready'].result(), warm['release']
+
+    async def shutdown(self):
+        if self._warm is not None:
+            self._warm['release'].set()
+            self._warm['task'].cancel()
+            self._warm = None
+
+    @asynccontextmanager
+    async def cad_for(self, session: 'CadSession'):
+        """A CAD bridge for this session: the warm engine when ready, else a fresh one."""
+        from ..cad import CadBridge, open_cad
+
+        warm = self.take_warm()
+        try:
+            if warm is not None:
+                client, release = warm
+                try:
+                    bridge = CadBridge(client, session.artifacts, units=session.units)
+                    await bridge.discover()
+                    yield bridge
+                finally:
+                    release.set()
+            else:
+                async with open_cad(session.artifacts, session.units) as bridge:
+                    await bridge.discover()
+                    await bridge.check_health()
+                    yield bridge
+        finally:
+            self.prewarm()  # ready for the next session
+
+    @property
+    def uses_real_agent(self) -> bool:
+        """False when a test or demo runner stands in for Claude."""
+        return self._runner is None
 
     def start(self, session: CadSession):
         """Kick off the runner on the current event loop."""
@@ -322,12 +415,32 @@ def snapshot_hook(cad, session: CadSession):
             session.publish({'type': 'mesh', 'revision': revision,
                              'url': session.mesh_url(revision), 'generated': True,
                              **stats})
+            # After the mesh event, so the CAD preview never waits for the distances.
+            await publish_heatmap(session, revision, parts)
         except Exception as exc:
             session.publish({'type': 'mesh_skipped', 'reason': str(exc)[:400]})
         finally:
             session.set_stage('agent_running')
 
     return snapshot
+
+
+async def publish_heatmap(session: CadSession, revision: int, cad_parts: list[Path]):
+    """Colour the reference by distance to this revision; best effort."""
+    from .heatmap import build_heatmap
+
+    reference = session.artifacts.root / 'reference.stl'
+    glb = session.artifacts.root / f'heatmap-{revision:03d}.glb'
+    try:
+        scale = await asyncio.to_thread(build_heatmap, reference, cad_parts, glb)
+    except Exception as exc:
+        session.publish({'type': 'heatmap_skipped', 'revision': revision, 'reason': str(exc)[:400]})
+        return
+    for entry in session.meshes:
+        if entry['revision'] == revision:
+            entry['heatmap_path'] = glb
+    session.publish({'type': 'heatmap', 'revision': revision, 'url': session.heatmap_url(revision),
+                     **scale})
 
 
 async def generated_object_names(cad) -> list[str]:
@@ -359,19 +472,20 @@ def _stls_to_glb(stl_paths: list[Path], glb_path: Path) -> dict:
 async def run_cad_session(session: CadSession):
     """Drive one session: CAD engine + Claude client + queued turns."""
     from ..agent import options_for, run_turn
-    from ..cad import open_cad
 
     bridge = agent_event_bridge(session)
     try:
         session.set_status('running')
         session.set_stage('cad_starting')
-        async with open_cad(session.artifacts, session.units) as cad:
-            await cad.startup(session.artifacts.root / 'reference.stl')
+        async with _manager().cad_for(session) as cad:
+            await cad.load_reference(session.artifacts.root / 'reference.stl')
             cad.on_execute = snapshot_hook(cad, session)
+            session.cad = cad
             options = options_for(cad, session.artifacts, session.units, on_event=bridge)
             from claude_agent_sdk import ClaudeSDKClient
 
             async with ClaudeSDKClient(options=options) as client:
+                session.client = client
                 while True:
                     prompt = await session.turns.get()
                     if prompt is None:
@@ -389,6 +503,8 @@ async def run_cad_session(session: CadSession):
         message = explain_error(exc)
         session.set_status('failed', error=message)
         session.publish({'type': 'error', 'message': message})
+    finally:
+        session.cad = session.client = None
 
 
 def explain_error(exc: BaseException) -> str:
@@ -437,6 +553,11 @@ async def create_cad_session(
 ):
     if not prompt.strip():
         raise HTTPException(status_code=400, detail='prompt must not be empty')
+    if _manager().uses_real_agent and not os.environ.get('ANTHROPIC_API_KEY'):
+        # The agent runs with an isolated Claude config, so only the API key works.
+        raise HTTPException(status_code=400, detail=(
+            'ANTHROPIC_API_KEY is not set. Add it to .env in the repository root '
+            '(copy .env.example), then restart `uv run aida-api`.'))
     if units is not None and units not in UNITS:
         raise HTTPException(status_code=400, detail=f'units must be one of {sorted(UNITS)}')
     mesh_bytes = await mesh.read()
@@ -454,12 +575,32 @@ async def create_cad_session(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # The initial turn starts the agent as soon as the session exists.
+    session.record({'type': 'user_prompt', 'text': session.prompt})
     session.turns.put_nowait(first_prompt(session))
     _manager().start(session)
     return {'session_id': session.id,
             'status_url': f'/api/v1/cad-sessions/{session.id}',
             'events_url': session.events_url,
             'mesh_url': session.mesh_url(0)}
+
+
+@router.get('/api/v1/examples')
+def list_examples():
+    """Sample meshes shipped in ``examples/`` that the UI can load in one click."""
+    if not EXAMPLES_DIR.is_dir():
+        return []
+    return [{'name': path.name, 'bytes': path.stat().st_size}
+            for path in sorted(EXAMPLES_DIR.iterdir())
+            if path.is_file() and path.suffix.lower() in MESH_SUFFIXES]
+
+
+@router.get('/api/v1/examples/{name}')
+def get_example(name: str):
+    path = (EXAMPLES_DIR / name).resolve()
+    if (not path.is_relative_to(EXAMPLES_DIR.resolve()) or not path.is_file()
+            or path.suffix.lower() not in MESH_SUFFIXES):
+        raise HTTPException(status_code=404, detail=f'No example {name!r}')
+    return FileResponse(path, filename=path.name)
 
 
 @router.get('/api/v1/cad-sessions/{session_id}')
@@ -494,6 +635,17 @@ def get_cad_mesh(session_id: str, rev: int | None = None):
                         headers=headers)
 
 
+@router.get('/api/v1/cad-sessions/{session_id}/heatmap.glb')
+def get_cad_heatmap(session_id: str, rev: int):
+    session = _session_or_404(session_id)
+    entry = next((m for m in session.meshes if m['revision'] == rev), None)
+    path = entry.get('heatmap_path') if entry else None
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail=f'No heatmap for revision {rev}')
+    return FileResponse(path, media_type='model/gltf-binary',
+                        headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+
+
 @router.get('/api/v1/cad-sessions/{session_id}/files/{filename}')
 def get_cad_file(session_id: str, filename: str):
     session = _session_or_404(session_id)
@@ -509,8 +661,71 @@ async def add_cad_turn(session_id: str, body: TurnRequest):
     if session.status not in ('queued', 'running'):
         raise HTTPException(status_code=409,
                             detail=f'Session is {session.status}; start a new one')
+    session.publish({'type': 'user_prompt', 'text': body.prompt.strip()})
     session.turns.put_nowait(body.prompt.strip())
     return {'queued': True, 'session_id': session.id}
+
+
+@router.post('/api/v1/cad-sessions/{session_id}/interrupt', status_code=202)
+async def interrupt_cad_turn(session_id: str):
+    """Stop the agent's current turn; the session stays open for the next prompt."""
+    session = _session_or_404(session_id)
+    if session.client is None:
+        raise HTTPException(status_code=409, detail='The agent is not running')
+    await session.client.interrupt()
+    session.publish({'type': 'interrupted'})
+    return {'interrupted': True, 'session_id': session.id}
+
+
+DOWNLOADS = {'step', 'stl', 'model.py'}
+
+
+@router.get('/api/v1/cad-sessions/{session_id}/download/{kind}')
+async def download_cad(session_id: str, kind: str):
+    """The generated CAD: STEP (exported by the live CAD engine, validation-gated),
+    STL (the latest revision's mesh), or model.py (the parametric build123d script)."""
+    from ..model import OBJECT
+
+    session = _session_or_404(session_id)
+    root = session.artifacts.root
+    if kind not in DOWNLOADS:
+        raise HTTPException(status_code=404, detail=f'Download one of {sorted(DOWNLOADS)}')
+    if kind == 'model.py':
+        script = root / 'model.py'
+        if not script.is_file():
+            raise HTTPException(status_code=404, detail='No parametric model yet')
+        return FileResponse(script, filename='aida_model.py', media_type='text/x-python')
+    generated = [m for m in session.meshes if m.get('generated')]
+    if not generated:
+        raise HTTPException(status_code=404, detail='No generated CAD yet')
+    revision = generated[-1]['revision']
+    if kind == 'stl':
+        target = root / f'aida-r{revision:03d}.stl'
+        if not target.is_file():
+            parts = sorted(root.glob(f'mesh-{revision:03d}-*.stl'))
+            if not parts:
+                raise HTTPException(status_code=404, detail='The latest revision has no mesh')
+            await asyncio.to_thread(_merge_stls, parts, target)
+        return FileResponse(target, filename=target.name, media_type='model/stl')
+    target = root / f'aida-r{revision:03d}.step'
+    if not target.is_file():
+        if session.cad is None or session.cad.broken:
+            raise HTTPException(status_code=409, detail='STEP export needs the CAD engine, which is not '
+                                                        'running for this session. Download STL instead.')
+        result = await session.cad.call('export', {'filename': target.name, 'format': 'step',
+                                                   'object_name': OBJECT})
+        if result.get('isError') or not target.is_file():
+            from ..cad import text_of
+            raise HTTPException(status_code=409, detail=f'STEP export failed: {text_of(result)[:600]}')
+    return FileResponse(target, filename=target.name, media_type='application/step')
+
+
+def _merge_stls(parts: list[Path], target: Path):
+    import trimesh
+
+    meshes = [trimesh.load(str(p), force='mesh') for p in parts]
+    merged = meshes[0] if len(meshes) == 1 else trimesh.util.concatenate(meshes)
+    merged.export(str(target), file_type='stl')
 
 
 @router.post('/api/v1/cad-sessions/{session_id}/close', status_code=202)

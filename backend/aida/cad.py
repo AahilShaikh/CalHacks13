@@ -189,6 +189,11 @@ class CadBridge:
 
     async def startup(self, mesh):
         await self.discover()
+        await self.check_health()
+        return await self.load_reference(mesh)
+
+    async def check_health(self):
+        """Version and render/export self-test (the slow part of startup, ~10 s)."""
         for name in ('version', 'health_check'):
             result = await self.call(name, {})
             if failed(result):
@@ -197,6 +202,8 @@ class CadBridge:
                 report = json.loads(text_of(result))
                 if not report.get('ok'):
                     raise RuntimeError(f'CAD rendering/export dependencies failed: {report}')
+
+    async def load_reference(self, mesh):
         # OpenCascade accepts some malformed STL files as empty shapes. Verify
         # real triangles and a usable preview before importing the reference.
         preview = await self.call('render_view', {'objects': 'reference_mesh', 'direction': 'iso'})
@@ -209,13 +216,16 @@ class CadBridge:
 
 
 @asynccontextmanager
-async def open_cad(artifacts, units=None):
+async def open_cad(artifacts, units=None, cwd=None):
+    """Start a CAD server. It may read and write only under its working directory
+    (default: this session's folder) and its temp folder; a pre-started engine
+    shared by later sessions passes their common parent folder as ``cwd``."""
     executable = shutil.which('build123d-mcp')
     if not executable:
         raise RuntimeError('build123d-mcp is missing; run uv sync --locked')
     env = {k: v for k, v in os.environ.items() if not k.endswith(('API_KEY', 'TOKEN', 'SECRET'))}
     env.update(TMPDIR=str(artifacts.temp), TEMP=str(artifacts.temp), TMP=str(artifacts.temp))
-    params = StdioServerParameters(command=executable, env=env, cwd=str(artifacts.root))
+    params = StdioServerParameters(command=executable, env=env, cwd=str(cwd or artifacts.root))
     with (artifacts.root / 'cad-stderr.log').open('w') as errors:
         async with stdio_client(params, errlog=errors) as (read, write):
             async with ClientSession(read, write, read_timeout_seconds=185) as session:

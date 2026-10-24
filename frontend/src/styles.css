@@ -1,0 +1,74 @@
+@import 'tailwindcss';
+
+/* Design tokens, taken from the Figma file's "Aida" variable collection
+   (get_variable_defs). Names map 1:1: color/bg/raised -> --color-raised, etc.
+   Tints (color/tint/*) are the same hues at 16% and are written as bg-ok/16. */
+@theme {
+  --color-base: #0b101d;
+  --color-raised: #111a2c;
+  --color-sunken: #080c16;
+  --color-line: #1f2a40;
+  --color-line-strong: #2e3b57;
+  --color-ink: #e6edf7;
+  --color-muted: #8b98ad;
+  --color-faint: #5b6780;
+  --color-cad: #6ee7ff;
+  --color-mesh: #a5b4fc;
+  --color-slice: #fb923c;
+  --color-inspect: #3dadff;
+  --color-build: #a78bfa;
+  --color-verify: #4ade80;
+  --color-ok: #4ade80;
+  --color-warn: #fbbf24;
+  --color-error: #f87171;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* Thin scrollbars that match the panel. */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+
+@keyframes pulse-dot {
+  50% {
+    opacity: 0.35;
+  }
+}
+.animate-pulse-dot {
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+/* A changed model parameter glows briefly. */
+@keyframes flash {
+  0% {
+    background-color: color-mix(in srgb, var(--color-cad) 22%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.animate-flash {
+  animation: flash 1.6s ease-out;
+}

@@ -91,7 +91,7 @@ def make_tools(cad, artifacts, on_event=None):
             return payload
         tools.append(tool(name, DESCRIPTIONS[name], schema)(mesh_handler))
 
-    _, table = model_tools(cad, artifacts)
+    model, table = model_tools(cad, artifacts)
     for name, description, schema, operation in table:
         async def model_handler(args, operation=operation, name=name):
             result = await operation(args)
@@ -99,6 +99,9 @@ def make_tools(cad, artifacts, on_event=None):
             await _emit(on_event, {'type': 'tool_result', 'name': name,
                                    'ok': not payload['is_error'],
                                    'text': text_of(result)[:4000]})
+            # The whole model after every model call (failed ones roll back, so this is
+            # still the truth); the UI's model panel renders it directly.
+            await _emit(on_event, {'type': 'model_state', **model.snapshot()})
             return payload
         tools.append(tool(name, description, schema)(model_handler))
     return tools

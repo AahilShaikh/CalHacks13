@@ -1,0 +1,30 @@
+{
+  "name": "aida-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "typecheck": "tsc",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@react-three/drei": "10.0.7",
+    "@react-three/fiber": "9.1.2",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "three": "0.176.0",
+    "zustand": "5.0.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.1.7",
+    "@types/react": "19.1.4",
+    "@types/react-dom": "19.1.5",
+    "@types/three": "0.176.0",
+    "@vitejs/plugin-react": "4.4.1",
+    "tailwindcss": "4.1.7",
+    "typescript": "5.8.3",
+    "vite": "6.4.5"
+  }
+}

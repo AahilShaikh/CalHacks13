@@ -284,3 +284,181 @@ def test_viewer_shows_only_the_model_object_once_it_exists():
     # Once it exists, scratch experiments stay out of the viewer.
     assert asyncio.run(generated_object_names(
         Names(['reference_mesh', 'scratch', 'generated_cad']))) == ['generated_cad']
+
+
+def test_examples_are_listed_and_served(client):
+    listing = client.get('/api/v1/examples')
+    assert listing.status_code == 200
+    names = [entry['name'] for entry in listing.json()]
+    assert 'asymmetric.stl' in names
+    assert 'make_fixture.py' not in names  # only meshes are offered
+
+    mesh = client.get('/api/v1/examples/asymmetric.stl')
+    assert mesh.status_code == 200 and len(mesh.content) > 84
+
+    assert client.get('/api/v1/examples/make_fixture.py').status_code == 404
+    assert client.get('/api/v1/examples/..%2Fpyproject.toml').status_code == 404
+
+
+def _heat_colours(path):
+    import trimesh
+    mesh = trimesh.load(str(path), force='mesh')
+    return mesh.vertices, mesh.visual.vertex_colors[:, :3].astype(int)
+
+
+def test_heatmap_colours_missing_red_and_extra_blue(tmp_path):
+    import trimesh
+    from aida.api.heatmap import build_heatmap
+
+    reference = tmp_path / 'reference.stl'
+    trimesh.creation.box((60, 40, 6)).export(str(reference))
+
+    short = tmp_path / 'short.stl'  # CAD 10 mm too short in x: missing material at the ends
+    trimesh.creation.box((50, 40, 6)).export(str(short))
+    scale = build_heatmap(reference, [short], tmp_path / 'short.glb')
+    assert scale['threshold'] > 0 and scale['range'] >= 4 * scale['threshold']
+    vertices, colours = _heat_colours(tmp_path / 'short.glb')
+    ends = abs(vertices[:, 0]) > 29.9
+    assert (colours[ends, 0] > colours[ends, 2]).all()      # red at the uncovered ends
+
+    long = tmp_path / 'long.stl'  # CAD 10 mm too long: the reference ends sit inside it
+    trimesh.creation.box((70, 40, 6)).export(str(long))
+    build_heatmap(reference, [long], tmp_path / 'long.glb')
+    vertices, colours = _heat_colours(tmp_path / 'long.glb')
+    # Inside of the end faces (their rims touch the CAD's side faces, distance 0, white).
+    ends = (abs(vertices[:, 0]) > 29.9) & (abs(vertices[:, 1]) < 19) & (abs(vertices[:, 2]) < 2.5)
+    assert ends.any() and (colours[ends, 2] > colours[ends, 0]).all()  # blue: CAD has extra material
+
+
+async def test_snapshot_hook_publishes_heatmap_after_mesh(tmp_path):
+    import trimesh
+    from aida.api.cad_sessions import CadSession
+
+    session = CadSession(FakeArtifacts(tmp_path), 'prompt', 'mm')
+    trimesh.creation.box((60, 40, 6)).export(str(tmp_path / 'reference.stl'))
+    cad = FakeCad(tmp_path, {'reference_mesh': {}, 'generated_cad': {}})
+    await snapshot_hook(cad, session)()
+
+    types = [e['type'] for e in session.events]
+    assert types.index('mesh') < types.index('heatmap')
+    heat = next(e for e in session.events if e['type'] == 'heatmap')
+    assert heat['revision'] == 0 and heat['url'].endswith('/heatmap.glb?rev=0')
+    assert session.meshes[0]['heatmap_path'].is_file()
+
+
+def test_heatmap_route_404_without_heatmap(client, tmp_path):
+    session_id = start_session(client, tmp_path)['session_id']
+    assert client.get(f'/api/v1/cad-sessions/{session_id}/heatmap.glb?rev=0').status_code == 404
+
+
+def test_real_agent_needs_api_key(tmp_path, monkeypatch):
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    monkeypatch.setattr(server, 'cad_manager', CadSessionManager(tmp_path / 'cad'))  # real runner
+    with TestClient(server.app) as test_client:
+        response = test_client.post('/api/v1/cad-sessions',
+                                    files=[('mesh', ('box.stl', mesh_bytes(), 'model/stl'))],
+                                    data={'prompt': 'Build a plate'})
+    assert response.status_code == 400
+    assert 'ANTHROPIC_API_KEY' in response.json()['detail']
+
+
+def test_env_loads_from_repo_root_when_started_elsewhere(tmp_path, monkeypatch):
+    from aida import config
+
+    root = tmp_path / 'repo'
+    root.mkdir()
+    (root / '.env').write_text('AIDA_TEST_ROOT_ENV=from-root\n')
+    elsewhere = tmp_path / 'frontend'
+    elsewhere.mkdir()
+    monkeypatch.setattr(config, 'REPO_ROOT', root)
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.delenv('AIDA_TEST_ROOT_ENV', raising=False)
+    config.load_local_env()
+    import os
+    assert os.environ['AIDA_TEST_ROOT_ENV'] == 'from-root'
+    monkeypatch.delenv('AIDA_TEST_ROOT_ENV')
+
+
+def test_interrupt_needs_a_running_agent(client, tmp_path):
+    session_id = start_session(client, tmp_path)['session_id']
+    assert client.post(f'/api/v1/cad-sessions/{session_id}/interrupt').status_code == 409
+
+    calls = []
+
+    class Client:
+        async def interrupt(self):
+            calls.append('interrupt')
+
+    server.cad_manager.get(session_id).client = Client()
+    response = client.post(f'/api/v1/cad-sessions/{session_id}/interrupt')
+    assert response.status_code == 202 and calls == ['interrupt']
+    session = server.cad_manager.get(session_id)
+    assert any(e['type'] == 'interrupted' for e in session.events)
+
+
+def test_downloads(client, tmp_path):
+    import trimesh
+
+    session_id = start_session(client, tmp_path)['session_id']
+    session = server.cad_manager.get(session_id)
+    url = f'/api/v1/cad-sessions/{session_id}/download'
+    assert client.get(f'{url}/model.py').status_code == 404
+    assert client.get(f'{url}/stl').status_code == 404
+    assert client.get(f'{url}/zip').status_code == 404
+
+    (session.artifacts.root / 'model.py').write_text('class P:\n    width = 60\n')
+    script = client.get(f'{url}/model.py')
+    assert script.status_code == 200 and 'width = 60' in script.text
+
+    # A generated revision with its snapshot STL parts.
+    revision = len(session.meshes)
+    trimesh.creation.box((10, 10, 10)).export(str(session.artifacts.root / f'mesh-{revision:03d}-0.stl'))
+    session.meshes.append({'revision': revision, 'generated': True, 'path': session.artifacts.root / 'x.glb'})
+    stl = client.get(f'{url}/stl')
+    assert stl.status_code == 200 and len(stl.content) > 84
+
+    # STEP needs the live CAD engine.
+    assert client.get(f'{url}/step').status_code == 409
+
+    class Cad:
+        broken = False
+
+        async def call(self, name, args):
+            assert name == 'export' and args['format'] == 'step'
+            (session.artifacts.root / args['filename']).write_text('ISO-10303-21;')
+            return {'content': [{'type': 'text', 'text': 'ok'}]}
+
+    session.cad = Cad()
+    step = client.get(f'{url}/step')
+    assert step.status_code == 200 and step.text.startswith('ISO-10303-21')
+
+
+def test_no_warm_engine_with_a_test_runner(tmp_path):
+    manager = CadSessionManager(tmp_path, runner=lambda session: None)
+    manager.prewarm()  # no running loop needed: test runners never start a CAD engine
+    assert manager.take_warm() is None
+
+
+def test_finished_session_can_be_replayed(client, tmp_path):
+    started = start_session(client, tmp_path, prompt='Build a plate')
+    session_id = started['session_id']
+    wait_for_status(client, session_id, wanted=('running', 'done'))
+    client.post(f'/api/v1/cad-sessions/{session_id}/close')
+    wait_for_status(client, session_id)
+    folder = server.cad_manager.get(session_id).artifacts.root.name
+
+    listing = client.get('/api/v1/replays/index.json').json()
+    entry = next(r for r in listing if r['id'] == folder)
+    assert entry['prompt'] == 'Build a plate' and entry['events'] > 3
+
+    events = client.get(f'/api/v1/replays/{folder}/events.json').json()
+    assert events[0]['type'] in ('stage', 'user_prompt')
+    assert any(e['type'] == 'user_prompt' and e['text'] == 'Build a plate' for e in events)
+    reference = next(e for e in events if e['type'] == 'mesh' and e['revision'] == 0)
+    assert reference['url'] == f'/api/v1/replays/{folder}/files/mesh-000.glb'
+    glb = client.get(reference['url'])
+    assert glb.status_code == 200 and glb.content[:4] == b'glTF'
+
+    assert client.get('/api/v1/replays/nope/events.json').status_code == 404
+    assert client.get(f'/api/v1/replays/{folder}/files/..%2F..%2Fpyproject.toml').status_code == 404
+    assert client.get('/api/v1/replays/..%2F..%2F/events.json').status_code == 404

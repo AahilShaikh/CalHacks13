@@ -169,9 +169,52 @@ ChArUco photo alone. Without one the job fails with a clear error instead of
 returning wrong millimeter dimensions. Job artifacts are stored under
 `artifacts/scans/` (`AIDA_SCAN_STORAGE` overrides).
 
-## Web viewer (live CAD sessions)
+## Web UI (Aida CAD Studio)
 
-`uv run aida-api` also serves the web viewer at `http://127.0.0.1:8000/`. Upload a
+The UI is a React app in `frontend/` (Vite, TypeScript, Tailwind, @react-three/fiber), designed in
+Figma first. The design is the "Aida CAD Studio UI" Figma file, and `docs/STAGE_LOG.md` records how
+it went from Figma to code. Layout: a 3D viewer showing the reference mesh and the generated CAD,
+plus a right panel with the accuracy chart, the agent's tool calls, the model's features and the
+prompt box. While the agent inspects the mesh, the viewer mirrors it: slice planes appear where it
+cuts, and the camera flies to the exact view each `view_mesh` call rendered ("Following agent";
+drag to look around yourself). Clicking a tool card marked 3D replays that step's view.
+The Model tab shows the parametric model live (from `model_state` events sent after every
+`model_*` call): each parameter with its source (measured / estimated / assumed) and evidence,
+features in build order with the deviation trend each one caused, and the revision history.
+Heatmap mode colours the scan by signed distance to the shown CAD revision, with the same
+blue-white-red scale as `compare_to_mesh` (red: CAD is missing material, blue: CAD has extra).
+The API computes one per revision after publishing its mesh and serves it at
+`/api/v1/cad-sessions/{id}/heatmap.glb?rev=N`.
+
+Controls: pick the mesh units next to the prompt box (default mm), **Stop** interrupts the agent's
+current turn (`POST /api/v1/cad-sessions/{id}/interrupt`; the session stays open), and
+**Download** in the top bar saves STEP (exported by the live CAD engine, validation-gated), STL
+or the parametric `model.py` (`GET /api/v1/cad-sessions/{id}/download/{step|stl|model.py}`).
+The server keeps one CAD engine started and health-checked in the background, so a new session
+is ready in about 2 s instead of ~13 s; set `AIDA_PREWARM=0` to turn that off.
+
+Replays: every session records what the UI received in `ui-events.jsonl` in its artifacts
+folder. The empty state lists past runs under "Watch a past run", and `/?replay=<folder>` opens
+one directly. Replays play back at 1–10× with long pauses shortened, need no API key or CAD
+engine, and keep working after a server restart (`/api/v1/replays/index.json`,
+`/api/v1/replays/{folder}/events.json`, `/api/v1/replays/{folder}/files/{name}`). Record a good
+run before a demo and replay it if the network or API misbehaves.
+
+```powershell
+cd frontend
+npm install
+npm run dev        # http://localhost:5173, forwards /api to the API on :8000
+npm run build      # writes frontend/dist; `uv run aida-api` then serves it at /
+```
+
+Run `uv run aida-api` alongside `npm run dev`. Once `frontend/dist` exists, the API serves the
+React app at `/` and the older single-file viewer below at `/legacy`. `GET /api/v1/examples`
+lists the sample meshes in `examples/` for the empty state's "Try the example part" button.
+
+## Legacy web viewer (live CAD sessions)
+
+`uv run aida-api` also serves the web viewer at `http://127.0.0.1:8000/` (`/legacy` once the React
+app is built). Upload a
 reference mesh (`.stl`/`.glb`/`.obj`/`.ply`), optional reference photos, and a
 prompt to start a live CAD session. The UI streams agent text, build123d
 snippets, tool activity and renders over SSE, and rebuilds its 3D preview after
