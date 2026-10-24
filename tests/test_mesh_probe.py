@@ -146,3 +146,13 @@ def test_euler_roundtrip_matches_build123d():
         p = (loc * Location(Vector(*axis))).position
         columns.append([p.X, p.Y, p.Z])
     assert euler_xyz(np.array(columns).T) == pytest.approx(angles, abs=1e-6)
+
+
+def test_sparse_rectangle_is_not_a_circle():
+    # A rectangle traced with a few extra points near its corners: all vertices sit close to one
+    # circle, so the edges must be checked too.
+    loop = np.array([(0, 0), (0.04, 0), (5, 0), (5, 19.86), (5, 20), (0.04, 20), (0, 20), (0, 19.9)])
+    fit = fit_loop(loop, 0.135)
+    assert fit['type'] == 'rectangle'
+    assert (fit['width'], fit['height']) == pytest.approx((5, 20)) or \
+        (fit['width'], fit['height']) == pytest.approx((20, 5))

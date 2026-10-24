@@ -19,6 +19,8 @@ from .cad import failed, text_of
 OBJECT = 'generated_cad'
 SOURCES = ('measured', 'estimated', 'assumed')
 INDENT = '    '
+# Literals that are arithmetic, not dimensions (halving a diameter, doubling a depth).
+PLAIN_NUMBERS = {0, 1, 2, 0.5}
 
 
 class ModelError(ValueError):
@@ -37,6 +39,9 @@ def _check_name(name):
 
 
 def _param_entry(name, raw, previous=None):
+    if previous is None and not (isinstance(raw, dict) and raw.get('source') in SOURCES):
+        raise ModelError(f'New parameter {name} needs {{value, source, evidence}}; source is one of '
+                         f'{SOURCES}. A bare value only updates an existing parameter.')
     entry = dict(previous or {'source': 'assumed', 'evidence': '', 'measured': None, 'note': ''})
     if isinstance(raw, dict):
         unknown = set(raw) - {'value', 'source', 'evidence', 'measured', 'note'}
@@ -83,6 +88,13 @@ def check_feature_code(code, first):
             assigns_part = True
     if first and not assigns_part:
         raise ModelError('The first feature must assign part (for example part = extrude(...))')
+    literals = sorted({node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+                       and isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+                       and node.value not in PLAIN_NUMBERS})
+    if literals:
+        shown = ', '.join(f'{v:g}' for v in literals[:12])
+        raise ModelError(f'Feature hard-codes numbers ({shown}). Record each dimension, angle or count '
+                         'with model_set_params and use P.name in the code, so the model stays parametric.')
     used = sorted({n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
                    and isinstance(n.value, ast.Name) and n.value.id == 'P'})
     return code.rstrip('\n'), used
@@ -166,11 +178,11 @@ class ParametricModel:
     # ---------------------------------------------------------- persistence
 
     def _save(self, script):
-        (self.artifacts.root / 'model.py').write_text(script)
-        (self.artifacts.root / 'model.json').write_text(json.dumps(self.state, indent=2))
+        (self.artifacts.root / 'model.py').write_text(script, encoding='utf-8')
+        (self.artifacts.root / 'model.json').write_text(json.dumps(self.state, indent=2), encoding='utf-8')
         history = self.artifacts.root / 'model-history'
         history.mkdir(exist_ok=True)
-        (history / f"model-r{self.state['revision']:03}.py").write_text(script)
+        (history / f"model-r{self.state['revision']:03}.py").write_text(script, encoding='utf-8')
 
     # ---------------------------------------------------------- building
 
@@ -278,6 +290,8 @@ class ParametricModel:
     async def add_feature(self, name, code, evidence='', before=None, verify=True):
         if not isinstance(name, str) or not name.strip():
             raise ModelError('Give the feature a short name')
+        if not isinstance(evidence, str) or not evidence.strip():
+            raise ModelError('Give evidence: which slice, series, frame or view this feature comes from')
         features = self.state['features']
         code, used = check_feature_code(code, first=not features or (before is not None and before == features[0]['id']))
         missing = sorted(set(used) - set(self.state['params']))
@@ -403,5 +417,5 @@ class ParametricModel:
             lines.append(f"| {entry['revision']} | {entry['action']} | {p95} | {within} | {entry['trend']} |")
         lines += ['', 'The model script is model.py in this session folder.', '']
         text = '\n'.join(lines)
-        (self.artifacts.root / 'report.md').write_text(text)
+        (self.artifacts.root / 'report.md').write_text(text, encoding='utf-8')
         return text

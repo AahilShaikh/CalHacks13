@@ -25,12 +25,12 @@ class Artifacts:
             if isinstance(item, list):
                 return [redact(v) for v in item]
             return item
-        with (self.root / 'events.jsonl').open('a') as out:
+        with (self.root / 'events.jsonl').open('a', encoding='utf-8') as out:
             out.write(json.dumps({'event': event, 'value': redact(value)}, default=str) + '\n')
 
     def save_code(self, code: str):
         self.counter += 1
-        (self.root / f'code-{self.counter:03}.py').write_text(code)
+        (self.root / f'code-{self.counter:03}.py').write_text(code, encoding='utf-8')
 
     def copy_mesh(self, source: Path) -> Path:
         target = self.root / 'reference.stl'

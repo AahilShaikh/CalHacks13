@@ -14,6 +14,19 @@ from .model_tools import SCHEMAS as MODEL_SCHEMAS, model_tools
 
 MESH_TOOLS = {'view_mesh', 'slice_mesh', 'slice_series', 'compare_to_mesh', 'mesh_frame'}
 MODEL_TOOLS = set(MODEL_SCHEMAS)
+DEFAULT_MAX_TURNS = 100
+
+
+def resolve_max_turns(value=None):
+    """Turn budget per request: explicit value, then AIDA_MAX_TURNS, then the default."""
+    raw = value if value is not None else os.getenv('AIDA_MAX_TURNS') or DEFAULT_MAX_TURNS
+    try:
+        turns = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f'max turns must be a whole number, not {raw!r}') from None
+    if not 1 <= turns <= 1000:
+        raise ValueError('max turns must be between 1 and 1000')
+    return turns
 
 
 def make_tools(cad, artifacts):
@@ -63,7 +76,7 @@ def make_tools(cad, artifacts):
     return tools
 
 
-def options_for(cad, artifacts, units=None):
+def options_for(cad, artifacts, units=None, max_turns=None):
     server = create_sdk_mcp_server(name='aida', version='0.1.0', tools=make_tools(cad, artifacts))
     names = [f'mcp__aida__{name}' for name in sorted(EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image'})]
     prompt = f'''You are Aida, a CAD assistant. Use your CAD tools to inspect meshes and build CAD.
@@ -85,8 +98,8 @@ Inspecting the reference mesh:
 - render_view still renders generated CAD; render reference_mesh with view_mesh instead.
 
 Building CAD from the mesh, always through the parametric model:
-- Record every dimension with model_set_params, with source (measured / estimated / assumed) and
-  evidence naming the tool result. If you round a measured value to a nominal one, keep the raw
+- Record every dimension, angle and count with model_set_params first, with source (measured /
+  estimated / assumed) and evidence naming the tool result; feature code may not hard-code numbers. If you round a measured value to a nominal one, keep the raw
   number in measured.
 - Add features one at a time with model_add_feature: code runs inside build(), reads P.name and
   updates part. Order them like a machinist would: base body from the dominant section, then
@@ -116,7 +129,7 @@ Only the supplied CAD and image tools are available. Do not attempt shell or fil
         system_prompt=prompt, tools=[], allowed_tools=names,
         mcp_servers={'aida': server}, setting_sources=[], strict_mcp_config=True,
         permission_mode='dontAsk',
-        max_turns=30, cwd=str(artifacts.root),
+        max_turns=resolve_max_turns(max_turns), cwd=str(artifacts.root),
         env={'MCP_TOOL_TIMEOUT': '180000',
              'CLAUDE_CONFIG_DIR': str(artifacts.root / 'claude-runtime')},
     )
@@ -136,13 +149,21 @@ async def run_turn(client, prompt, artifacts):
                     print(f'  [agent tool] {block.name}', flush=True)
         elif isinstance(message, ResultMessage):
             final = message
-            if message.is_error:
+            summary = {'turns': message.num_turns, 'cost_usd': message.total_cost_usd,
+                       'duration_s': round(message.duration_ms / 1000, 1), 'subtype': message.subtype}
+            artifacts.log('turn_summary', summary)
+            cost = f', ${message.total_cost_usd:.2f}' if message.total_cost_usd is not None else ''
+            print(f'  [done] {message.num_turns} agent turns, {summary["duration_s"]}s{cost}', flush=True)
+            if message.subtype == 'error_max_turns':
+                print('Agent reached its turn limit before finishing. Ask it to continue, or restart with '
+                      f'a higher --max-turns. Artifacts preserved at {artifacts.root}')
+            elif message.is_error:
                 print(f'Agent stopped: {message.subtype}. Artifacts preserved at {artifacts.root}')
     return final
 
 
-async def chat(cad, artifacts, units=None, initial_prompt=None):
-    async with ClaudeSDKClient(options=options_for(cad, artifacts, units)) as client:
+async def chat(cad, artifacts, units=None, initial_prompt=None, max_turns=None):
+    async with ClaudeSDKClient(options=options_for(cad, artifacts, units, max_turns)) as client:
         if initial_prompt:
             result = await run_turn(client, initial_prompt, artifacts)
             if result is None or result.is_error:

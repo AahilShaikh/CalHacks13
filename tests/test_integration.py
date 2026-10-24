@@ -111,15 +111,19 @@ async def test_parametric_model_in_live_session(tmp_path):
     async with open_cad(artifacts, 'mm') as cad:
         await cad.startup(mesh)
         model = ParametricModel(cad, artifacts)
-        await model.set_params({'width': 60, 'depth': 40, 'thickness': 6,
-                                'hole_x': 15, 'hole_y': 5, 'hole_d': 8})
-        first = await model.add_feature('base plate', 'part = Box(P.width, P.depth, P.thickness)')
+        values = {'width': 60, 'depth': 40, 'thickness': 6, 'hole_x': 15, 'hole_y': 5, 'hole_d': 8}
+        await model.set_params({name: {'value': value, 'source': 'measured', 'evidence': 'test'}
+                                for name, value in values.items()})
+        first = await model.add_feature('base plate', 'part = Box(P.width, P.depth, P.thickness)',
+                                        evidence='test')
         assert first['deviation']['verdict'] == 'deviates'
         second = await model.add_feature(
-            'hole', 'part -= Pos(P.hole_x, P.hole_y, 0) * Cylinder(P.hole_d / 2, P.thickness * 2)')
+            'hole', 'part -= Pos(P.hole_x, P.hole_y, 0) * Cylinder(P.hole_d / 2, P.thickness * 2)',
+            evidence='test')
         assert second['trend'] == 'better' and second['deviation']['verdict'] == 'within_threshold'
         with pytest.raises(ModelError, match=r'F3 \(bad fillet\)'):
-            await model.add_feature('bad fillet', 'part = part.fillet(50, part.edges())')
+            await model.add_feature('bad fillet', 'part = part.fillet(P.width, part.edges())',
+                                    evidence='test')
         worse = await model.set_params({'hole_x': 20})
         assert worse['trend'] == 'worse'
         await model.undo()

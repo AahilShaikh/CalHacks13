@@ -39,7 +39,7 @@ Example requests:
 1. “View the reference mesh from the top and isometric directions. Describe the visible features.”
 2. “Create a 60 x 40 x 6 mm plate with two 5 mm through holes 40 mm apart. Name it generated_cad and inspect its render.”
 3. “Change the plate thickness to 8 mm, preserve the holes, validate, and export plate.step and plate.stl.”
-4. “Run a slice series along Z, slice the reference between each change, and rebuild it parametrically.”
+4. “Reconstruct reference_mesh as parametric CAD, verify it against the mesh, and finish with model_report.”
 
 ### Mesh inspection tools
 
@@ -106,7 +106,10 @@ To try the tools without Claude:
 
 Use `/quit`, EOF, or Ctrl-C to exit. `--prompt "..."` runs a single paid request.
 Each launch starts a new conversation and CAD session; follow-ups within that
-launch retain both. A turn is limited to 30 SDK turns and a CAD call to 180 seconds.
+launch retain both. A request may use up to 100 agent turns (`--max-turns` or
+`AIDA_MAX_TURNS` changes this) and a CAD call 180 seconds. After each request Aida prints
+the turns used, the time taken and the API cost. If the turn limit is reached, ask it to
+continue.
 A timed-out CAD session must be restarted because its state is uncertain.
 
 ## Scan pipeline (images to metric mesh)

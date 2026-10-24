@@ -72,12 +72,17 @@ def model(tmp_path, plate_stl):
     return ParametricModel(LocalCad(plate_stl, tmp_path), artifacts)
 
 
+def measured(value):
+    return {'value': value, 'source': 'measured', 'evidence': 'test slice'}
+
+
 async def build_plate(model, hole_x=15):
     await model.set_params({'width': {'value': 60, 'source': 'measured', 'evidence': 'slice z=1 L0',
                                       'measured': 60.002},
-                            'depth': 40, 'thickness': 6}, verify=False)
+                            'depth': measured(40), 'thickness': measured(6)}, verify=False)
     await model.add_feature('base plate', BASE, evidence='slice z=1 L0 rectangle')
-    await model.set_params({'hole_x': hole_x, 'hole_y': 5, 'hole_d': 8}, verify=False)
+    await model.set_params({'hole_x': measured(hole_x), 'hole_y': measured(5), 'hole_d': measured(8)},
+                           verify=False)
     return await model.add_feature('hole', HOLE, evidence='slice z=1 L1 circle')
 
 
@@ -98,7 +103,8 @@ async def test_failed_build_rolls_back_and_names_feature(model):
     await build_plate(model)
     before = json.dumps(model.state)
     with pytest.raises(ModelError, match=r'in F3 \(broken\).*NameError'):
-        await model.add_feature('broken', 'part -= Pos(0, 0, 0) * Cylinder(no_such_value, 10)')
+        await model.add_feature('broken', 'part -= Pos(0, 0, 0) * Cylinder(no_such_value, P.thickness)',
+                                evidence='test')
     assert json.dumps(model.state) == before
     with pytest.raises(ModelError, match=r'in F1 \(base plate\)'):
         await model.set_params({'thickness': -1})  # Box rejects a negative size
@@ -108,19 +114,22 @@ async def test_failed_build_rolls_back_and_names_feature(model):
 @pytest.mark.parametrize('code, message', [
     ('show(part, "x")', 'show'), ('import os', 'import'), ('return part', 'return'),
     ('part -= Box(1, 1, P.missing)', 'undefined parameters'), ('part = (', 'syntax error'),
+    ('part -= Pos(15, 5, 0) * Cylinder(4, 12)', r'hard-codes numbers \(4, 5, 12, 15\)'),
 ])
 async def test_feature_code_checks(model, code, message):
     await build_plate(model)
     calls = len(model.cad.calls)
     with pytest.raises(ModelError, match=message):
-        await model.add_feature('bad', code)
+        await model.add_feature('bad', code, evidence='test')
     assert len(model.cad.calls) == calls  # rejected before reaching the CAD session
 
 
 async def test_first_feature_must_create_part(model):
-    await model.set_params({'width': 60}, verify=False)
+    with pytest.raises(ModelError, match='needs'):
+        await model.set_params({'width': 60})
+    await model.set_params({'width': measured(60)}, verify=False)
     with pytest.raises(ModelError, match='first feature must assign part'):
-        await model.add_feature('helper', 'size = P.width * 2')
+        await model.add_feature('helper', 'size = P.width * 2', evidence='test')
 
 
 async def test_worse_change_then_undo(model):
@@ -178,3 +187,9 @@ def test_script_spans_and_trend():
     assert trend(base, {**base, 'p95': 3.0}) == 'worse'
     assert trend(base, {**base, 'share_within': 0.9, 'p95': 3.0}) == 'mixed'
     assert trend(base, dict(base)) == 'same'
+
+
+async def test_feature_needs_evidence(model):
+    await build_plate(model)
+    with pytest.raises(ModelError, match='evidence'):
+        await model.add_feature('chamfer', 'part = part', evidence=' ')

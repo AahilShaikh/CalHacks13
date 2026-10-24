@@ -25,8 +25,9 @@ SCHEMAS = {
         'type': 'object',
         'properties': {
             'params': {'type': 'object', 'additionalProperties': _PARAM_VALUE,
-                       'description': 'name: value, or name: {value, source, evidence, measured, note}. '
-                                      'Updating only metadata keeps the value.'},
+                       'description': 'name: {value, source, evidence, measured, note}. New parameters '
+                                      'need a source; a bare value only updates an existing one, and '
+                                      'updating only metadata keeps the value.'},
             'remove': {'type': 'array', 'items': {'type': 'string'}},
             'placement': {'type': ['string', 'null'],
                           'description': 'build123d Location expression applied to the finished part '
@@ -38,13 +39,14 @@ SCHEMAS = {
         'type': 'object',
         'properties': {
             'name': {'type': 'string', 'description': 'Short feature name, e.g. base plate, mounting holes.'},
-            'code': {'type': 'string', 'description': 'build123d code run inside build(). Read parameters '
-                                                      'as P.name and update part (part = ..., part -= ...).'},
+            'code': {'type': 'string', 'description': 'build123d code run inside build(). Read every dimension '
+                                                      'as P.name (no numeric literals except 0, 1, 2, 0.5) and '
+                                                      'update part (part = ..., part -= ...).'},
             'evidence': {'type': 'string', 'description': 'Which slices/views this feature comes from.'},
             'before': {'type': 'string', 'description': 'Insert before this feature id instead of appending.'},
             'verify': _VERIFY,
         },
-        'required': ['name', 'code'],
+        'required': ['name', 'code', 'evidence'],
     },
     'model_edit_feature': {
         'type': 'object',

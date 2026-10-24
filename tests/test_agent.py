@@ -39,7 +39,7 @@ def test_runtime_restricted(tmp_path):
     assert opts.setting_sources == []
     assert opts.strict_mcp_config
     assert opts.permission_mode == 'dontAsk'
-    assert opts.max_turns == 30
+    assert opts.max_turns == 100
     assert set(opts.mcp_servers) == {'aida'}
     assert set(opts.allowed_tools) == {f'mcp__aida__{n}' for n in EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image'}}
 
@@ -77,3 +77,17 @@ async def test_model_tools_registered(tmp_path):
     assert status['is_error'] is False and 'class P' in status['content'][0]['text']
     undo = await tools['model_undo'].handler({})
     assert undo['is_error'] is True and 'Nothing to undo' in undo['content'][0]['text']
+
+
+def test_max_turns_configuration(tmp_path, monkeypatch):
+    import pytest
+    from aida.agent import resolve_max_turns
+    monkeypatch.delenv('AIDA_MAX_TURNS', raising=False)
+    assert resolve_max_turns() == 100
+    monkeypatch.setenv('AIDA_MAX_TURNS', '150')
+    assert resolve_max_turns() == 150
+    assert resolve_max_turns(40) == 40
+    assert options_for(FakeCad(), Artifacts(tmp_path), max_turns=60).max_turns == 60
+    for bad in ('lots', 0, 5000):
+        with pytest.raises(ValueError):
+            resolve_max_turns(bad)

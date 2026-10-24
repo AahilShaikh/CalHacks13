@@ -19,6 +19,7 @@ def parser():
     result.add_argument('--artifacts', type=Path, default=Path('artifacts'), help='Session output parent')
     result.add_argument('--check', action='store_true', help='Check CAD and render the mesh without calling Claude')
     result.add_argument('--prompt', help='Run one request and exit (uses Claude API credits)')
+    result.add_argument('--max-turns', type=int, help='Agent turns per request (default 100, or AIDA_MAX_TURNS)')
     return result
 
 
@@ -37,10 +38,16 @@ async def run(args):
             print('CAD startup, STL import, and mesh rendering passed.')
         else:
             from .agent import chat
-            await chat(cad, artifacts, args.units, args.prompt)
+            await chat(cad, artifacts, args.units, args.prompt, args.max_turns)
 
 
 def main():
+    # Agent text often has symbols (minus signs, diameter marks) a Windows code page cannot encode.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
     load_local_env()
     if sys.argv[1:2] == ['scan']:
         from .scan.cli import main as scan_main
@@ -49,6 +56,8 @@ def main():
     args = argparser.parse_args()
     if not args.mesh.is_file() or args.mesh.suffix.lower() != '.stl':
         argparser.error('--mesh must name an existing .stl file')
+    if args.max_turns is not None and not 1 <= args.max_turns <= 1000:
+        argparser.error('--max-turns must be between 1 and 1000')
     if not args.check and not os.getenv('ANTHROPIC_API_KEY'):
         argparser.error('Set ANTHROPIC_API_KEY in .env or your environment, or use --check for a local test')
     try:

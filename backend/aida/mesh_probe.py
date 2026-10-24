@@ -228,10 +228,26 @@ def rounded_rect_deviation(points, center, width, height, angle, radius):
 
 # ---------------------------------------------------------------- fitting
 
+def densify(points, count=300):
+    """Resample a closed loop so long edges carry points (about ``count`` extra in total)."""
+    closed = np.vstack([points, points[:1]])
+    lengths = np.linalg.norm(np.diff(closed, axis=0), axis=1)
+    step = max(lengths.sum() / count, 1e-12)
+    out = []
+    for start, end, length in zip(closed[:-1], closed[1:], lengths):
+        pieces = max(1, int(math.ceil(length / step)))
+        out.append(start + np.outer(np.arange(pieces) / pieces, end - start))
+    return np.vstack(out)
+
+
 def fit_loop(points, tol):
     """Best CAD primitive for one closed loop, simplest first."""
     area = abs(signed_area(points))
-    if len(points) >= 6:
+    vertex_count = len(points)
+    # Test fits against the whole outline, not only its vertices: the corners of any
+    # rectangle lie on one circle, so a vertex-only check would call it a circle.
+    points = densify(points)
+    if vertex_count >= 6:
         center, radius, residual = fit_circle(points)
         if residual <= tol and radius > tol:
             return {'type': 'circle', 'center': center.tolist(), 'radius': radius,
