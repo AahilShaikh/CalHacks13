@@ -1,7 +1,8 @@
 import { Bounds, GizmoHelper, GizmoViewport, OrbitControls, useBounds } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { Suspense, useEffect, useRef } from 'react';
-import { generatedRevisions, referenceRevision, useStore } from '../../store';
+import { activeTool, generatedRevisions, referenceRevision, useStore } from '../../store';
+import { AgentCamera, AgentPlanes } from './AgentFocus';
 import { GlbModel, StlPreview } from './Models';
 
 /** Re-frame the camera when the reference geometry changes (not on every CAD revision). */
@@ -18,6 +19,11 @@ function Models() {
   const shownRevision = useStore((s) => s.shownRevision);
   const viewMode = useStore((s) => s.viewMode);
   const preview = useStore((s) => s.meshPreviewUrl);
+  // Show the scan as a ghost while a slice plane is up, so the plane reads through it.
+  const slicing = useStore((s) => {
+    const view = activeTool(s)?.view;
+    return Boolean(view?.slice || view?.series);
+  });
 
   const reference = referenceRevision(revisions);
   const generated = generatedRevisions(revisions);
@@ -33,12 +39,14 @@ function Models() {
   const gap = side ? (reference.extents[0] || 1) * 0.65 : 0;
 
   return (
-    // CAD and STL are Z-up; three.js is Y-up.
+    <>
+    <AgentCamera x={-gap} />
+    {/* CAD and STL are Z-up; three.js is Y-up. */}
     <group rotation={[-Math.PI / 2, 0, 0]}>
       <Bounds fit clip observe margin={1.7} maxDuration={0.6}>
         {reference ? (
           <Suspense fallback={null}>
-            <GlbModel url={reference.url} look={shown && !side ? 'ghost' : 'solid'} x={-gap} />
+            <GlbModel url={reference.url} look={(shown && !side) || slicing ? 'ghost' : 'solid'} x={-gap} />
             <Refit token={`${reference.url}|${side ? 'side' : 'single'}`} />
           </Suspense>
         ) : (
@@ -55,7 +63,14 @@ function Models() {
           </Suspense>
         )}
       </Bounds>
+      {/* Outside Bounds so slice planes never change the auto-framing. */}
+      {reference && (
+        <Suspense fallback={null}>
+          <AgentPlanes referenceUrl={reference.url} x={-gap} />
+        </Suspense>
+      )}
     </group>
+    </>
   );
 }
 

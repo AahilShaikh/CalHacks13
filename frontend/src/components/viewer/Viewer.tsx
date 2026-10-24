@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchExample, listExamples } from '../../lib/api';
 import { isMeshFile, useStore } from '../../store';
-import { Legend, RevisionScrubber, ViewModeToggle } from './Controls';
+import { FollowControl, Legend, RevisionScrubber, ViewModeToggle } from './Controls';
 import { Scene } from './Scene';
 
 /** Figma: "Viewer" in Screen / 1 Empty (7:7) and Screen / 2 Running (7:58). */
@@ -47,7 +47,10 @@ export function Viewer() {
 
       <div className="pointer-events-none absolute inset-x-4 top-4 flex items-start justify-between gap-4">
         <div className="pointer-events-auto">{hasCad && <ViewModeToggle />}</div>
-        <div className="pointer-events-auto">{hasCad && <Legend />}</div>
+        <div className="pointer-events-auto flex flex-wrap items-start justify-end gap-2">
+          {hasSession && <FollowControl />}
+          {hasCad && <Legend />}
+        </div>
       </div>
       <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center">
         <div className="pointer-events-auto contents">

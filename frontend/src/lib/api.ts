@@ -43,24 +43,31 @@ export function subscribe(sessionId: string, onEvents: (events: ServerEvent[]) =
   const source = new EventSource(`/api/v1/cad-sessions/${sessionId}/events`);
   let buffer: ServerEvent[] = [];
   let frame = 0;
+  let timer = 0;
   let lastSeq = 0;
+  const flush = () => {
+    cancelAnimationFrame(frame);
+    clearTimeout(timer);
+    frame = timer = 0;
+    const batch = buffer;
+    buffer = [];
+    if (batch.length) onEvents(batch);
+  };
   source.onmessage = (message) => {
     const event = JSON.parse(message.data) as ServerEvent;
     if (event.seq <= lastSeq) return; // replayed after a reconnect
     lastSeq = event.seq;
     buffer.push(event);
     if (!frame) {
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        const batch = buffer;
-        buffer = [];
-        onEvents(batch);
-      });
+      frame = requestAnimationFrame(flush);
+      // Background tabs pause animation frames; the timer keeps state current anyway.
+      timer = window.setTimeout(flush, 150);
     }
   };
   source.onerror = onError;
   return () => {
     cancelAnimationFrame(frame);
+    clearTimeout(timer);
     source.close();
   };
 }

@@ -159,7 +159,9 @@ The UI is a React app in `frontend/` (Vite, TypeScript, Tailwind, @react-three/f
 Figma first. The design is the "Aida CAD Studio UI" Figma file, and `docs/STAGE_LOG.md` records how
 it went from Figma to code. Layout: a 3D viewer showing the reference mesh and the generated CAD,
 plus a right panel with the accuracy chart, the agent's tool calls, the model's features and the
-prompt box.
+prompt box. While the agent inspects the mesh, the viewer mirrors it: slice planes appear where it
+cuts, and the camera flies to the exact view each `view_mesh` call rendered ("Following agent";
+drag to look around yourself). Clicking a tool card marked 3D replays that step's view.
 
 ```powershell
 cd frontend

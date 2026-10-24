@@ -6,6 +6,8 @@ import {
   featuresFrom,
   phaseOf,
   resultSummary,
+  viewOf,
+  type AgentView,
   type Deviation,
   type Phase,
   type ServerEvent,
@@ -25,6 +27,8 @@ export type ToolItem = {
   endedAt?: number;
   image?: string;
   code?: string;
+  /** What this call looked at, for the 3D viewer (slice planes, camera). */
+  view?: AgentView;
 };
 
 export type FeedItem =
@@ -67,6 +71,9 @@ type State = {
   shownRevision: number | null; // null follows the latest generated revision
   viewMode: ViewMode;
   tab: Tab;
+  /** A tool card the user clicked to see in 3D; null follows the agent (if followAgent). */
+  focusId: number | null;
+  followAgent: boolean;
 
   setMesh: (file: File | null) => void;
   addImages: (files: File[]) => void;
@@ -76,6 +83,8 @@ type State = {
   showRevision: (revision: number | null) => void;
   setViewMode: (mode: ViewMode) => void;
   setTab: (tab: Tab) => void;
+  setFocus: (id: number | null) => void;
+  setFollow: (follow: boolean) => void;
 };
 
 let unsubscribe: (() => void) | null = null;
@@ -103,6 +112,8 @@ export const useStore = create<State>((set, get) => ({
   shownRevision: null,
   viewMode: 'overlay',
   tab: 'activity',
+  focusId: null,
+  followAgent: true,
 
   setMesh: (file) => {
     const previous = get().meshPreviewUrl;
@@ -131,7 +142,8 @@ export const useStore = create<State>((set, get) => ({
       set({ error: 'Add a mesh first: drop it on the viewer or use Attach.' });
       return;
     }
-    set({ status: 'starting', error: null, feed: [userItem], revisions: [], deviations: [], features: [], cost: 0 });
+    set({ status: 'starting', error: null, feed: [userItem], revisions: [], deviations: [], features: [], cost: 0,
+      focusId: null, followAgent: true });
     try {
       const { session_id } = await api.createSession(meshFile, text, images);
       unsubscribe?.();
@@ -180,6 +192,7 @@ export const useStore = create<State>((set, get) => ({
               status: 'running',
               startedAt: e.at,
               code: e.name === 'execute' ? pendingCode ?? undefined : undefined,
+              view: viewOf(e.name, e.args),
             });
             if (e.name === 'execute') pendingCode = null;
             break;
@@ -192,6 +205,7 @@ export const useStore = create<State>((set, get) => ({
               status: e.ok ? 'done' : 'failed',
               result: resultSummary(e.name, e.text),
               endedAt: e.at,
+              view: e.ok ? viewOf(t.name, t.args, e.text) ?? t.view : t.view,
             }));
             const dev = e.ok ? deviationFrom(e.name, e.text) : null;
             if (dev) deviations = [...deviations, dev];
@@ -230,6 +244,8 @@ export const useStore = create<State>((set, get) => ({
   showRevision: (revision) => set({ shownRevision: revision }),
   setViewMode: (viewMode) => set({ viewMode }),
   setTab: (tab) => set({ tab }),
+  setFocus: (focusId) => set({ focusId }),
+  setFollow: (followAgent) => set({ followAgent, ...(followAgent ? { focusId: null } : {}) }),
 }));
 
 function note(text: string, tone: 'muted' | 'error' | 'ok'): FeedItem {
@@ -246,5 +262,27 @@ function turnLine(e: Extract<ServerEvent, { type: 'turn_end' }>) {
 }
 
 // Derived values used by several components.
+
+/**
+ * The tool call the 3D viewer should mirror: the clicked card, else (when following) the
+ * agent's latest call that has something to show. Inspection calls without a view yet
+ * (a running view_mesh, mesh_frame) keep the previous view up; once the agent moves on to
+ * building or verifying, the slice planes clear so they do not hide the CAD.
+ */
+export function activeTool(s: Pick<State, 'feed' | 'focusId' | 'followAgent'>): ToolItem | null {
+  if (s.focusId !== null) {
+    const item = s.feed.find((i) => i.id === s.focusId);
+    return item?.kind === 'tool' ? item : null;
+  }
+  if (!s.followAgent) return null;
+  for (let i = s.feed.length - 1; i >= 0; i--) {
+    const item = s.feed[i];
+    if (item.kind !== 'tool') continue;
+    if (item.view) return item;
+    if (item.phase !== 'inspect') return null;
+  }
+  return null;
+}
+
 export const generatedRevisions = (revisions: Revision[]) => revisions.filter((r) => r.generated);
 export const referenceRevision = (revisions: Revision[]) => revisions.find((r) => !r.generated) ?? null;

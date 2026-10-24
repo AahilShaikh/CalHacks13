@@ -33,6 +33,35 @@ export function ViewModeToggle() {
   );
 }
 
+/** Whether the camera and slice planes mirror the agent, or a step the user picked. */
+export function FollowControl() {
+  const followAgent = useStore((s) => s.followAgent);
+  const focusId = useStore((s) => s.focusId);
+  const feed = useStore((s) => s.feed);
+  const setFollow = useStore((s) => s.setFollow);
+  const focused = focusId === null ? null : feed.find((i) => i.id === focusId);
+  if (focused?.kind === 'tool') {
+    return (
+      <button type="button" onClick={() => setFollow(true)}
+        className="flex items-center gap-2 rounded-md border border-slice bg-raised/90 px-3 py-2 text-[12px] text-ink backdrop-blur hover:bg-raised">
+        <span className="font-mono">{focused.name}</span>
+        <span className="text-muted">{focused.argText}</span>
+        <span className="text-muted">· Back to live ×</span>
+      </button>
+    );
+  }
+  return (
+    <button type="button" aria-pressed={followAgent} onClick={() => setFollow(!followAgent)}
+      title={followAgent ? 'The camera follows what the agent looks at. Drag to look around yourself.' : 'Follow the agent camera'}
+      className={`flex items-center gap-2 rounded-md border px-3 py-2 text-[12px] backdrop-blur ${
+        followAgent ? 'border-cad/50 bg-cad/10 text-cad' : 'border-line bg-raised/90 text-muted hover:text-ink'
+      }`}>
+      <span className={`size-2 rounded-full ${followAgent ? 'bg-cad animate-pulse-dot' : 'bg-muted'}`} />
+      {followAgent ? 'Following agent' : 'Follow agent'}
+    </button>
+  );
+}
+
 export function Legend() {
   return (
     <div className="flex items-center gap-3 rounded-md border border-line bg-raised/90 px-3 py-2 text-[12px] text-muted backdrop-blur">
