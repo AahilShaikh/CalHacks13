@@ -36,7 +36,11 @@ manager = JobManager(DEFAULT_STORAGE)
 
 
 def _comfy_config() -> ComfyConfig:
-    return ComfyConfig(host=os.environ.get('COMFY_HOST', '127.0.0.1:8188'))
+    config = ComfyConfig(host=os.environ.get('COMFY_HOST', '127.0.0.1:8188'))
+    workflow = os.environ.get('AIDA_PIXAL3D_WORKFLOW')
+    if workflow:
+        config.workflow_path = Path(workflow)
+    return config
 
 
 @app.get('/health')

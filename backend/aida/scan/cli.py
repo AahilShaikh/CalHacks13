@@ -36,6 +36,10 @@ def parser():
     run.add_argument('--out', type=Path, required=True, help='Output directory for job artifacts')
     run.add_argument('--comfy-host', default=os.environ.get('COMFY_HOST', '127.0.0.1:8188'),
                      help='ComfyUI host (default: $COMFY_HOST or 127.0.0.1:8188)')
+    run.add_argument('--workflow', type=Path,
+                     default=(Path(os.environ['AIDA_PIXAL3D_WORKFLOW'])
+                              if os.environ.get('AIDA_PIXAL3D_WORKFLOW') else None),
+                     help='API-format workflow JSON (default: bundled Pixal3D template)')
     _anchor_args(run)
 
     scale = sub.add_parser('scale', help='Scale a unitless Pixal3D mesh to metric millimeters')
@@ -76,7 +80,10 @@ def main(argv=None):
             if path:
                 images[view] = path.read_bytes()
         from .comfy import ComfyClient, ComfyConfig
-        client = ComfyClient(ComfyConfig(host=args.comfy_host))
+        config = ComfyConfig(host=args.comfy_host)
+        if args.workflow:
+            config.workflow_path = args.workflow
+        client = ComfyClient(config)
         result = pipeline.run_scan(
             images, args.out,
             known_height_mm=args.height_mm,
