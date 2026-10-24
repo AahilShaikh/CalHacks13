@@ -27,6 +27,8 @@ from pydantic import BaseModel, Field
 from ..artifacts import Artifacts
 
 DEFAULT_STORAGE = Path('artifacts/cad')
+# Sample meshes offered by the UI's empty state ("Try the example part").
+EXAMPLES_DIR = Path(__file__).resolve().parents[3] / 'examples'
 
 MAX_MESH_BYTES = 64 * 1024 * 1024
 MAX_IMAGES = 8
@@ -460,6 +462,25 @@ async def create_cad_session(
             'status_url': f'/api/v1/cad-sessions/{session.id}',
             'events_url': session.events_url,
             'mesh_url': session.mesh_url(0)}
+
+
+@router.get('/api/v1/examples')
+def list_examples():
+    """Sample meshes shipped in ``examples/`` that the UI can load in one click."""
+    if not EXAMPLES_DIR.is_dir():
+        return []
+    return [{'name': path.name, 'bytes': path.stat().st_size}
+            for path in sorted(EXAMPLES_DIR.iterdir())
+            if path.is_file() and path.suffix.lower() in MESH_SUFFIXES]
+
+
+@router.get('/api/v1/examples/{name}')
+def get_example(name: str):
+    path = (EXAMPLES_DIR / name).resolve()
+    if (not path.is_relative_to(EXAMPLES_DIR.resolve()) or not path.is_file()
+            or path.suffix.lower() not in MESH_SUFFIXES):
+        raise HTTPException(status_code=404, detail=f'No example {name!r}')
+    return FileResponse(path, filename=path.name)
 
 
 @router.get('/api/v1/cad-sessions/{session_id}')

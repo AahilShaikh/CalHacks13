@@ -153,9 +153,29 @@ ChArUco photo alone. Without one the job fails with a clear error instead of
 returning wrong millimeter dimensions. Job artifacts are stored under
 `artifacts/scans/` (`AIDA_SCAN_STORAGE` overrides).
 
-## Web viewer (live CAD sessions)
+## Web UI (Aida CAD Studio)
 
-`uv run aida-api` also serves the web viewer at `http://127.0.0.1:8000/`. Upload a
+The UI is a React app in `frontend/` (Vite, TypeScript, Tailwind, @react-three/fiber), designed in
+Figma first. The design is the "Aida CAD Studio UI" Figma file, and `docs/STAGE_LOG.md` records how
+it went from Figma to code. Layout: a 3D viewer showing the reference mesh and the generated CAD,
+plus a right panel with the accuracy chart, the agent's tool calls, the model's features and the
+prompt box.
+
+```powershell
+cd frontend
+npm install
+npm run dev        # http://localhost:5173, forwards /api to the API on :8000
+npm run build      # writes frontend/dist; `uv run aida-api` then serves it at /
+```
+
+Run `uv run aida-api` alongside `npm run dev`. Once `frontend/dist` exists, the API serves the
+React app at `/` and the older single-file viewer below at `/legacy`. `GET /api/v1/examples`
+lists the sample meshes in `examples/` for the empty state's "Try the example part" button.
+
+## Legacy web viewer (live CAD sessions)
+
+`uv run aida-api` also serves the web viewer at `http://127.0.0.1:8000/` (`/legacy` once the React
+app is built). Upload a
 reference mesh (`.stl`/`.glb`/`.obj`/`.ply`), optional reference photos, and a
 prompt to start a live CAD session. The UI streams agent text, build123d
 snippets, tool activity and renders over SSE, and rebuilds its 3D preview after

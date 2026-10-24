@@ -1,6 +1,10 @@
 """Job-based HTTP API for the image-to-metric-mesh scan pipeline, live CAD
 sessions (``/api/v1/cad-sessions`` in :mod:`aida.api.cad_sessions`), and the
-web viewer served from ``aida/web`` at ``/``.
+web UI at ``/``.
+
+The UI is the React app in ``frontend/`` once it has been built (``npm run build``
+writes ``frontend/dist``); the older single-file viewer in ``aida/web`` is then
+served at ``/legacy``. Without a build, ``aida/web`` is served at ``/``.
 
 Scan endpoints:
 
@@ -31,6 +35,8 @@ load_local_env()
 DEFAULT_STORAGE = Path(os.environ.get('AIDA_SCAN_STORAGE', 'artifacts/scans'))
 CAD_STORAGE = Path(os.environ.get('AIDA_CAD_STORAGE', 'artifacts/cad'))
 WEB_DIR = Path(__file__).resolve().parent.parent / 'web'
+FRONTEND_DIST = Path(os.environ.get('AIDA_FRONTEND_DIST',
+                                    Path(__file__).resolve().parents[3] / 'frontend' / 'dist'))
 
 app = FastAPI(
     title='Aida Scan API',
@@ -117,8 +123,12 @@ def get_scan_file(job_id: str, filename: str):
 
 
 app.include_router(cad_sessions_router)
-# The web viewer is mounted last so API routes match first.
-app.mount('/', StaticFiles(directory=WEB_DIR, html=True), name='web')
+# The web UI is mounted last so API routes match first.
+if (FRONTEND_DIST / 'index.html').is_file():
+    app.mount('/legacy', StaticFiles(directory=WEB_DIR, html=True), name='legacy-web')
+    app.mount('/', StaticFiles(directory=FRONTEND_DIST, html=True), name='web')
+else:
+    app.mount('/', StaticFiles(directory=WEB_DIR, html=True), name='web')
 
 
 def main():

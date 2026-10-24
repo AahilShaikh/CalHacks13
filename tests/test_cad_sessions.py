@@ -284,3 +284,17 @@ def test_viewer_shows_only_the_model_object_once_it_exists():
     # Once it exists, scratch experiments stay out of the viewer.
     assert asyncio.run(generated_object_names(
         Names(['reference_mesh', 'scratch', 'generated_cad']))) == ['generated_cad']
+
+
+def test_examples_are_listed_and_served(client):
+    listing = client.get('/api/v1/examples')
+    assert listing.status_code == 200
+    names = [entry['name'] for entry in listing.json()]
+    assert 'asymmetric.stl' in names
+    assert 'make_fixture.py' not in names  # only meshes are offered
+
+    mesh = client.get('/api/v1/examples/asymmetric.stl')
+    assert mesh.status_code == 200 and len(mesh.content) > 84
+
+    assert client.get('/api/v1/examples/make_fixture.py').status_code == 404
+    assert client.get('/api/v1/examples/..%2Fpyproject.toml').status_code == 404
