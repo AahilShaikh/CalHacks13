@@ -61,6 +61,58 @@ Each launch starts a new conversation and CAD session; follow-ups within that
 launch retain both. A turn is limited to 30 SDK turns and a CAD call to 180 seconds.
 A timed-out CAD session must be restarted because its state is uncertain.
 
+## Scan pipeline (images to metric mesh)
+
+The Pixal3D/ComfyUI image-to-mesh pipeline and the ChArUco 1:1 calibration
+(originally `cad_calibration`) live in `backend/aida/scan/`. The ComfyUI
+installation with its models stays external and is reached over HTTP
+(`COMFY_HOST`, default `http://127.0.0.1:8188`); nothing assumes its output
+directory is on the local filesystem. Start ComfyUI with the Pixal3Dworkflow first (see [docs/PIXAL3D_GUIDE.md](docs/PIXAL3D_GUIDE.md)).
+
+Modules: `scan/comfy.py` (ComfyUI client), `scan/charuco.py` (board detection
+and pose), `scan/scaling.py` (metric scaling + CAD metadata),
+`scan/blueprints.py` (orthographic blueprints), `scan/boards.py` (printable
+calibration PDFs), `scan/pipeline.py` (orchestration), and `aida.api`
+(job-based HTTP API).
+
+### HTTP API
+
+```bash
+uv run aida-api                       # http://127.0.0.1:8000
+# or: uv run uvicorn aida.api.server:app --port 8000
+```
+
+- `GET /health` — service status and ComfyUI reachability.
+- `POST /api/v1/scans` — multipart upload: `front_image` (required),
+  `left_image`/`back_image`/`right_image` (optional), plus one scale anchor
+  (`known_height_mm`, `known_base_dia_mm`, or `scale_factor`). Returns 202 with
+  a job id; generation runs in the background.
+- `GET /api/v1/scans/{job_id}` — poll `status` (`queued`/`running`/`succeeded`/
+  `failed`), `stage`, `cad_specs`, and artifact URLs.
+- `GET /api/v1/scans/{job_id}/files/{name}` — download `metric_model.glb`,
+  `metric_model.stl`, `blueprints.png`, `dimensions.json`, `agent_prompt.txt`,
+  and the saved input photos.
+
+A scale anchor is required: a unitless Pixal3D mesh cannot be sized from the
+ChArUco photo alone. Without one the job fails with a clear error instead of
+returning wrong millimeter dimensions. Job artifacts are stored under
+`artifacts/scans/` (`AIDA_SCAN_STORAGE` overrides).
+
+### Command line
+
+```bash
+uv run aida scan run --front photo.jpg --height-mm 75 --out artifacts/scan1
+uv run aida scan scale --mesh raw.glb --height-mm 75 --out-mesh mm.glb --out-json dims.json
+uv run aida scan blueprint --mesh mm.glb --out blueprints.png
+uv run aida scan board --kind both --format both --out-dir boards
+uv run aida scan inspect --image photo.jpg --out annotated.jpg
+```
+
+`run` emits the metric GLB, an STL copy (the format `aida --mesh` accepts),
+blueprints, `dimensions.json`, and a ready-to-paste `agent_prompt.txt` for the
+build123d CAD agent. Print a calibration board from `aida scan board`, print at
+100% scale, and verify its 100 mm ruler with calipers before capture.
+
 ## Meshes and outputs
 
 Only STL is accepted. STL does not declare physical units: omit `--units` when

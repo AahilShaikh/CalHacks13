@@ -3,10 +3,24 @@ name = "aida"
 version = "0.1.0"
 description = "A local CAD agent with mesh vision"
 requires-python = ">=3.12,<3.13"
-dependencies = ["claude-agent-sdk", "build123d-mcp", "mcp>=2,<3", "pillow", "vtk>=9.3,<10"]
+dependencies = [
+    "claude-agent-sdk",
+    "build123d-mcp",
+    "mcp>=2,<3",
+    "pillow",
+    "vtk>=9.3,<10",
+    "opencv-contrib-python>=5.0.0.93",
+    "trimesh>=5.2.0",
+    "matplotlib>=3.11.2",
+    "reportlab>=5.1.0",
+    "fastapi>=0.162.0",
+    "uvicorn[standard]>=0.54.0",
+    "python-multipart>=0.0.32",
+]
 
 [project.scripts]
 aida = "aida.cli:main"
+aida-api = "aida.api.server:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -16,7 +30,11 @@ build-backend = "hatchling.build"
 packages = ["backend/aida"]
 
 [dependency-groups]
-dev = ["pytest", "pytest-asyncio"]
+dev = [
+    "httpx>=0.28.1",
+    "pytest",
+    "pytest-asyncio",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["backend"]

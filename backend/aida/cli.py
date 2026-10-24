@@ -10,7 +10,9 @@ from .cad import open_cad, text_of
 
 
 def parser():
-    result = argparse.ArgumentParser(description='Aida: inspect STL meshes and build CAD with Claude')
+    result = argparse.ArgumentParser(
+        description='Aida: inspect STL meshes and build CAD with Claude',
+        epilog="Scan pipeline stages live under 'aida scan' (see: aida scan --help).")
     result.add_argument('--mesh', type=Path, required=True, help='Input STL file')
     result.add_argument('--units', choices=['mm'], help='Explicit input units; otherwise unknown')
     result.add_argument('--artifacts', type=Path, default=Path('artifacts'), help='Session output parent')
@@ -38,6 +40,9 @@ async def run(args):
 
 
 def main():
+    if sys.argv[1:2] == ['scan']:
+        from .scan.cli import main as scan_main
+        raise SystemExit(scan_main(sys.argv[2:]))
     argparser = parser()
     args = argparser.parse_args()
     if not args.mesh.is_file() or args.mesh.suffix.lower() != '.stl':
