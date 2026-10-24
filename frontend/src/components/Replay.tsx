@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import playIcon from '../assets/icons/play.svg';
+import { Pause, Play } from 'lucide-react';
 import { listReplays, type ReplaySummary } from '../lib/api';
 import { useStore } from '../store';
 
@@ -14,28 +14,24 @@ export function ReplayControls() {
   const progress = replay.total ? (replay.index / replay.total) * 100 : 0;
 
   return (
-    <div className="flex shrink-0 flex-col gap-2 rounded-md border border-line-strong bg-sunken p-3">
+    <div className="flex shrink-0 flex-col gap-2 rounded-md border border-line-strong bg-subtle p-3">
       <div className="flex items-center gap-2 text-[12px]">
-        <span className="rounded-sm bg-cad/16 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.6px] text-cad">Replay</span>
+        <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.6px] text-accent-ink">Replay</span>
         <span className="text-muted">{done ? 'Finished' : replay.playing ? 'Playing a recorded run' : 'Paused'}</span>
         <span className="flex-1" />
         <button type="button" onClick={exitReplay} className="text-muted hover:text-ink">Exit</button>
       </div>
       <div className="h-1 overflow-hidden rounded-full bg-line-strong" role="progressbar" aria-valuenow={Math.round(progress)}>
-        <div className="h-full bg-cad transition-[width] duration-200" style={{ width: `${progress}%` }} />
+        <div className="h-full bg-accent transition-[width] duration-200" style={{ width: `${progress}%` }} />
       </div>
       <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={() => (done ? void startReplay(replay.id) : setReplay({ playing: !replay.playing }))}
           aria-label={done ? 'Replay again' : replay.playing ? 'Pause' : 'Play'}
-          className="flex h-8 items-center gap-1 rounded-sm bg-cad px-3 text-[12px] font-semibold text-base hover:brightness-110"
+          className="flex h-8 items-center gap-1 rounded-sm bg-accent-ink px-3 text-[12px] font-semibold text-white hover:bg-accent-ink-hover"
         >
-          {replay.playing ? (
-            <span className="block h-3 w-3 border-x-[3px] border-base" />
-          ) : (
-            <img src={playIcon} alt="" width={14} height={14} className="invert" />
-          )}
+          {replay.playing ? <Pause size={14} fill="currentColor" aria-hidden /> : <Play size={14} fill="currentColor" aria-hidden />}
           {done ? 'Again' : replay.playing ? 'Pause' : 'Play'}
         </button>
         <div className="flex gap-1" role="radiogroup" aria-label="Replay speed">
@@ -79,7 +75,7 @@ export function ReplayList() {
           key={r.id}
           type="button"
           onClick={() => void startReplay(r.id)}
-          className="flex flex-col items-start gap-0.5 rounded-md border border-line bg-raised px-3 py-2 text-left hover:border-line-strong"
+          className="flex flex-col items-start gap-0.5 rounded-md border border-line bg-surface px-3 py-2 text-left hover:border-line-strong"
         >
           <span className="line-clamp-1 text-[12px] text-ink">{r.prompt || 'Untitled run'}</span>
           <span className="font-mono text-[10px] text-muted">

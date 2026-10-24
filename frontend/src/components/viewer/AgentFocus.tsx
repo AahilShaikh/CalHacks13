@@ -6,7 +6,7 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import type { AgentView, Vec3 } from '../../lib/events';
 import { activeTool, useStore } from '../../store';
 
-const SLICE = '#fb923c';
+const SLICE = '#f26b1d';
 const Z = new THREE.Vector3(0, 0, 1);
 
 /** The reference mesh's bounds, in its own (Z-up) coordinates. */
@@ -41,7 +41,7 @@ function Plane({ bounds, normal, offset, label, strength = 1, x = 0 }: {
         transparent opacity={0.85 * strength} />
       {label && (
         <Html position={[h, h, 0]} zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
-          <div className="translate-x-2 -translate-y-1/2 whitespace-nowrap rounded-sm border border-slice bg-raised px-2 py-1 font-mono text-[11px] text-ink">
+          <div className="translate-x-2 -translate-y-1/2 whitespace-nowrap rounded-sm border border-accent bg-surface px-2 py-1 font-mono text-[11px] text-ink">
             {label}
           </div>
         </Html>

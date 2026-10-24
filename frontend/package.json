@@ -12,6 +12,7 @@
   "dependencies": {
     "@react-three/drei": "10.0.7",
     "@react-three/fiber": "9.1.2",
+    "lucide-react": "1.50.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "three": "0.176.0",

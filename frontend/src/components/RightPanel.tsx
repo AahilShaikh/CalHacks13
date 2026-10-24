@@ -20,7 +20,7 @@ export function RightPanel() {
   const tab = useStore((s) => s.tab);
 
   return (
-    <aside className="flex h-full w-[400px] shrink-0 flex-col gap-3 border-l border-line bg-base p-3">
+    <aside className="flex h-full w-[400px] shrink-0 flex-col gap-3 border-l border-line bg-canvas p-3">
       {hasSession ? (
         <>
           <AccuracyChart />

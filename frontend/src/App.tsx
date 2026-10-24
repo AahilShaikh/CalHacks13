@@ -21,7 +21,7 @@ export default function App() {
     return () => window.removeEventListener('pagehide', close);
   }, []);
   return (
-    <div className="flex h-full flex-col bg-base">
+    <div className="flex h-full flex-col bg-canvas">
       <TopBar />
       <main className="flex min-h-0 flex-1">
         <Viewer />

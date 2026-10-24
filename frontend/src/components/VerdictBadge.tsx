@@ -1,12 +1,12 @@
 import type { Deviation } from '../lib/events';
 
 const TONES = {
-  ok: 'bg-ok/16 text-ok',
-  cad: 'bg-cad/16 text-cad',
-  error: 'bg-error/16 text-error',
-  muted: 'bg-muted/16 text-muted',
+  ok: 'bg-ok/10 text-ok',
+  cad: 'bg-accent-soft text-accent-ink',
+  error: 'bg-error/10 text-error',
+  muted: 'bg-muted/10 text-muted',
 } as const;
-const DOTS = { ok: 'bg-ok', cad: 'bg-cad', error: 'bg-error', muted: 'bg-muted' } as const;
+const DOTS = { ok: 'bg-ok', cad: 'bg-accent', error: 'bg-error', muted: 'bg-muted' } as const;
 
 /** Figma: VerdictBadge (2:122). Within threshold / Improving / Worse. */
 export function VerdictBadge({ deviation }: { deviation: Deviation }) {

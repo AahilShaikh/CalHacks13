@@ -23,7 +23,7 @@ export function Viewer() {
 
   return (
     <section
-      className="relative min-w-0 flex-1 overflow-hidden bg-sunken"
+      className="relative min-w-0 flex-1 overflow-hidden bg-subtle"
       onDragOver={(e) => {
         if (!canDrop) return;
         e.preventDefault();
@@ -63,7 +63,7 @@ export function Viewer() {
       </div>
 
       {dragging && (
-        <div className="pointer-events-none absolute inset-3 rounded-lg border-2 border-dashed border-cad/70 bg-cad/5" />
+        <div className="pointer-events-none absolute inset-3 rounded-lg border-2 border-dashed border-accent/60 bg-accent-soft" />
       )}
     </section>
   );
@@ -90,11 +90,11 @@ function DropZone() {
 
   return (
     <div className="absolute inset-0 flex items-center justify-center">
-      <div className="flex h-60 w-[440px] flex-col items-center justify-center gap-3 rounded-lg border-[1.5px] border-dashed border-line-strong bg-raised">
+      <div className="flex h-60 w-[440px] flex-col items-center justify-center gap-3 rounded-lg border-[1.5px] border-dashed border-line-strong bg-surface">
         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <path d="M12 2l9 5v10l-9 5-9-5V7z M3 7l9 5 9-5 M12 12v10" stroke="#6EE7FF" strokeWidth="1.5" strokeLinejoin="round" />
+          <path d="M12 2l9 5v10l-9 5-9-5V7z M3 7l9 5 9-5 M12 12v10" stroke="#f26b1d" strokeWidth="1.5" strokeLinejoin="round" />
         </svg>
-        <button type="button" onClick={browse} className="text-[16px] font-semibold hover:text-cad">
+        <button type="button" onClick={browse} className="text-[16px] font-semibold hover:text-accent-ink">
           Drop meshes to start
         </button>
         <p className="text-[12px] text-muted">.stl · .obj · .ply · .glb, one part per file</p>
@@ -108,7 +108,7 @@ function DropZone() {
                 .then((file) => void addMeshes([file]))
                 .catch((e) => setError(e.message))
             }
-            className="rounded-lg bg-cad/16 px-3 py-1 text-[12px] font-medium text-cad hover:bg-cad/25"
+            className="rounded-lg bg-accent-soft px-3 py-1 text-[12px] font-medium text-accent-ink hover:bg-accent-soft"
           >
             Try the example part: {name}
           </button>
@@ -122,8 +122,8 @@ function DropZone() {
 function Hint({ text, spinner = false }: { text: string; spinner?: boolean }) {
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center">
-      <div className="flex items-center gap-2 rounded-lg border border-line bg-raised/90 px-3 py-1.5 text-[12px] text-muted backdrop-blur">
-        {spinner && <span className="size-2 rounded-full bg-cad animate-pulse-dot" />}
+      <div className="flex items-center gap-2 rounded-lg border border-line bg-surface/95 px-3 py-1.5 text-[12px] text-muted backdrop-blur">
+        {spinner && <span className="size-2 rounded-full bg-accent animate-pulse-dot" />}
         {text}
       </div>
     </div>

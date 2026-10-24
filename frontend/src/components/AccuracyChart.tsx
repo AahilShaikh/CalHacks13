@@ -13,7 +13,7 @@ export function AccuracyChart() {
 
   if (!last) {
     return (
-      <section className="shrink-0 rounded-md border border-line bg-raised px-4 py-3">
+      <section className="shrink-0 rounded-md border border-line bg-surface px-4 py-3">
         <p className="text-[11px] text-muted">Deviation from mesh · p95</p>
         <p className="mt-1 text-[13px] leading-[1.45] text-faint">
           No checks yet. Each model revision is compared against the scan and plotted here.
@@ -29,7 +29,7 @@ export function AccuracyChart() {
   const points = deviations.map((d, i) => `${x(i).toFixed(1)},${y(d.p95).toFixed(1)}`).join(' ');
 
   return (
-    <section className="flex shrink-0 flex-col gap-2 rounded-md border border-line bg-raised px-4 py-3">
+    <section className="flex shrink-0 flex-col gap-2 rounded-md border border-line bg-surface px-4 py-3">
       <div className="flex items-center gap-2">
         <div className="flex flex-col gap-0.5">
           <span className="text-[11px] text-muted">Deviation from mesh · p95</span>
@@ -49,7 +49,7 @@ export function AccuracyChart() {
           <line x1="0" x2={W} y1={y(threshold)} y2={y(threshold)} className="stroke-ok/60" strokeDasharray="4 4"
             vectorEffect="non-scaling-stroke" />
           {deviations.length > 1 && (
-            <polyline points={points} fill="none" className="stroke-cad" strokeWidth="2" strokeLinejoin="round"
+            <polyline points={points} fill="none" className="stroke-accent" strokeWidth="2" strokeLinejoin="round"
               vectorEffect="non-scaling-stroke" />
           )}
         </svg>
@@ -58,7 +58,7 @@ export function AccuracyChart() {
           <span
             key={i}
             aria-hidden
-            className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full bg-cad ${i === deviations.length - 1 ? 'size-2' : 'size-1.5'}`}
+            className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent ${i === deviations.length - 1 ? 'size-2' : 'size-1.5'}`}
             style={{ left: `${(x(i) / W) * 100}%`, top: `${(y(d.p95) / H) * 100}%` }}
           />
         ))}

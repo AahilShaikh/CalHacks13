@@ -1,7 +1,5 @@
 import { useRef, useState } from 'react';
-import attachIcon from '../assets/icons/attach.svg';
-import sendIcon from '../assets/icons/send.svg';
-import stopIcon from '../assets/icons/stop.svg';
+import { ArrowUp, Paperclip, Square } from 'lucide-react';
 import { isMeshFile, useStore } from '../store';
 
 /** Figma: Composer (4:32). Prompt box; Attach takes meshes (one part each) or reference photos. */
@@ -50,7 +48,7 @@ export function Composer() {
   return (
     <div className="flex shrink-0 flex-col gap-2">
       {error && <p className="text-[12px] text-error">{error}</p>}
-      <div className="flex flex-col gap-2 rounded-md border border-line-strong bg-sunken p-3 focus-within:border-cad/60">
+      <div className="flex flex-col gap-2 rounded-md border border-line-strong bg-subtle p-3 focus-within:border-accent/60">
         {!ended && (meshFiles.length > 0 || images.length > 0) && (
           <div className="flex flex-wrap gap-1.5">
             {meshFiles.map((mesh, index) => (
@@ -82,7 +80,7 @@ export function Composer() {
             disabled={ended}
             className="flex items-center gap-1 rounded-sm px-3 py-2 text-[12px] font-semibold text-muted hover:text-ink disabled:opacity-40"
           >
-            <img src={attachIcon} alt="" width={14} height={14} />
+            <Paperclip size={14} strokeWidth={1.75} aria-hidden />
             Attach
           </button>
           <input
@@ -102,7 +100,7 @@ export function Composer() {
               onChange={(e) => setUnits(e.target.value as 'mm' | '')}
               aria-label="Mesh units"
               title="Units of the uploaded mesh"
-              className="rounded-sm border border-line bg-sunken px-1.5 py-1 text-[12px] text-muted outline-none hover:text-ink"
+              className="rounded-sm border border-line bg-subtle px-1.5 py-1 text-[12px] text-muted outline-none hover:text-ink"
             >
               <option value="mm">mm</option>
               <option value="">unknown units</option>
@@ -115,7 +113,7 @@ export function Composer() {
               onClick={() => void stop()}
               className="flex items-center gap-1 rounded-sm border border-error px-3 py-2 text-[12px] font-semibold text-error hover:bg-error/10"
             >
-              <img src={stopIcon} alt="" width={14} height={14} />
+              <Square size={12} strokeWidth={2} fill="currentColor" aria-hidden />
               Stop
             </button>
           )}
@@ -123,9 +121,9 @@ export function Composer() {
             type="button"
             onClick={() => void send()}
             disabled={!canSend}
-            className="flex items-center gap-1 rounded-sm bg-cad px-3 py-2 text-[12px] font-semibold text-base hover:brightness-110 disabled:opacity-40"
+            className="flex items-center gap-1 rounded-sm bg-accent-ink px-3 py-2 text-[12px] font-semibold text-white hover:bg-accent-ink-hover disabled:opacity-40"
           >
-            <img src={sendIcon} alt="" width={14} height={14} />
+            <ArrowUp size={14} strokeWidth={2} aria-hidden />
             {working ? 'Queue' : 'Send'}
           </button>
         </div>
@@ -136,7 +134,7 @@ export function Composer() {
 
 function Chip({ label, tone, onRemove }: { label: string; tone: 'cad' | 'muted'; onRemove?: () => void }) {
   return (
-    <span className={`flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-medium ${tone === 'cad' ? 'bg-cad/16 text-cad' : 'bg-muted/16 text-muted'}`}>
+    <span className={`flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-medium ${tone === 'cad' ? 'bg-accent-soft text-accent-ink' : 'bg-muted/10 text-muted'}`}>
       {label}
       {onRemove && (
         <button type="button" aria-label={`Remove ${label}`} onClick={onRemove} className="opacity-70 hover:opacity-100">

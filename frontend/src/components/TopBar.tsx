@@ -4,11 +4,11 @@ import { generatedRevisions, useStore } from '../store';
 import { DownloadMenu } from './DownloadMenu';
 
 const CHIP = {
-  inspect: 'bg-inspect/16 text-inspect',
-  build: 'bg-build/16 text-build',
-  verify: 'bg-verify/16 text-verify',
-  idle: 'bg-muted/16 text-muted',
-  error: 'bg-error/16 text-error',
+  inspect: 'bg-inspect/10 text-inspect',
+  build: 'bg-build/10 text-build',
+  verify: 'bg-verify/10 text-verify',
+  idle: 'bg-muted/10 text-muted',
+  error: 'bg-error/10 text-error',
 } as const;
 const DOT = {
   inspect: 'bg-inspect',
@@ -77,8 +77,8 @@ export function TopBar() {
   const live = tone !== 'idle' && tone !== 'error';
 
   return (
-    <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-line bg-base px-4 py-2">
-      <div className="flex size-6 items-center justify-center rounded-sm bg-cad text-[13px] font-semibold text-base">A</div>
+    <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-line bg-canvas px-4 py-2">
+      <div className="flex size-6 items-center justify-center rounded-sm bg-accent text-[13px] font-semibold text-white">A</div>
       <span className="text-[14px] font-semibold">Aida</span>
       <span className="text-[13px] text-muted">CAD Studio</span>
       <div className="flex-1" />
@@ -87,7 +87,7 @@ export function TopBar() {
         {activity}
       </div>
       {replay && (
-        <span className="rounded-sm bg-cad/16 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.6px] text-cad">
+        <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.6px] text-accent-ink">
           Replay {replay.speed}×
         </span>
       )}

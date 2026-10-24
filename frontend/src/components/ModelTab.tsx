@@ -3,15 +3,15 @@ import type { AssemblyState, ModelFeature, ModelParam, ModelState, ParamValue, W
 import { partOf, useStore } from '../store';
 
 const SOURCE_STYLE = {
-  measured: 'bg-ok/16 text-ok',
-  estimated: 'bg-warn/16 text-warn',
-  assumed: 'bg-muted/16 text-muted',
+  measured: 'bg-ok/10 text-ok',
+  estimated: 'bg-warn/10 text-warn',
+  assumed: 'bg-muted/10 text-muted',
 } as const;
 const TREND_STYLE: Record<string, string> = {
   better: 'text-ok',
   worse: 'text-error',
   mixed: 'text-warn',
-  first: 'text-cad',
+  first: 'text-accent-ink',
   restored: 'text-muted',
 };
 
@@ -62,7 +62,7 @@ function PartPicker({ workspace, current }: { workspace: WorkspaceState; current
       aria-pressed={current === name}
       onClick={() => selectPart(selected === name ? null : name)}
       className={`flex items-center gap-1 rounded-lg px-2 py-0.5 font-mono text-[11px] ${
-        current === name ? 'bg-cad/20 text-cad' : 'bg-line text-muted hover:text-ink'
+        current === name ? 'bg-accent-soft text-accent-ink' : 'bg-line text-muted hover:text-ink'
       }`}
     >
       {label}
@@ -186,7 +186,7 @@ function ParamRow({ name, owner, param, revision }: { name: string; owner: strin
         type="button"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-left hover:bg-raised"
+        className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-left hover:bg-surface"
       >
         <span className="min-w-0 truncate font-mono text-[12px]">{name}</span>
         <span className="flex-1" />
@@ -221,7 +221,7 @@ function FeatureRow({ feature, index, model }: { feature: ModelFeature; index: n
         type="button"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-left hover:bg-raised"
+        className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-left hover:bg-surface"
       >
         <span className="font-mono text-[12px] text-faint">{index}</span>
         <span className="min-w-0 truncate font-mono text-[12px]">{feature.name}</span>
@@ -243,7 +243,7 @@ function FeatureRow({ feature, index, model }: { feature: ModelFeature; index: n
               ))}
             </div>
           )}
-          <pre className="scroll-thin max-h-48 overflow-auto rounded-sm bg-sunken p-2 font-mono text-[11px] leading-relaxed text-muted">
+          <pre className="scroll-thin max-h-48 overflow-auto rounded-sm bg-subtle p-2 font-mono text-[11px] leading-relaxed text-muted">
             {feature.code}
           </pre>
         </div>

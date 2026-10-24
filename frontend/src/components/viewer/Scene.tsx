@@ -107,15 +107,15 @@ export function Scene() {
         if (selectedPart && selectedPart !== 'assembly' && e.type === 'click') selectPart(null);
       }}
     >
-      <color attach="background" args={['#080c16']} />
-      <hemisphereLight args={['#c7d6ff', '#0b101d', 0.9]} />
-      <directionalLight position={[5, 9, 7]} intensity={1.8} />
-      <directionalLight position={[-7, 4, -5]} intensity={0.6} color="#9db4ff" />
+      <color attach="background" args={['#eef0f3']} />
+      <hemisphereLight args={['#ffffff', '#b9bec7', 1.6]} />
+      <directionalLight position={[5, 9, 7]} intensity={1.7} />
+      <directionalLight position={[-7, 4, -5]} intensity={0.55} color="#e6ebf5" />
       <Models />
       <OrbitControls makeDefault enableDamping dampingFactor={0.1} />
       <GizmoHelper alignment="bottom-left" margin={[56, 56]}>
         {/* World axes relabelled to the part's Z-up frame: world Y is part Z, world Z is part -Y. */}
-        <GizmoViewport axisColors={['#f87171', '#3dadff', '#4ade80']} labels={['X', 'Z', '-Y']} labelColor="#0b101d" />
+        <GizmoViewport axisColors={['#dc2626', '#2563eb', '#15803d']} labels={['X', 'Z', '-Y']} labelColor="#ffffff" />
       </GizmoHelper>
     </Canvas>
   );

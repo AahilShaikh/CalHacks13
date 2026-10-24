@@ -28,8 +28,8 @@ export function ToolCard({ item }: { item: ToolItem }) {
           }
         },
       })}
-      className={`flex w-full flex-col gap-2 rounded-md border bg-raised p-3 ${
-        failed ? 'border-error' : focused ? 'border-slice' : 'border-line'
+      className={`flex w-full flex-col gap-2 rounded-md border bg-surface p-3 ${
+        failed ? 'border-error' : focused ? 'border-accent' : 'border-line'
       } ${showable ? 'cursor-pointer hover:border-line-strong' : ''}`}
     >
       <header className="flex min-w-0 items-center gap-2">
@@ -41,11 +41,11 @@ export function ToolCard({ item }: { item: ToolItem }) {
         <span className="min-w-0 truncate font-mono text-[11px] text-muted">{item.argText}</span>
         <span className="flex-1" />
         {showable && (
-          <span className={`shrink-0 rounded-sm px-1.5 text-[10px] font-semibold ${focused ? 'bg-slice/20 text-slice' : 'bg-line text-muted'}`}>
+          <span className={`shrink-0 rounded-sm px-1.5 text-[10px] font-semibold ${focused ? 'bg-accent-soft text-accent-ink' : 'bg-line text-muted'}`}>
             3D
           </span>
         )}
-        <span className={`shrink-0 text-[11px] ${running ? 'text-cad' : failed ? 'text-error' : 'text-faint'}`}>
+        <span className={`shrink-0 text-[11px] ${running ? 'text-accent-ink' : failed ? 'text-error' : 'text-faint'}`}>
           {running ? 'running…' : failed ? 'failed' : duration}
         </span>
       </header>
@@ -54,14 +54,14 @@ export function ToolCard({ item }: { item: ToolItem }) {
       )}
       {item.image && (
         <a href={item.image} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
-          className="block overflow-hidden rounded-sm bg-sunken">
+          className="block overflow-hidden rounded-sm bg-subtle">
           <img src={item.image} alt={`${item.name} render`} loading="lazy" className="max-h-[180px] w-full object-contain" />
         </a>
       )}
       {item.code && (
         <details onClick={(e) => e.stopPropagation()}>
           <summary className="cursor-pointer select-none text-[11px] text-faint hover:text-muted">build123d code</summary>
-          <pre className="scroll-thin mt-2 max-h-56 overflow-auto rounded-sm bg-sunken p-2 font-mono text-[11px] leading-relaxed text-muted">
+          <pre className="scroll-thin mt-2 max-h-56 overflow-auto rounded-sm bg-subtle p-2 font-mono text-[11px] leading-relaxed text-muted">
             {item.code}
           </pre>
         </details>

@@ -56,12 +56,12 @@ export function DownloadMenu() {
         type="button"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
-        className="rounded-sm border border-line-strong px-3 py-1 text-[12px] font-medium text-ink hover:bg-raised"
+        className="rounded-sm border border-line-strong px-3 py-1 text-[12px] font-medium text-ink hover:bg-surface"
       >
         Download ▾
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1 flex w-64 flex-col rounded-md border border-line bg-raised p-1 shadow-xl">
+        <div className="absolute right-0 top-full z-30 mt-1 flex w-64 flex-col rounded-md border border-line bg-surface p-1 shadow-pop">
           {ITEMS.map((item) => {
             const disabled = item.kind === 'model.py' && !hasModel;
             return (
@@ -70,7 +70,7 @@ export function DownloadMenu() {
                 type="button"
                 disabled={disabled || busy !== null}
                 onClick={() => void save(item.kind)}
-                className="flex flex-col items-start rounded-sm px-3 py-2 text-left hover:bg-line disabled:opacity-40 disabled:hover:bg-transparent"
+                className="flex flex-col items-start rounded-sm px-3 py-2 text-left hover:bg-subtle disabled:opacity-40 disabled:hover:bg-transparent"
               >
                 <span className="font-mono text-[12px] text-ink">{busy === item.kind ? 'Preparing…' : item.label}</span>
                 <span className="text-[11px] text-muted">{item.hint}</span>

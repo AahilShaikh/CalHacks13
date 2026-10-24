@@ -19,7 +19,7 @@ export function PanelTabs() {
             <span className={`text-[13px] ${active ? 'font-semibold text-ink' : 'font-medium text-muted hover:text-ink'}`}>
               {t.label}
             </span>
-            <span className={`h-0.5 w-full ${active ? 'bg-cad' : ''}`} />
+            <span className={`h-0.5 w-full ${active ? 'bg-accent' : ''}`} />
           </button>
         );
       })}

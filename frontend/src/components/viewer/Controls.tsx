@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import playIcon from '../../assets/icons/play.svg';
+import { Pause, Play } from 'lucide-react';
 import { generatedRevisions, heatmapOf, useStore, type ViewMode } from '../../store';
 
 const MODES: { id: ViewMode; label: string }[] = [
@@ -31,7 +31,7 @@ export function ViewModeToggle() {
   const hasHeat = Boolean(useShownHeatmap());
   const ready = (id: ViewMode) => id !== 'heatmap' || hasHeat;
   return (
-    <div role="radiogroup" aria-label="View mode" className="flex gap-1 rounded-md border border-line bg-raised/90 p-1 backdrop-blur">
+    <div role="radiogroup" aria-label="View mode" className="flex gap-1 rounded-md border border-line bg-surface/95 p-1 backdrop-blur">
       {MODES.map((m) => (
         <button
           key={m.id}
@@ -61,7 +61,7 @@ export function FollowControl() {
   if (focused?.kind === 'tool') {
     return (
       <button type="button" onClick={() => setFollow(true)}
-        className="flex items-center gap-2 rounded-md border border-slice bg-raised/90 px-3 py-2 text-[12px] text-ink backdrop-blur hover:bg-raised">
+        className="flex items-center gap-2 rounded-md border border-accent bg-surface/95 px-3 py-2 text-[12px] text-ink backdrop-blur hover:bg-surface">
         <span className="font-mono">{focused.name}</span>
         <span className="text-muted">{focused.argText}</span>
         <span className="text-muted">· Back to live ×</span>
@@ -72,9 +72,9 @@ export function FollowControl() {
     <button type="button" aria-pressed={followAgent} onClick={() => setFollow(!followAgent)}
       title={followAgent ? 'The camera follows what the agent looks at. Drag to look around yourself.' : 'Follow the agent camera'}
       className={`flex items-center gap-2 rounded-md border px-3 py-2 text-[12px] backdrop-blur ${
-        followAgent ? 'border-cad/50 bg-cad/10 text-cad' : 'border-line bg-raised/90 text-muted hover:text-ink'
+        followAgent ? 'border-accent/60 bg-accent-soft text-accent-ink' : 'border-line bg-surface/95 text-muted hover:text-ink'
       }`}>
-      <span className={`size-2 rounded-full ${followAgent ? 'bg-cad animate-pulse-dot' : 'bg-muted'}`} />
+      <span className={`size-2 rounded-full ${followAgent ? 'bg-accent animate-pulse-dot' : 'bg-muted'}`} />
       {followAgent ? 'Following agent' : 'Follow agent'}
     </button>
   );
@@ -85,7 +85,7 @@ export function Legend() {
   const heat = useShownHeatmap();
   if (viewMode === 'heatmap' && heat) return <HeatLegend range={heat.range} threshold={heat.threshold} share={heat.share_within} />;
   return (
-    <div className="flex items-center gap-3 rounded-md border border-line bg-raised/90 px-3 py-2 text-[12px] text-muted backdrop-blur">
+    <div className="flex items-center gap-3 rounded-md border border-line bg-surface/95 px-3 py-2 text-[12px] text-muted backdrop-blur">
       <span className="size-2 rounded-full bg-mesh" /> Reference mesh
       <span className="size-2 rounded-full bg-cad" /> Generated CAD
     </div>
@@ -97,7 +97,7 @@ const n = (v: number) => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1) : v.toF
 /** Colour scale for the heatmap: same blue-white-red as compare_to_mesh's images. */
 function HeatLegend({ range, threshold, share }: { range: number; threshold: number; share: number }) {
   return (
-    <div className="flex w-64 flex-col gap-1.5 rounded-md border border-line bg-raised/90 px-3 py-2 text-[11px] text-muted backdrop-blur">
+    <div className="flex w-64 flex-col gap-1.5 rounded-md border border-line bg-surface/95 px-3 py-2 text-[11px] text-muted backdrop-blur">
       <div className="flex items-center justify-between">
         <span className="font-medium text-ink">Distance to scan</span>
         <span>{Math.round(share * 100)}% within ±{n(threshold)}</span>
@@ -109,8 +109,8 @@ function HeatLegend({ range, threshold, share }: { range: number; threshold: num
         <span>+{n(range)}</span>
       </div>
       <div className="flex justify-between text-[10px]">
-        <span className="text-[#6b8cff]">CAD has extra</span>
-        <span className="text-[#ff6b63]">CAD is missing</span>
+        <span className="text-[#2659d9]">CAD has extra</span>
+        <span className="text-[#c0261f]">CAD is missing</span>
       </div>
     </div>
   );
@@ -145,7 +145,7 @@ export function RevisionScrubber() {
   if (count < 2) return null;
 
   return (
-    <div className="flex h-10 w-[560px] max-w-[calc(100%-32px)] items-center gap-3 rounded-md border border-line bg-raised/90 px-3 py-2 backdrop-blur">
+    <div className="flex h-10 w-[560px] max-w-[calc(100%-32px)] items-center gap-3 rounded-md border border-line bg-surface/95 px-3 py-2 backdrop-blur">
       <button
         type="button"
         aria-label={playing ? 'Pause replay' : 'Replay the build'}
@@ -153,9 +153,9 @@ export function RevisionScrubber() {
           if (!playing && index >= count - 1) showRevision(generated[0].revision);
           setPlaying(!playing);
         }}
-        className="flex size-5 items-center justify-center opacity-90 hover:opacity-100"
+        className="flex size-6 items-center justify-center rounded-sm text-ink hover:bg-subtle"
       >
-        {playing ? <span className="block h-3 w-3 border-x-[3px] border-ink" /> : <img src={playIcon} alt="" width={14} height={14} />}
+        {playing ? <Pause size={14} fill="currentColor" aria-hidden /> : <Play size={14} fill="currentColor" aria-hidden />}
       </button>
       <input
         type="range"
@@ -168,7 +168,7 @@ export function RevisionScrubber() {
           const i = Number(e.target.value);
           showRevision(i === count - 1 ? null : generated[i].revision);
         }}
-        className="h-1 flex-1 cursor-pointer accent-cad"
+        className="h-1 flex-1 cursor-pointer accent-accent-ink"
       />
       <span className="font-mono text-[11px] text-muted">
         rev {index + 1} / {count}

@@ -11,24 +11,24 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 // Flat shading derives face normals in the shader: the API's GLBs carry no vertex
 // normals (lit materials would render black), and CAD faces are planar anyway.
 const materials = {
-  cad: new THREE.MeshStandardMaterial({ color: '#6ee7ff', roughness: 0.42, metalness: 0.08, flatShading: true,
+  cad: new THREE.MeshStandardMaterial({ color: '#c9ced6', roughness: 0.55, metalness: 0.1, flatShading: true,
     polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
-  ghost: new THREE.MeshStandardMaterial({ color: '#a5b4fc', roughness: 0.85, transparent: true, opacity: 0.2,
+  ghost: new THREE.MeshStandardMaterial({ color: '#6b7fa8', roughness: 0.85, transparent: true, opacity: 0.18,
     depthWrite: false, side: THREE.DoubleSide, flatShading: true }),
-  solid: new THREE.MeshStandardMaterial({ color: '#a5b4fc', roughness: 0.7, metalness: 0.02, flatShading: true }),
+  solid: new THREE.MeshStandardMaterial({ color: '#a9b6cf', roughness: 0.7, metalness: 0.02, flatShading: true }),
   // Deviation heatmap: the reference's own vertex colours (blue extra, white match, red missing).
   heat: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0, flatShading: true }),
   // CAD drawn as an outline over the heatmap, so the colours stay readable.
-  outline: new THREE.MeshBasicMaterial({ color: '#6ee7ff', transparent: true, opacity: 0.06, depthWrite: false }),
+  outline: new THREE.MeshBasicMaterial({ color: '#27272a', transparent: true, opacity: 0.05, depthWrite: false }),
 };
 // Parts other than the selected one, when a part is selected.
-const dimmed = new THREE.MeshStandardMaterial({ color: '#6ee7ff', roughness: 0.6, transparent: true, opacity: 0.16,
+const dimmed = new THREE.MeshStandardMaterial({ color: '#c9ced6', roughness: 0.6, transparent: true, opacity: 0.22,
   depthWrite: false, flatShading: true });
-const selectedMaterial = new THREE.MeshStandardMaterial({ color: '#a7f3ff', emissive: '#1b6f80', roughness: 0.38,
+const selectedMaterial = new THREE.MeshStandardMaterial({ color: '#f7b48a', emissive: '#5a1e00', roughness: 0.5,
   metalness: 0.08, flatShading: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
 const edgeMaterials = {
-  cad: new THREE.LineBasicMaterial({ color: '#0b101d', transparent: true, opacity: 0.55 }),
-  outline: new THREE.LineBasicMaterial({ color: '#6ee7ff', transparent: true, opacity: 0.9 }),
+  cad: new THREE.LineBasicMaterial({ color: '#27272a', transparent: true, opacity: 0.6 }),
+  outline: new THREE.LineBasicMaterial({ color: '#27272a', transparent: true, opacity: 0.85 }),
 };
 
 export type Look = keyof typeof materials;
