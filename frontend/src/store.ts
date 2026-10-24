@@ -58,7 +58,7 @@ export type Tab = 'activity' | 'model';
 export type AppStatus = 'idle' | 'starting' | SessionStatus;
 
 type State = {
-  // Before a session: what the user picked. Each mesh becomes a part.
+  // Meshes on their way to the workspace (each becomes a part), previewed while they upload.
   meshFiles: File[];
   meshPreviews: MeshPreview[];
   images: File[];
@@ -95,8 +95,8 @@ type State = {
   /** Time (unix s) of the latest applied event; the replay's clock. */
   lastEventAt: number | null;
 
-  addMeshes: (files: File[]) => void;
-  removeMesh: (index: number) => void;
+  openWorkspace: () => Promise<void>;
+  addMeshes: (files: File[]) => Promise<void>;
   selectPart: (part: string | null) => void;
   setUnits: (units: 'mm' | '') => void;
   stop: () => Promise<void>;
@@ -118,6 +118,8 @@ type State = {
 export type ReplayState = { id: string; index: number; total: number; playing: boolean; speed: number };
 
 let unsubscribe: (() => void) | null = null;
+// The workspace being opened, so uploads and prompts made meanwhile wait for it.
+let opening: Promise<void> | null = null;
 let nextId = 1;
 let replayEvents: ServerEvent[] = [];
 let replayTimer = 0;
@@ -164,16 +166,57 @@ export const useStore = create<State>((set, get) => ({
   replay: null,
   lastEventAt: null,
 
-  addMeshes: (files) => {
-    const meshFiles = [...get().meshFiles, ...files.filter(isMeshFile)].slice(0, MAX_MESHES);
+  openWorkspace: async () => {
+    if (opening) return opening;
+    opening = (async () => {
+      set({ ...freshSession, status: 'starting', sessionId: null, meshFiles: [] });
+      setPreviews([]);
+      try {
+        const { session_id } = await api.createSession(get().units || undefined);
+        unsubscribe?.();
+        set({ sessionId: session_id, status: 'queued', startedAt: Date.now() / 1000 });
+        unsubscribe = api.subscribe(
+          session_id,
+          (events) => get().apply(events),
+          () => {
+            if (get().status === 'running') set({ stage: 'reconnecting' });
+          },
+        );
+      } catch (err) {
+        set({ status: 'failed', error: `Could not open the workspace: ${(err as Error).message}` });
+      } finally {
+        opening = null;
+      }
+    })();
+    return opening;
+  },
+  addMeshes: async (files) => {
+    const added = files.filter(isMeshFile).slice(0, MAX_MESHES);
+    if (!added.length) return;
+    const meshFiles = [...get().meshFiles, ...added];
     setPreviews(meshFiles);
     set({ meshFiles, error: null });
+    if (opening) await opening;
+    const { sessionId, units } = get();
+    const done = () => {
+      const rest = get().meshFiles.filter((f) => !added.includes(f));
+      setPreviews(rest);
+      set({ meshFiles: rest });
+    };
+    if (!sessionId) {
+      done();
+      set({ error: 'No workspace is open; reload the page.' });
+      return;
+    }
+    try {
+      await api.uploadMeshes(sessionId, added, units || undefined);
+    } catch (err) {
+      set({ error: `${added.map((f) => f.name).join(', ')} not added: ${(err as Error).message}` });
+    } finally {
+      done();
+    }
   },
-  removeMesh: (index) => {
-    const meshFiles = get().meshFiles.filter((_, i) => i !== index);
-    setPreviews(meshFiles);
-    set({ meshFiles });
-  },
+
   selectPart: (selectedPart) =>
     set((s) => ({ selectedPart, deviations: s.workspace ? deviationsOf(s.workspace, selectedPart) : s.deviations })),
   setUnits: (units) => set({ units }),
@@ -190,38 +233,24 @@ export const useStore = create<State>((set, get) => ({
   removeImage: (index) => set((s) => ({ images: s.images.filter((_, i) => i !== index) })),
 
   submit: async (prompt) => {
-    const { sessionId, status, meshFiles, images, units } = get();
     const text = prompt.trim();
     if (!text) return;
-    const userItem: FeedItem = { kind: 'user', id: nextId++, text };
-    if (sessionId && (status === 'running' || status === 'queued')) {
-      set((s) => ({ feed: [...s.feed, userItem] }));
-      try {
-        await api.sendTurn(sessionId, text);
-      } catch (err) {
-        set((s) => ({ feed: [...s.feed, note(`Follow-up not sent: ${(err as Error).message}`, 'error')] }));
-      }
+    if (opening) await opening;
+    const { sessionId, images } = get();
+    if (!sessionId) {
+      set({ error: 'No workspace is open; reload the page.' });
       return;
     }
-    if (!meshFiles.length) {
-      set({ error: 'Add a mesh first: drop it on the viewer or use Attach.' });
-      return;
-    }
-    set({ ...freshSession, status: 'starting', feed: [userItem],
-      focusId: null, followAgent: true });
+    set((s) => ({ feed: [...s.feed, { kind: 'user', id: nextId++, text }], error: null }));
     try {
-      const { session_id } = await api.createSession(meshFiles, text, images, units || undefined);
-      unsubscribe?.();
-      set({ sessionId: session_id, status: 'queued', startedAt: Date.now() / 1000, endedAt: null, shownRevision: null });
-      unsubscribe = api.subscribe(
-        session_id,
-        (events) => get().apply(events),
-        () => {
-          if (get().status === 'running') set({ stage: 'reconnecting' });
-        },
-      );
+      // Photos go to the agent with this message.
+      if (images.length) {
+        await api.uploadImages(sessionId, images);
+        set({ images: [] });
+      }
+      await api.sendTurn(sessionId, text);
     } catch (err) {
-      set({ status: 'idle', error: (err as Error).message });
+      set((s) => ({ feed: [...s.feed, note(`Message not sent: ${(err as Error).message}`, 'error')] }));
     }
   },
 
@@ -352,9 +381,12 @@ export const useStore = create<State>((set, get) => ({
   setFollow: (followAgent) => set({ followAgent, ...(followAgent ? { focusId: null } : {}) }),
 
   startReplay: async (id) => {
-    get().exitReplay();
+    clearTimeout(replayTimer);
     unsubscribe?.();
     unsubscribe = null;
+    // A replay replaces the open workspace; end it so its CAD engine is freed.
+    const live = get().sessionId;
+    if (live) api.closeSession(live);
     try {
       replayEvents = await api.replayEvents(id);
     } catch (err) {
@@ -388,6 +420,7 @@ export const useStore = create<State>((set, get) => ({
     if (!get().replay) return;
     replayEvents = [];
     set({ ...freshSession, replay: null, status: 'idle', sessionId: null });
+    void get().openWorkspace();
   },
 }));
 

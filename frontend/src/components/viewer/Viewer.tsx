@@ -11,50 +11,48 @@ export function Viewer() {
   const meshFiles = useStore((s) => s.meshFiles);
   const revisions = useStore((s) => s.revisions);
   const addMeshes = useStore((s) => s.addMeshes);
+  const replay = useStore((s) => s.replay);
+  const asked = useStore((s) => s.feed.some((i) => i.kind === 'user'));
   const [dragging, setDragging] = useState(false);
 
-  const hasSession = status !== 'idle';
+  // The workspace is always open; meshes can be added to it at any time.
+  const canDrop = !replay && status !== 'done' && status !== 'failed';
+  const empty = revisions.length === 0 && meshFiles.length === 0;
   const hasCad = revisions.some((r) => r.generated);
+  const engineStarting = status === 'starting' || stage === 'cad_starting' || stage === 'preparing';
 
   return (
     <section
       className="relative min-w-0 flex-1 overflow-hidden bg-sunken"
       onDragOver={(e) => {
-        if (hasSession) return;
+        if (!canDrop) return;
         e.preventDefault();
         setDragging(true);
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
-        if (hasSession) return;
+        if (!canDrop) return;
         e.preventDefault();
         setDragging(false);
         const meshes = [...e.dataTransfer.files].filter(isMeshFile);
-        if (meshes.length) addMeshes(meshes);
+        if (meshes.length) void addMeshes(meshes);
         const photos = [...e.dataTransfer.files].filter((f) => f.type.startsWith('image/'));
         if (photos.length) useStore.getState().addImages(photos);
       }}
     >
       <Scene />
 
-      {!hasSession && !meshFiles.length && <DropZone />}
-      {!hasSession && meshFiles.length > 0 && (
-        <Hint
-          text={
-            meshFiles.length === 1
-              ? `${meshFiles[0].name} loaded. Describe the part in the panel to start, or drop more parts.`
-              : `${meshFiles.length} meshes loaded, one part each. Describe what to build in the panel.`
-          }
-        />
-      )}
-      {hasSession && !hasCad && (status === 'starting' || stage === 'cad_starting' || stage === 'preparing') && (
-        <Hint text={status === 'starting' ? 'Uploading mesh…' : 'Starting the CAD engine…'} spinner />
+      {empty && !asked && !replay && <DropZone />}
+      {meshFiles.length > 0 ? (
+        <Hint text={`Adding ${meshFiles.map((f) => f.name).join(', ')} to the workspace…`} spinner />
+      ) : (
+        asked && !hasCad && engineStarting && <Hint text="Starting the CAD engine…" spinner />
       )}
 
       <div className="pointer-events-none absolute inset-x-4 top-4 flex items-start justify-between gap-4">
         <div className="pointer-events-auto">{hasCad && <ViewModeToggle />}</div>
         <div className="pointer-events-auto flex flex-wrap items-start justify-end gap-2">
-          {hasSession && <FollowControl />}
+          {(asked || replay) && <FollowControl />}
           {hasCad && <Legend />}
         </div>
       </div>
@@ -86,7 +84,7 @@ function DropZone() {
     input.type = 'file';
     input.multiple = true;
     input.accept = '.stl,.obj,.ply,.glb';
-    input.onchange = () => input.files?.length && addMeshes([...input.files]);
+    input.onchange = () => input.files?.length && void addMeshes([...input.files]);
     input.click();
   };
 
@@ -99,14 +97,15 @@ function DropZone() {
         <button type="button" onClick={browse} className="text-[16px] font-semibold hover:text-cad">
           Drop meshes to start
         </button>
-        <p className="text-[12px] text-muted">.stl · .obj · .ply · .glb, one part per file, or attach photos</p>
+        <p className="text-[12px] text-muted">.stl · .obj · .ply · .glb, one part per file</p>
+        <p className="text-[12px] text-muted">or describe a part in the panel to design it from scratch</p>
         {examples.slice(0, 2).map((name) => (
           <button
             key={name}
             type="button"
             onClick={() =>
               fetchExample(name)
-                .then((file) => addMeshes([file]))
+                .then((file) => void addMeshes([file]))
                 .catch((e) => setError(e.message))
             }
             className="rounded-lg bg-cad/16 px-3 py-1 text-[12px] font-medium text-cad hover:bg-cad/25"

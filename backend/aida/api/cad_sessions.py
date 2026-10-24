@@ -139,11 +139,12 @@ def write_reference(mesh, artifacts: Artifacts, part: str | None = None) -> Path
     return target
 
 
-def plan_parts(uploads: list[tuple[str, object]]) -> tuple[list[tuple[str, object]], list[str]]:
-    """[(file name, mesh)] -> ([(part name, mesh)], notes). One file may hold several parts."""
+def plan_parts(uploads: list[tuple[str, object]], taken=()) -> tuple[list[tuple[str, object]], list[str]]:
+    """[(file name, mesh)] -> ([(part name, mesh)], notes). One file may hold several parts;
+    names avoid ``taken`` (parts already in the workspace)."""
     from ..workspace import part_name_from
 
-    parts, notes, taken = [], [], set()
+    parts, notes, taken = [], [], set(taken)
     for file_name, mesh in uploads:
         pieces, dropped = split_mesh(mesh) if len(uploads) == 1 else ([mesh], 0)
         base = part_name_from(file_name, taken)
@@ -153,10 +154,10 @@ def plan_parts(uploads: list[tuple[str, object]]) -> tuple[list[tuple[str, objec
         if len(pieces) > 1:
             notes.append(f'{file_name} holds {len(pieces)} separate pieces; each is its own part')
         for index, piece in enumerate(pieces, start=1):
-            name = base if len(pieces) == 1 else part_name_from(f'{base}_{index}', taken)
+            name = base if len(pieces) == 1 else part_name_from(f'{part_name_from(file_name)}_{index}', taken)
             taken.add(name)
             parts.append((name, piece))
-    if len(parts) > MAX_MESHES:
+    if len(taken) + len(parts) > MAX_MESHES:
         raise ValueError(f'At most {MAX_MESHES} parts per workspace')
     return parts, notes
 
@@ -221,6 +222,66 @@ def save_image_png(data: bytes, name: str, target: Path):
         raise ValueError(f'Image {name} could not be read: {exc}') from exc
 
 
+def ingest_meshes(session, meshes: list[tuple[str, bytes]], existing=()) -> dict:
+    """Blocking: validate uploaded meshes, write each new part's reference, and write a
+    scene of every reference (``existing`` (name, path) plus the new ones).
+
+    Returns the new part specs, upload notes, and the scene for finish_ingest."""
+    if not meshes:
+        raise ValueError('Upload at least one mesh')
+    if len(meshes) > MAX_MESHES:
+        raise ValueError(f'At most {MAX_MESHES} meshes')
+    root = session.artifacts.root
+    first = len(list(root.glob('upload-*')))
+    loaded = []
+    for index, (mesh_name, data) in enumerate(meshes, start=first + 1):
+        mesh = load_mesh(data, mesh_name)
+        (root / f'upload-{index:02d}{Path(mesh_name).suffix.lower()}').write_bytes(data)
+        loaded.append((mesh_name, mesh))
+    existing = list(existing)
+    parts, notes = plan_parts(loaded, taken=[name for name, _ in existing])
+    specs = [{'name': name, 'reference': write_reference(mesh, session.artifacts, name)} for name, mesh in parts]
+    items = [(name, path, [(f'{name}|reference', IDENTITY)]) for name, path in existing]
+    items += [(name, mesh, [(f'{name}|reference', IDENTITY)]) for name, mesh in parts]
+    glb = root / f'references-{uuid.uuid4().hex[:8]}.glb'
+    stats = write_scene(items, glb)
+    files = ', '.join(name for name, _ in meshes)
+    names = [name for name, _ in parts]
+    summary = (f'The user added {files}; ' + ('it is' if len(names) == 1 else 'they are')
+               + f" now part{'s' if len(names) > 1 else ''} {', '.join(names)} (reference meshes "
+               + ', '.join(f'ref_{n}' for n in names) + ').')
+    return {'specs': specs, 'notes': notes, 'glb': glb, 'stats': stats, 'summary': summary,
+            'parts': [name for name, _ in existing] + names}
+
+
+def finish_ingest(session, added: dict) -> list[dict]:
+    """Record the new parts on the session; return the events to publish (loop thread)."""
+    new = [spec['name'] for spec in added['specs']]
+    session.parts = list(dict.fromkeys(session.parts + new))
+    session.notes += added['notes']
+    session.pending.append(added['summary'] + ''.join(f' {note}.' for note in added['notes']))
+    events = [{'type': 'notice', 'text': note} for note in added['notes']]
+    events.append({'type': 'notice', 'text': f"Added part{'s' if len(new) > 1 else ''} {', '.join(new)}"})
+    events.append(session.add_revision(added['glb'], False, added['stats'], parts=added['parts']))
+    return events
+
+
+def ingest_images(session, images: list[tuple[str, bytes]]):
+    """Blocking: store photos as PNGs and tell the agent about them on its next turn."""
+    root = session.artifacts.root
+    if len(session.images) + len(images) > MAX_IMAGES:
+        raise ValueError(f'At most {MAX_IMAGES} reference images')
+    names = []
+    for name, data in images:
+        image_path = root / f'input-{len(session.images) + len(names) + 1:02d}.png'
+        save_image_png(data, name, image_path)
+        names.append(image_path.name)
+    session.images += names
+    session.pending.append(f"Reference photos uploaded: {', '.join(names)}. "
+                           'Call view_image to inspect them before modeling.')
+    return names
+
+
 # --------------------------------------------------------------------------
 # Session state
 # --------------------------------------------------------------------------
@@ -242,6 +303,10 @@ class CadSession:
         self.parts: list[str] = []      # part names in the workspace at upload
         self.notes: list[str] = []      # what upload did with the meshes (splits, debris)
         self.workspace = None           # live Workspace while the runner is active
+        # What happened since the agent's last turn (meshes added, photos): prefixed to the next prompt.
+        self.pending: list[str] = []
+        # Serialises adding parts with the runner loading the workspace.
+        self.parts_lock = asyncio.Lock()
         self.turns: asyncio.Queue = asyncio.Queue()
         self.task: asyncio.Task | None = None
         # Live handles while the runner is active: CAD bridge (downloads) and
@@ -253,6 +318,17 @@ class CadSession:
         self._waiters: set[asyncio.Future] = set()
 
     # -- URLs ---------------------------------------------------------------
+    def add_revision(self, glb: Path, generated: bool, stats: dict, **extra) -> dict:
+        """Number a GLB as the next revision and record it (loop thread, or before streaming)."""
+        revision = len(self.meshes)
+        target = glb.with_name(f'mesh-{revision:03d}.glb')
+        if glb != target:
+            glb.replace(target)
+        entry = {'revision': revision, 'path': target, 'generated': generated, **extra, **stats}
+        self.meshes.append(entry)
+        return {'type': 'mesh', 'revision': revision, 'url': self.mesh_url(revision),
+                'generated': generated, **extra, **stats}
+
     def heatmap_url(self, revision: int, part: str) -> str:
         return f'/api/v1/cad-sessions/{self.id}/heatmap.glb?rev={revision}&part={part}'
 
@@ -358,51 +434,26 @@ class CadSessionManager:
         self._warm = None
 
     # -- lifecycle ----------------------------------------------------------
-    def create(self, meshes: list[tuple[str, bytes]],
-               images: list[tuple[str, bytes]], prompt: str,
-               units: str | None) -> CadSession:
-        """Blocking preparation: validate uploads, lay out the workspace's parts
-        (one per file, or one per separate piece of a single file) and build revision 0."""
+    def create(self, meshes: list[tuple[str, bytes]] = (),
+               images: list[tuple[str, bytes]] = (), prompt: str = '',
+               units: str | None = None) -> CadSession:
+        """Blocking preparation of a workspace session; meshes and photos are optional
+        (a session can design from scratch, and both can be added later)."""
         from ..workspace import write_workspace
 
-        if not meshes:
-            raise ValueError('Upload at least one mesh')
-        if len(meshes) > MAX_MESHES:
-            raise ValueError(f'At most {MAX_MESHES} meshes')
         artifacts = Artifacts(self.storage_dir)
         session = CadSession(artifacts, prompt, units)
         session.record({'type': 'stage', 'stage': 'preparing'})
-
-        loaded = []
-        for index, (mesh_name, data) in enumerate(meshes, start=1):
-            upload = artifacts.root / f'upload-{index:02d}{Path(mesh_name).suffix.lower()}'
-            upload.write_bytes(data)
-            loaded.append((mesh_name, load_mesh(data, mesh_name)))
-        parts, notes = plan_parts(loaded)
-        specs = [{'name': name, 'reference': write_reference(mesh, artifacts, name)} for name, mesh in parts]
-        write_workspace(artifacts.root, specs)
-        session.parts = [name for name, _ in parts]
-        session.notes = notes
-        for note in notes:
-            session.record({'type': 'notice', 'text': note})
-
-        image_names = []
-        for index, (name, data) in enumerate(images, start=1):
-            if len(image_names) >= MAX_IMAGES:
-                raise ValueError(f'At most {MAX_IMAGES} reference images')
-            image_path = artifacts.root / f'input-{index:02d}.png'
-            save_image_png(data, name, image_path)
-            image_names.append(image_path.name)
-        session.images = image_names
-
-        glb = artifacts.root / 'mesh-000.glb'
-        stats = write_scene([(name, mesh, [(f'{name}|reference', IDENTITY)]) for name, mesh in parts], glb)
-        session.meshes.append({'revision': 0, 'path': glb, 'generated': False, **stats})
-        session.record({'type': 'mesh', 'revision': 0, 'url': session.mesh_url(0),
-                        'generated': False, 'parts': session.parts, **stats})
-
+        write_workspace(artifacts.root, [])
+        if meshes:
+            added = ingest_meshes(session, meshes)
+            write_workspace(artifacts.root, added['specs'])
+            for event in finish_ingest(session, added):
+                session.record(event)
+        if images:
+            ingest_images(session, images)
         artifacts.log('session', {'meshes': [name for name, _ in meshes], 'parts': session.parts,
-                                  'units': units, 'images': image_names, 'prompt': prompt})
+                                  'units': units, 'images': session.images, 'prompt': prompt})
         with self._mutex:
             self._sessions[session.id] = session
         return session
@@ -625,21 +676,26 @@ async def run_cad_session(session: CadSession):
         async with _manager().cad_for(session) as cad:
             from ..workspace import Workspace
 
-            workspace = Workspace.load(cad, session.artifacts)
-            for part, reference in workspace.references():
-                await cad.load_reference(reference, part)
-            cad.on_execute = snapshot_hook(cad, session, workspace)
-            session.cad, session.workspace = cad, workspace
+            # Meshes uploaded while the engine started are in workspace.json; ones uploaded
+            # after this are added to the live workspace (add_meshes_live).
+            async with session.parts_lock:
+                workspace = Workspace.load(cad, session.artifacts)
+                for part, reference in workspace.references():
+                    await cad.load_reference(reference, part)
+                cad.on_execute = snapshot_hook(cad, session, workspace)
+                session.cad, session.workspace = cad, workspace
             options = options_for(cad, session.artifacts, session.units, on_event=bridge,
                                   workspace=workspace)
             from claude_agent_sdk import ClaudeSDKClient
 
             async with ClaudeSDKClient(options=options) as client:
                 session.client = client
+                session.set_stage('idle')  # ready: the workspace waits for a prompt
                 while True:
                     prompt = await session.turns.get()
                     if prompt is None:
                         break
+                    prompt = compose_turn(session, prompt)
                     session.set_stage('agent_running')
                     await run_turn(client, prompt, session.artifacts, on_event=bridge)
                     if cad.broken:
@@ -664,16 +720,18 @@ def explain_error(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
 
 
-def first_prompt(session: CadSession) -> str:
-    """The user's prompt, plus pointers to any uploaded reference photos."""
-    text = session.prompt
-    if len(session.parts) > 1 or session.notes:
-        text += ('\n\nUploaded meshes became these parts: ' + ', '.join(session.parts) + '. '
-                 + ' '.join(f'{note}.' for note in session.notes))
-    if session.images:
-        text += ('\n\nReference photos uploaded with this request: '
-                 f"{', '.join(session.images)}. "
-                 'Call view_image to inspect them before modeling.')
+def first_prompt(session: CadSession, prompt: str | None = None) -> str:
+    """A prompt with what changed since the agent's last turn (meshes, photos) in front."""
+    text = session.prompt if prompt is None else prompt
+    if session.pending:
+        text = 'Since your last turn: ' + ' '.join(session.pending) + '\n\n' + text
+    return text
+
+
+def compose_turn(session: CadSession, prompt: str) -> str:
+    """first_prompt, then clear the pending notes (they were delivered)."""
+    text = first_prompt(session, prompt)
+    session.pending.clear()
     return text
 
 
@@ -697,44 +755,106 @@ def _session_or_404(session_id: str) -> CadSession:
     return session
 
 
+def _check_units(units):
+    if units is not None and units not in UNITS:
+        raise HTTPException(status_code=400, detail=f'units must be one of {sorted(UNITS)}')
+
+
 @router.post('/api/v1/cad-sessions', status_code=202)
 async def create_cad_session(
-    mesh: list[UploadFile] = File(...),
-    prompt: str = Form(...),
+    mesh: list[UploadFile] | None = File(None),
+    prompt: str | None = Form(None),
     units: str | None = Form(None),
     images: list[UploadFile] | None = File(None),
 ):
-    if not prompt.strip():
-        raise HTTPException(status_code=400, detail='prompt must not be empty')
+    """Open a workspace session. The CAD engine and agent start now; meshes, photos
+    and a first prompt are optional (they can all come later)."""
     if _manager().uses_real_agent and not os.environ.get('ANTHROPIC_API_KEY'):
         # The agent runs with an isolated Claude config, so only the API key works.
         raise HTTPException(status_code=400, detail=(
             'ANTHROPIC_API_KEY is not set. Add it to .env in the repository root '
             '(copy .env.example), then restart `uv run aida-api`.'))
-    if units is not None and units not in UNITS:
-        raise HTTPException(status_code=400, detail=f'units must be one of {sorted(UNITS)}')
-    mesh_uploads = [(upload.filename or 'mesh.stl', await upload.read()) for upload in mesh]
-    image_uploads = []
-    for upload in images or []:
-        image_uploads.append((upload.filename or 'image', await upload.read()))
+    _check_units(units)
+    prompt = (prompt or '').strip()
+    mesh_uploads = [(upload.filename or 'mesh.stl', await upload.read()) for upload in mesh or []]
+    image_uploads = [(upload.filename or 'image', await upload.read()) for upload in images or []]
 
     def prepare():
-        return _manager().create(mesh_uploads, image_uploads, prompt.strip(), units)
+        return _manager().create(mesh_uploads, image_uploads, prompt, units)
 
     try:
         session = await asyncio.to_thread(prepare)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # The initial turn starts the agent as soon as the session exists.
-    session.record({'type': 'user_prompt', 'text': session.prompt})
-    session.turns.put_nowait(first_prompt(session))
+    if prompt:
+        session.record({'type': 'user_prompt', 'text': prompt})
+        session.turns.put_nowait(prompt)
     _manager().start(session)
     return {'session_id': session.id,
             'status_url': f'/api/v1/cad-sessions/{session.id}',
             'events_url': session.events_url,
-            'mesh_url': session.mesh_url(0),
+            'mesh_url': session.mesh_url(0) if session.meshes else None,
             'parts': session.parts}
+
+
+def _open_session(session_id: str) -> CadSession:
+    session = _session_or_404(session_id)
+    if session.status not in ('queued', 'running'):
+        raise HTTPException(status_code=409, detail=f'Session is {session.status}; start a new one')
+    return session
+
+
+@router.post('/api/v1/cad-sessions/{session_id}/meshes', status_code=202)
+async def add_cad_meshes(session_id: str, mesh: list[UploadFile] = File(...), units: str | None = Form(None)):
+    """Add meshes to a running workspace: each becomes a part with a reference mesh."""
+    session = _open_session(session_id)
+    _check_units(units)
+    uploads = [(upload.filename or 'mesh.stl', await upload.read()) for upload in mesh]
+    async with session.parts_lock:
+        workspace = session.workspace
+        if workspace is not None:
+            existing = workspace.references()
+        else:
+            from ..workspace import read_workspace
+            existing = [(p['name'], p['reference']) for p in read_workspace(session.artifacts.root)[0]
+                        if p.get('reference')]
+        try:
+            added = await asyncio.to_thread(ingest_meshes, session, uploads, existing)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if workspace is not None:
+            for spec in added['specs']:
+                workspace.add_reference_part(spec['name'], spec['reference'])
+                try:
+                    await session.cad.load_reference(spec['reference'], spec['name'])
+                except Exception as exc:  # the part still works through the mesh tools
+                    session.publish({'type': 'notice', 'text': f"{spec['name']}: CAD import failed ({exc})"})
+        else:
+            from ..workspace import read_workspace, write_workspace
+            parts, active = read_workspace(session.artifacts.root)
+            write_workspace(session.artifacts.root, parts + added['specs'], active)
+        if units:
+            session.units = units
+            if session.cad is not None:
+                session.cad.mesh.units = units
+        if not units:
+            added['summary'] += ' Their units are unknown: do not claim physical dimensions.'
+        for event in finish_ingest(session, added):
+            session.publish(event)
+    return {'parts': [spec['name'] for spec in added['specs']], 'notes': added['notes']}
+
+
+@router.post('/api/v1/cad-sessions/{session_id}/images', status_code=202)
+async def add_cad_images(session_id: str, images: list[UploadFile] = File(...)):
+    """Reference photos for the agent's next turn."""
+    session = _open_session(session_id)
+    uploads = [(upload.filename or 'image', await upload.read()) for upload in images]
+    try:
+        names = await asyncio.to_thread(ingest_images, session, uploads)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {'images': names}
 
 
 @router.get('/api/v1/examples')
@@ -810,10 +930,7 @@ def get_cad_file(session_id: str, filename: str):
 
 @router.post('/api/v1/cad-sessions/{session_id}/turns', status_code=202)
 async def add_cad_turn(session_id: str, body: TurnRequest):
-    session = _session_or_404(session_id)
-    if session.status not in ('queued', 'running'):
-        raise HTTPException(status_code=409,
-                            detail=f'Session is {session.status}; start a new one')
+    session = _open_session(session_id)
     session.publish({'type': 'user_prompt', 'text': body.prompt.strip()})
     session.turns.put_nowait(body.prompt.strip())
     return {'queued': True, 'session_id': session.id}

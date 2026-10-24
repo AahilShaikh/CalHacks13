@@ -257,6 +257,19 @@ class Workspace:
                 'note': f'{name} has no reference mesh: set its parameters as design intent (assumed) '
                         f'and build it with model_* tools, part={name!r}.'}
 
+    def add_reference_part(self, name, reference, description=''):
+        """A part for a mesh the user uploaded while the session runs."""
+        if name in self.parts or name == ASSEMBLY:
+            raise ModelError(f'A part named {name!r} already exists')
+        model = self._add(name, reference, description)
+        mesh = getattr(self.cad, 'mesh', None)
+        if mesh is not None and hasattr(mesh, 'references'):
+            mesh.references[name] = model.reference
+        if self.active is None:
+            self.active = name
+        self.save()
+        return model
+
     def set_active(self, name):
         self.part(name)
         self.active = name

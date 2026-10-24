@@ -14,21 +14,22 @@ export function Composer() {
   const images = useStore((s) => s.images);
   const error = useStore((s) => s.error);
   const units = useStore((s) => s.units);
-  const { addMeshes, removeMesh, setUnits, addImages, removeImage, submit, stop } = useStore.getState();
+  const { addMeshes, setUnits, addImages, removeImage, submit, stop } = useStore.getState();
 
   const live = status === 'running' || status === 'queued';
   // The session stays open between turns; only say "working" while a turn runs.
-  const working = live && stage !== 'idle';
+  const working = live && !['', 'idle', 'preparing', 'cad_starting'].includes(stage);
   const ended = status === 'done' || status === 'failed';
-  const busy = status === 'starting';
-  const canSend = !busy && !ended && text.trim().length > 0 && (live || meshFiles.length > 0);
-  const placeholder = working
-    ? 'Aida is working. You can queue a follow-up…'
-    : live
-      ? 'Ask for a change, or tell Aida what to check next…'
-      : ended
-      ? 'Session ended. Reload to start a new one.'
-      : 'Describe the part, or ask for a change…';
+  const asked = useStore((s) => s.feed.some((i) => i.kind === 'user'));
+  // The workspace opens with the page; a message typed while it starts waits for it.
+  const canSend = !ended && status !== 'idle' && text.trim().length > 0;
+  const placeholder = ended
+    ? 'Session ended. Reload to start a new one.'
+    : working
+      ? 'Aida is working. You can queue a follow-up…'
+      : asked
+        ? 'Ask for a change, or tell Aida what to check next…'
+        : 'Describe a part to design, or what to do with the meshes…';
 
   const send = async () => {
     if (!canSend) return;
@@ -41,19 +42,19 @@ export function Composer() {
     if (!files) return;
     const list = [...files];
     const meshes = list.filter(isMeshFile);
-    if (meshes.length && !live) addMeshes(meshes);
+    if (meshes.length && !ended) void addMeshes(meshes);
     const photos = list.filter((f) => f.type.startsWith('image/'));
-    if (photos.length && !live) addImages(photos);
+    if (photos.length && !ended) addImages(photos);
   };
 
   return (
     <div className="flex shrink-0 flex-col gap-2">
       {error && <p className="text-[12px] text-error">{error}</p>}
       <div className="flex flex-col gap-2 rounded-md border border-line-strong bg-sunken p-3 focus-within:border-cad/60">
-        {!live && !ended && (meshFiles.length > 0 || images.length > 0) && (
+        {!ended && (meshFiles.length > 0 || images.length > 0) && (
           <div className="flex flex-wrap gap-1.5">
             {meshFiles.map((mesh, index) => (
-              <Chip key={`${mesh.name}-${index}`} label={mesh.name} tone="cad" onRemove={() => removeMesh(index)} />
+              <Chip key={`${mesh.name}-${index}`} label={`${mesh.name} · uploading`} tone="cad" />
             ))}
             {images.map((image, index) => (
               <Chip key={`${image.name}-${index}`} label={image.name} tone="muted" onRemove={() => removeImage(index)} />
@@ -69,7 +70,7 @@ export function Composer() {
               void send();
             }
           }}
-          disabled={ended || busy}
+          disabled={ended}
           rows={2}
           placeholder={placeholder}
           className="min-h-12 resize-none bg-transparent text-[13px] text-ink outline-none placeholder:text-faint disabled:opacity-60"
@@ -78,7 +79,7 @@ export function Composer() {
           <button
             type="button"
             onClick={() => input.current?.click()}
-            disabled={live || ended}
+            disabled={ended}
             className="flex items-center gap-1 rounded-sm px-3 py-2 text-[12px] font-semibold text-muted hover:text-ink disabled:opacity-40"
           >
             <img src={attachIcon} alt="" width={14} height={14} />
@@ -95,7 +96,7 @@ export function Composer() {
               e.target.value = '';
             }}
           />
-          {!live && !ended && (
+          {!ended && (
             <select
               value={units}
               onChange={(e) => setUnits(e.target.value as 'mm' | '')}
@@ -125,7 +126,7 @@ export function Composer() {
             className="flex items-center gap-1 rounded-sm bg-cad px-3 py-2 text-[12px] font-semibold text-base hover:brightness-110 disabled:opacity-40"
           >
             <img src={sendIcon} alt="" width={14} height={14} />
-            {busy ? 'Starting…' : working ? 'Queue' : 'Send'}
+            {working ? 'Queue' : 'Send'}
           </button>
         </div>
       </div>
@@ -133,13 +134,15 @@ export function Composer() {
   );
 }
 
-function Chip({ label, tone, onRemove }: { label: string; tone: 'cad' | 'muted'; onRemove: () => void }) {
+function Chip({ label, tone, onRemove }: { label: string; tone: 'cad' | 'muted'; onRemove?: () => void }) {
   return (
     <span className={`flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-medium ${tone === 'cad' ? 'bg-cad/16 text-cad' : 'bg-muted/16 text-muted'}`}>
       {label}
-      <button type="button" aria-label={`Remove ${label}`} onClick={onRemove} className="opacity-70 hover:opacity-100">
-        ×
-      </button>
+      {onRemove && (
+        <button type="button" aria-label={`Remove ${label}`} onClick={onRemove} className="opacity-70 hover:opacity-100">
+          ×
+        </button>
+      )}
     </span>
   );
 }

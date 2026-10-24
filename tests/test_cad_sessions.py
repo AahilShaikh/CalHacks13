@@ -212,6 +212,74 @@ def test_one_mesh_with_separate_pieces_is_split(client, tmp_path):
     assert any(e['type'] == 'notice' for e in events)
 
 
+def test_workspace_opens_empty_and_takes_meshes_later(client, seen, tmp_path):
+    import trimesh
+    from aida.api.cad_sessions import compose_turn
+
+    created = client.post('/api/v1/cad-sessions', data={'units': 'mm'})
+    assert created.status_code == 202, created.text
+    session_id = created.json()['session_id']
+    assert created.json()['parts'] == [] and created.json()['mesh_url'] is None
+    session = server.cad_manager.get(session_id)
+    assert json.loads((session.artifacts.root / 'workspace.json').read_text())['parts'] == []
+    assert session.meshes == [] and seen == []  # no prompt yet: the agent waits
+
+    added = client.post(f'/api/v1/cad-sessions/{session_id}/meshes',
+                        files=[('mesh', ('Keycap.stl', mesh_bytes(), 'model/stl'))], data={'units': 'mm'})
+    assert added.status_code == 202, added.text
+    assert added.json()['parts'] == ['keycap']
+    again = client.post(f'/api/v1/cad-sessions/{session_id}/meshes',
+                        files=[('mesh', ('keycap.stl', two_boxes_bytes(), 'model/stl'))])
+    assert again.json()['parts'] == ['keycap_1', 'keycap_2']   # split, named around the first
+    parts = json.loads((session.artifacts.root / 'workspace.json').read_text())['parts']
+    assert [p['name'] for p in parts] == ['keycap', 'keycap_1', 'keycap_2']
+    # Each upload publishes a reference revision holding every reference so far.
+    scene = trimesh.load(str(session.meshes[-1]['path']))
+    assert len(scene.graph.nodes_geometry) == 3 and not session.meshes[-1]['generated']
+
+    photo = client.post(f'/api/v1/cad-sessions/{session_id}/images',
+                        files=[('images', ('photo.png', png_bytes(tmp_path), 'image/png'))])
+    assert photo.json()['images'] == ['input-01.png']
+
+    # The agent hears about all of it on its next turn, once.
+    turn = compose_turn(session, 'Make a keyboard')
+    assert turn.endswith('Make a keyboard') and 'keycap_1, keycap_2' in turn
+    assert 'unknown' in turn and 'input-01.png' in turn
+    assert compose_turn(session, 'Next') == 'Next'
+
+    notices = [e['text'] for e in session.events if e['type'] == 'notice']
+    assert 'Added part keycap' in notices and 'Added parts keycap_1, keycap_2' in notices
+
+
+async def test_meshes_join_a_running_workspace(tmp_path):
+    import trimesh
+    from aida.api.cad_sessions import CadSession, finish_ingest, ingest_meshes
+
+    class Mesh:
+        references = {}
+
+    class LiveCad:
+        mesh = Mesh()
+        loaded = []
+
+        async def load_reference(self, path, part):
+            self.loaded.append(part)
+
+    cad = LiveCad()
+    workspace = fake_workspace(cad, tmp_path, ('plate',), built=(), reference=True)
+    session = CadSession(FakeArtifacts(tmp_path), '', 'mm')
+    added = ingest_meshes(session, [('cap.stl', mesh_bytes())], workspace.references())
+    for spec in added['specs']:
+        workspace.add_reference_part(spec['name'], spec['reference'])
+    events = finish_ingest(session, added)
+    assert sorted(workspace.parts) == ['cap', 'plate'] and cad.mesh.references['cap'].is_file()
+    assert workspace.active == 'plate'           # the agent's part stays active
+    mesh = events[-1]
+    assert mesh['type'] == 'mesh' and mesh['parts'] == ['plate', 'cap'] and mesh['revision'] == 0
+    assert sorted(trimesh.load(str(session.meshes[0]['path'])).graph.nodes_geometry) == \
+        ['cap|reference', 'plate|reference']
+
+
 def test_invalid_uploads_rejected(client, tmp_path):
     response = client.post('/api/v1/cad-sessions',
                            files=[('mesh', ('bad.stl', b'not an stl', 'model/stl'))],
@@ -224,9 +292,8 @@ def test_invalid_uploads_rejected(client, tmp_path):
                            data={'prompt': 'x', 'units': 'm'})
     assert response.status_code == 400
 
-    response = client.post('/api/v1/cad-sessions',
-                           files=[('mesh', ('box.stl', mesh_bytes(), 'model/stl'))])
-    assert response.status_code == 422
+    assert client.post('/api/v1/cad-sessions/nope/meshes',
+                       files=[('mesh', ('box.stl', mesh_bytes(), 'model/stl'))]).status_code == 404
 
     assert client.get('/api/v1/cad-sessions/nope').status_code == 404
     assert client.get('/api/v1/cad-sessions/nope/events').status_code == 404
