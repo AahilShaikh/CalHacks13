@@ -265,3 +265,22 @@ async def test_agent_event_bridge_emits_code_and_render(tmp_path):
     render = next(e for e in session.events if e['type'] == 'render')
     assert render['url'].endswith('/files/view-abc.png')
     assert Path(session.artifacts.root / 'view-abc.png').is_file()
+
+
+def test_viewer_shows_only_the_model_object_once_it_exists():
+    import asyncio
+
+    from aida.api.cad_sessions import generated_object_names
+
+    class Names:
+        def __init__(self, names):
+            self.names = names
+
+        async def session_object_names(self):
+            return self.names
+
+    # Before the parametric model exists, everything but the reference is shown.
+    assert asyncio.run(generated_object_names(Names(['reference_mesh', 'scratch']))) == ['scratch']
+    # Once it exists, scratch experiments stay out of the viewer.
+    assert asyncio.run(generated_object_names(
+        Names(['reference_mesh', 'scratch', 'generated_cad']))) == ['generated_cad']

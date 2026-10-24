@@ -35,6 +35,8 @@ MESH_SUFFIXES = {'.stl', '.glb', '.obj', '.ply'}
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 UNITS = {'mm'}
 SSE_HEARTBEAT_S = 15.0
+# Tools whose results name a PNG the feed should show.
+IMAGE_TOOLS = {'render_view', 'view_mesh', 'slice_mesh', 'compare_to_mesh'}
 
 router = APIRouter()
 
@@ -278,7 +280,7 @@ def agent_event_bridge(session: CadSession):
             session.publish({'type': 'code', 'index': state['code'],
                              'code': (event.get('args') or {}).get('code', '')})
         elif event.get('type') == 'tool_result' and event.get('ok') \
-                and event.get('name') in ('render_view', 'view_mesh', 'slice_mesh'):
+                and event.get('name') in IMAGE_TOOLS:
             for match in re.findall(r'[\w./-]+\.png', event.get('text', '')):
                 name = Path(match).name
                 if (session.artifacts.root / name).is_file():
@@ -329,8 +331,14 @@ def snapshot_hook(cad, session: CadSession):
 
 
 async def generated_object_names(cad) -> list[str]:
-    """Named session objects except the imported reference mesh."""
+    """What the viewer shows as generated CAD: the parametric model's object
+    once it exists (so scratch experiments stay out of the view), otherwise
+    every named object except the imported reference mesh."""
+    from ..model import OBJECT
+
     names = await cad.session_object_names()
+    if OBJECT in names:
+        return [OBJECT]
     return [name for name in names if name != 'reference_mesh']
 
 
