@@ -33,6 +33,7 @@ export type ServerEvent = Stamp &
         duration_s?: number;
       }
     | { type: 'session_done'; status: string }
+    | { type: 'interrupted' }
     | ({ type: 'model_state' } & ModelState)
   );
 

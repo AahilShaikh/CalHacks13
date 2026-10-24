@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { PHASE_VERB } from '../lib/events';
 import { generatedRevisions, useStore } from '../store';
+import { DownloadMenu } from './DownloadMenu';
 
 const CHIP = {
   inspect: 'bg-inspect/16 text-inspect',
@@ -83,6 +84,7 @@ export function TopBar() {
         {activity}
       </div>
       <span className="font-mono text-[12px] text-muted">{metrics}</span>
+      <DownloadMenu />
     </header>
   );
 }

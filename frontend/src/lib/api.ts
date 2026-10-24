@@ -25,6 +25,14 @@ export async function sendTurn(sessionId: string, prompt: string) {
   );
 }
 
+export async function interrupt(sessionId: string) {
+  return json(await fetch(`/api/v1/cad-sessions/${sessionId}/interrupt`, { method: 'POST' }));
+}
+
+export type DownloadKind = 'step' | 'stl' | 'model.py';
+export const downloadUrl = (sessionId: string, kind: DownloadKind) =>
+  `/api/v1/cad-sessions/${sessionId}/download/${kind}`;
+
 export async function listExamples() {
   return json<{ name: string; bytes: number }[]>(await fetch('/api/v1/examples'));
 }

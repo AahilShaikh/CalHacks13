@@ -58,6 +58,8 @@ type State = {
   meshFile: File | null;
   meshPreviewUrl: string | null;
   images: File[];
+  /** Units of the uploaded mesh; '' tells the agent not to claim physical sizes. */
+  units: 'mm' | '';
   // Session.
   sessionId: string | null;
   status: AppStatus;
@@ -84,6 +86,8 @@ type State = {
   followAgent: boolean;
 
   setMesh: (file: File | null) => void;
+  setUnits: (units: 'mm' | '') => void;
+  stop: () => Promise<void>;
   addImages: (files: File[]) => void;
   removeImage: (index: number) => void;
   submit: (prompt: string) => Promise<void>;
@@ -105,6 +109,7 @@ export const useStore = create<State>((set, get) => ({
   meshFile: null,
   meshPreviewUrl: null,
   images: [],
+  units: 'mm',
   sessionId: null,
   status: 'idle',
   stage: '',
@@ -131,11 +136,21 @@ export const useStore = create<State>((set, get) => ({
     const preview = file && file.name.toLowerCase().endsWith('.stl') ? URL.createObjectURL(file) : null;
     set({ meshFile: file, meshPreviewUrl: preview, error: null });
   },
+  setUnits: (units) => set({ units }),
+  stop: async () => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+    try {
+      await api.interrupt(sessionId);
+    } catch (err) {
+      set((s) => ({ feed: [...s.feed, note(`Could not stop: ${(err as Error).message}`, 'error')] }));
+    }
+  },
   addImages: (files) => set((s) => ({ images: [...s.images, ...files].slice(0, 8) })),
   removeImage: (index) => set((s) => ({ images: s.images.filter((_, i) => i !== index) })),
 
   submit: async (prompt) => {
-    const { sessionId, status, meshFile, images } = get();
+    const { sessionId, status, meshFile, images, units } = get();
     const text = prompt.trim();
     if (!text) return;
     const userItem: FeedItem = { kind: 'user', id: nextId++, text };
@@ -156,7 +171,7 @@ export const useStore = create<State>((set, get) => ({
       model: null, changedParams: [],
       focusId: null, followAgent: true });
     try {
-      const { session_id } = await api.createSession(meshFile, text, images);
+      const { session_id } = await api.createSession(meshFile, text, images, units || undefined);
       unsubscribe?.();
       set({ sessionId: session_id, status: 'queued', startedAt: Date.now() / 1000, endedAt: null, shownRevision: null });
       unsubscribe = api.subscribe(
@@ -268,6 +283,9 @@ export const useStore = create<State>((set, get) => ({
             break;
           case 'session_done':
             feed.push(note('Session finished', 'muted'));
+            break;
+          case 'interrupted':
+            feed.push(note('Stopped. Send a prompt to continue.', 'muted'));
             break;
         }
       }

@@ -170,6 +170,13 @@ blue-white-red scale as `compare_to_mesh` (red: CAD is missing material, blue: C
 The API computes one per revision after publishing its mesh and serves it at
 `/api/v1/cad-sessions/{id}/heatmap.glb?rev=N`.
 
+Controls: pick the mesh units next to the prompt box (default mm), **Stop** interrupts the agent's
+current turn (`POST /api/v1/cad-sessions/{id}/interrupt`; the session stays open), and
+**Download** in the top bar saves STEP (exported by the live CAD engine, validation-gated), STL
+or the parametric `model.py` (`GET /api/v1/cad-sessions/{id}/download/{step|stl|model.py}`).
+The server keeps one CAD engine started and health-checked in the background, so a new session
+is ready in about 2 s instead of ~13 s; set `AIDA_PREWARM=0` to turn that off.
+
 ```powershell
 cd frontend
 npm install

@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import attachIcon from '../assets/icons/attach.svg';
 import sendIcon from '../assets/icons/send.svg';
+import stopIcon from '../assets/icons/stop.svg';
 import { isMeshFile, useStore } from '../store';
 
 /** Figma: Composer (4:32). Prompt box; Attach takes a mesh or reference photos. */
@@ -12,7 +13,8 @@ export function Composer() {
   const meshFile = useStore((s) => s.meshFile);
   const images = useStore((s) => s.images);
   const error = useStore((s) => s.error);
-  const { setMesh, addImages, removeImage, submit } = useStore.getState();
+  const units = useStore((s) => s.units);
+  const { setMesh, setUnits, addImages, removeImage, submit, stop } = useStore.getState();
 
   const live = status === 'running' || status === 'queued';
   // The session stays open between turns; only say "working" while a turn runs.
@@ -93,7 +95,29 @@ export function Composer() {
               e.target.value = '';
             }}
           />
+          {!live && !ended && (
+            <select
+              value={units}
+              onChange={(e) => setUnits(e.target.value as 'mm' | '')}
+              aria-label="Mesh units"
+              title="Units of the uploaded mesh"
+              className="rounded-sm border border-line bg-sunken px-1.5 py-1 text-[12px] text-muted outline-none hover:text-ink"
+            >
+              <option value="mm">mm</option>
+              <option value="">unknown units</option>
+            </select>
+          )}
           <span className="flex-1" />
+          {working && (
+            <button
+              type="button"
+              onClick={() => void stop()}
+              className="flex items-center gap-1 rounded-sm border border-error px-3 py-2 text-[12px] font-semibold text-error hover:bg-error/10"
+            >
+              <img src={stopIcon} alt="" width={14} height={14} />
+              Stop
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void send()}

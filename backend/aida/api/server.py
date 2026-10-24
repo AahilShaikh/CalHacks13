@@ -18,6 +18,7 @@ Submission accepts 1-4 turntable photos (``front_image`` required,
 form field: ``known_height_mm``, ``known_base_dia_mm``, or ``scale_factor``.
 """
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -40,7 +41,17 @@ WEB_DIR = Path(__file__).resolve().parent.parent / 'web'
 FRONTEND_DIST = Path(os.environ.get('AIDA_FRONTEND_DIST',
                                     Path(__file__).resolve().parents[3] / 'frontend' / 'dist'))
 
+@asynccontextmanager
+async def lifespan(_app):
+    # Start a CAD engine now so the first prompt does not wait ~10 s for it.
+    if os.environ.get('ANTHROPIC_API_KEY'):
+        cad_manager.prewarm()
+    yield
+    await cad_manager.shutdown()
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title='Aida Scan API',
     description='Images to 1:1 metric mesh and CAD handoff artifacts (Pixal3D + ChArUco).',
     version='1.0.0',

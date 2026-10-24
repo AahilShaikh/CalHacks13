@@ -377,3 +377,63 @@ def test_env_loads_from_repo_root_when_started_elsewhere(tmp_path, monkeypatch):
     import os
     assert os.environ['AIDA_TEST_ROOT_ENV'] == 'from-root'
     monkeypatch.delenv('AIDA_TEST_ROOT_ENV')
+
+
+def test_interrupt_needs_a_running_agent(client, tmp_path):
+    session_id = start_session(client, tmp_path)['session_id']
+    assert client.post(f'/api/v1/cad-sessions/{session_id}/interrupt').status_code == 409
+
+    calls = []
+
+    class Client:
+        async def interrupt(self):
+            calls.append('interrupt')
+
+    server.cad_manager.get(session_id).client = Client()
+    response = client.post(f'/api/v1/cad-sessions/{session_id}/interrupt')
+    assert response.status_code == 202 and calls == ['interrupt']
+    session = server.cad_manager.get(session_id)
+    assert any(e['type'] == 'interrupted' for e in session.events)
+
+
+def test_downloads(client, tmp_path):
+    import trimesh
+
+    session_id = start_session(client, tmp_path)['session_id']
+    session = server.cad_manager.get(session_id)
+    url = f'/api/v1/cad-sessions/{session_id}/download'
+    assert client.get(f'{url}/model.py').status_code == 404
+    assert client.get(f'{url}/stl').status_code == 404
+    assert client.get(f'{url}/zip').status_code == 404
+
+    (session.artifacts.root / 'model.py').write_text('class P:\n    width = 60\n')
+    script = client.get(f'{url}/model.py')
+    assert script.status_code == 200 and 'width = 60' in script.text
+
+    # A generated revision with its snapshot STL parts.
+    revision = len(session.meshes)
+    trimesh.creation.box((10, 10, 10)).export(str(session.artifacts.root / f'mesh-{revision:03d}-0.stl'))
+    session.meshes.append({'revision': revision, 'generated': True, 'path': session.artifacts.root / 'x.glb'})
+    stl = client.get(f'{url}/stl')
+    assert stl.status_code == 200 and len(stl.content) > 84
+
+    # STEP needs the live CAD engine.
+    assert client.get(f'{url}/step').status_code == 409
+
+    class Cad:
+        broken = False
+
+        async def call(self, name, args):
+            assert name == 'export' and args['format'] == 'step'
+            (session.artifacts.root / args['filename']).write_text('ISO-10303-21;')
+            return {'content': [{'type': 'text', 'text': 'ok'}]}
+
+    session.cad = Cad()
+    step = client.get(f'{url}/step')
+    assert step.status_code == 200 and step.text.startswith('ISO-10303-21')
+
+
+def test_no_warm_engine_with_a_test_runner(tmp_path):
+    manager = CadSessionManager(tmp_path, runner=lambda session: None)
+    manager.prewarm()  # no running loop needed: test runners never start a CAD engine
+    assert manager.take_warm() is None
