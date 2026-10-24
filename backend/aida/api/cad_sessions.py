@@ -129,6 +129,9 @@ class CadSession:
         self._waiters: set[asyncio.Future] = set()
 
     # -- URLs ---------------------------------------------------------------
+    def heatmap_url(self, revision: int) -> str:
+        return f'/api/v1/cad-sessions/{self.id}/heatmap.glb?rev={revision}'
+
     def mesh_url(self, revision: int | None = None) -> str:
         base = f'/api/v1/cad-sessions/{self.id}/mesh.glb'
         return base if revision is None else f'{base}?rev={revision}'
@@ -324,12 +327,32 @@ def snapshot_hook(cad, session: CadSession):
             session.publish({'type': 'mesh', 'revision': revision,
                              'url': session.mesh_url(revision), 'generated': True,
                              **stats})
+            # After the mesh event, so the CAD preview never waits for the distances.
+            await publish_heatmap(session, revision, parts)
         except Exception as exc:
             session.publish({'type': 'mesh_skipped', 'reason': str(exc)[:400]})
         finally:
             session.set_stage('agent_running')
 
     return snapshot
+
+
+async def publish_heatmap(session: CadSession, revision: int, cad_parts: list[Path]):
+    """Colour the reference by distance to this revision; best effort."""
+    from .heatmap import build_heatmap
+
+    reference = session.artifacts.root / 'reference.stl'
+    glb = session.artifacts.root / f'heatmap-{revision:03d}.glb'
+    try:
+        scale = await asyncio.to_thread(build_heatmap, reference, cad_parts, glb)
+    except Exception as exc:
+        session.publish({'type': 'heatmap_skipped', 'revision': revision, 'reason': str(exc)[:400]})
+        return
+    for entry in session.meshes:
+        if entry['revision'] == revision:
+            entry['heatmap_path'] = glb
+    session.publish({'type': 'heatmap', 'revision': revision, 'url': session.heatmap_url(revision),
+                     **scale})
 
 
 async def generated_object_names(cad) -> list[str]:
@@ -513,6 +536,17 @@ def get_cad_mesh(session_id: str, rev: int | None = None):
                                  if rev is not None else 'no-cache')}
     return FileResponse(entry['path'], media_type='model/gltf-binary',
                         headers=headers)
+
+
+@router.get('/api/v1/cad-sessions/{session_id}/heatmap.glb')
+def get_cad_heatmap(session_id: str, rev: int):
+    session = _session_or_404(session_id)
+    entry = next((m for m in session.meshes if m['revision'] == rev), None)
+    path = entry.get('heatmap_path') if entry else None
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail=f'No heatmap for revision {rev}')
+    return FileResponse(path, media_type='model/gltf-binary',
+                        headers={'Cache-Control': 'public, max-age=31536000, immutable'})
 
 
 @router.get('/api/v1/cad-sessions/{session_id}/files/{filename}')

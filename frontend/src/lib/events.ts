@@ -19,6 +19,8 @@ export type ServerEvent = Stamp &
         extents: number[];
       }
     | { type: 'mesh_skipped'; reason: string }
+    | ({ type: 'heatmap'; revision: number; url: string } & HeatScale)
+    | { type: 'heatmap_skipped'; revision: number; reason: string }
     | { type: 'error'; message: string }
     | { type: 'status'; status: SessionStatus; error: string | null }
     | { type: 'stage'; stage: string }
@@ -33,6 +35,9 @@ export type ServerEvent = Stamp &
     | { type: 'session_done'; status: string }
     | ({ type: 'model_state' } & ModelState)
   );
+
+/** Colour scale of a deviation heatmap: saturates at +-range; threshold is the match tolerance. */
+export type HeatScale = { range: number; threshold: number; share_within: number; vertices: number };
 
 /** The parametric model, sent after every model_* tool call (aida/model.py snapshot()). */
 export type ModelState = {

@@ -2,16 +2,26 @@ import { useEffect, useState } from 'react';
 import playIcon from '../../assets/icons/play.svg';
 import { generatedRevisions, useStore, type ViewMode } from '../../store';
 
-const MODES: { id: ViewMode; label: string; ready: boolean }[] = [
-  { id: 'overlay', label: 'Overlay', ready: true },
-  { id: 'side', label: 'Side by side', ready: true },
-  { id: 'heatmap', label: 'Heatmap', ready: false },
+const MODES: { id: ViewMode; label: string }[] = [
+  { id: 'overlay', label: 'Overlay' },
+  { id: 'side', label: 'Side by side' },
+  { id: 'heatmap', label: 'Heatmap' },
 ];
+
+/** The generated revision the viewer is showing (the latest unless the user scrubbed back). */
+function useShownRevision() {
+  const revisions = useStore((s) => s.revisions);
+  const shownRevision = useStore((s) => s.shownRevision);
+  const generated = generatedRevisions(revisions);
+  return shownRevision === null ? generated.at(-1) : generated.find((r) => r.revision === shownRevision);
+}
 
 /** Figma: ViewModeToggle (4:54). */
 export function ViewModeToggle() {
   const viewMode = useStore((s) => s.viewMode);
   const setViewMode = useStore((s) => s.setViewMode);
+  const hasHeat = Boolean(useShownRevision()?.heatmap);
+  const ready = (id: ViewMode) => id !== 'heatmap' || hasHeat;
   return (
     <div role="radiogroup" aria-label="View mode" className="flex gap-1 rounded-md border border-line bg-raised/90 p-1 backdrop-blur">
       {MODES.map((m) => (
@@ -19,8 +29,8 @@ export function ViewModeToggle() {
           key={m.id}
           role="radio"
           aria-checked={viewMode === m.id}
-          disabled={!m.ready}
-          title={m.ready ? undefined : 'Deviation heatmap is next on the roadmap'}
+          disabled={!ready(m.id)}
+          title={ready(m.id) ? undefined : 'The heatmap appears once this revision has been compared with the scan'}
           onClick={() => setViewMode(m.id)}
           className={`rounded-sm px-3 py-1 text-[12px] font-medium ${
             viewMode === m.id ? 'bg-line-strong text-ink' : 'text-muted hover:text-ink'
@@ -63,10 +73,37 @@ export function FollowControl() {
 }
 
 export function Legend() {
+  const viewMode = useStore((s) => s.viewMode);
+  const heat = useShownRevision()?.heatmap;
+  if (viewMode === 'heatmap' && heat) return <HeatLegend range={heat.range} threshold={heat.threshold} share={heat.share_within} />;
   return (
     <div className="flex items-center gap-3 rounded-md border border-line bg-raised/90 px-3 py-2 text-[12px] text-muted backdrop-blur">
       <span className="size-2 rounded-full bg-mesh" /> Reference mesh
       <span className="size-2 rounded-full bg-cad" /> Generated CAD
+    </div>
+  );
+}
+
+const n = (v: number) => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1) : v.toFixed(2));
+
+/** Colour scale for the heatmap: same blue-white-red as compare_to_mesh's images. */
+function HeatLegend({ range, threshold, share }: { range: number; threshold: number; share: number }) {
+  return (
+    <div className="flex w-64 flex-col gap-1.5 rounded-md border border-line bg-raised/90 px-3 py-2 text-[11px] text-muted backdrop-blur">
+      <div className="flex items-center justify-between">
+        <span className="font-medium text-ink">Distance to scan</span>
+        <span>{Math.round(share * 100)}% within ±{n(threshold)}</span>
+      </div>
+      <div className="h-2 rounded-full" style={{ background: 'linear-gradient(90deg, #2659d9, #ffffff, #d9261f)' }} />
+      <div className="flex justify-between font-mono text-[10px]">
+        <span>−{n(range)}</span>
+        <span>0</span>
+        <span>+{n(range)}</span>
+      </div>
+      <div className="flex justify-between text-[10px]">
+        <span className="text-[#6b8cff]">CAD has extra</span>
+        <span className="text-[#ff6b63]">CAD is missing</span>
+      </div>
     </div>
   );
 }

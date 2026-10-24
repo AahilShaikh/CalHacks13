@@ -7,6 +7,7 @@ import {
   phaseOf,
   resultSummary,
   viewOf,
+  type HeatScale,
   type AgentView,
   type Deviation,
   type ModelState,
@@ -44,6 +45,8 @@ export type Revision = {
   generated: boolean;
   triangles: number;
   extents: number[];
+  /** The reference coloured by distance to this revision, once computed. */
+  heatmap?: HeatScale & { url: string };
 };
 
 export type ViewMode = 'overlay' | 'side' | 'heatmap';
@@ -240,6 +243,12 @@ export const useStore = create<State>((set, get) => ({
               .map((h) => ({ ...h.deviation!, trend: h.trend, revision: h.revision }));
             break;
           }
+          case 'heatmap': {
+            const { type: _t, seq: _s, at: _a, revision, ...heat } = e;
+            revisions = revisions.map((r) => (r.revision === revision ? { ...r, heatmap: heat } : r));
+            break;
+          }
+          case 'heatmap_skipped':
           case 'mesh_skipped':
             break; // expected while the agent experiments; not worth a feed entry
           case 'stage':

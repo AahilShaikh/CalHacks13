@@ -165,6 +165,10 @@ drag to look around yourself). Clicking a tool card marked 3D replays that step'
 The Model tab shows the parametric model live (from `model_state` events sent after every
 `model_*` call): each parameter with its source (measured / estimated / assumed) and evidence,
 features in build order with the deviation trend each one caused, and the revision history.
+Heatmap mode colours the scan by signed distance to the shown CAD revision, with the same
+blue-white-red scale as `compare_to_mesh` (red: CAD is missing material, blue: CAD has extra).
+The API computes one per revision after publishing its mesh and serves it at
+`/api/v1/cad-sessions/{id}/heatmap.glb?rev=N`.
 
 ```powershell
 cd frontend

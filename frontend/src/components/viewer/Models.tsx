@@ -13,10 +13,33 @@ const materials = {
   ghost: new THREE.MeshStandardMaterial({ color: '#a5b4fc', roughness: 0.85, transparent: true, opacity: 0.2,
     depthWrite: false, side: THREE.DoubleSide, flatShading: true }),
   solid: new THREE.MeshStandardMaterial({ color: '#a5b4fc', roughness: 0.7, metalness: 0.02, flatShading: true }),
+  // Deviation heatmap: the reference's own vertex colours (blue extra, white match, red missing).
+  heat: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0, flatShading: true }),
+  // CAD drawn as an outline over the heatmap, so the colours stay readable.
+  outline: new THREE.MeshBasicMaterial({ color: '#6ee7ff', transparent: true, opacity: 0.06, depthWrite: false }),
 };
-const edgeMaterial = new THREE.LineBasicMaterial({ color: '#0b101d', transparent: true, opacity: 0.55 });
+const edgeMaterials = {
+  cad: new THREE.LineBasicMaterial({ color: '#0b101d', transparent: true, opacity: 0.55 }),
+  outline: new THREE.LineBasicMaterial({ color: '#6ee7ff', transparent: true, opacity: 0.9 }),
+};
 
 export type Look = keyof typeof materials;
+
+/**
+ * The API writes 8-bit sRGB vertex colours, but glTF COLOR_0 is linear, so three.js would
+ * show them washed out. Convert once per (cached, shared) geometry.
+ */
+function toLinearColours(geometry: THREE.BufferGeometry) {
+  const colours = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+  if (!colours || geometry.userData.linearColours) return;
+  const c = new THREE.Color();
+  for (let i = 0; i < colours.count; i++) {
+    c.setRGB(colours.getX(i), colours.getY(i), colours.getZ(i)).convertSRGBToLinear();
+    colours.setXYZ(i, c.r, c.g, c.b);
+  }
+  colours.needsUpdate = true;
+  geometry.userData.linearColours = true;
+}
 
 /** Apply a look to every mesh in a cloned glTF scene; CAD also gets crisp feature edges. */
 function styled(source: THREE.Object3D, look: Look) {
@@ -25,8 +48,9 @@ function styled(source: THREE.Object3D, look: Look) {
     const mesh = node as THREE.Mesh;
     if (!mesh.isMesh) return;
     mesh.material = materials[look];
-    if (look === 'cad') {
-      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry, 25), edgeMaterial);
+    if (look === 'heat') toLinearColours(mesh.geometry);
+    if (look === 'cad' || look === 'outline') {
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry, 25), edgeMaterials[look]);
       edges.raycast = () => {};
       mesh.add(edges);
     }

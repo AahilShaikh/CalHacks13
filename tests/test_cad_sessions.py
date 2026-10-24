@@ -298,3 +298,54 @@ def test_examples_are_listed_and_served(client):
 
     assert client.get('/api/v1/examples/make_fixture.py').status_code == 404
     assert client.get('/api/v1/examples/..%2Fpyproject.toml').status_code == 404
+
+
+def _heat_colours(path):
+    import trimesh
+    mesh = trimesh.load(str(path), force='mesh')
+    return mesh.vertices, mesh.visual.vertex_colors[:, :3].astype(int)
+
+
+def test_heatmap_colours_missing_red_and_extra_blue(tmp_path):
+    import trimesh
+    from aida.api.heatmap import build_heatmap
+
+    reference = tmp_path / 'reference.stl'
+    trimesh.creation.box((60, 40, 6)).export(str(reference))
+
+    short = tmp_path / 'short.stl'  # CAD 10 mm too short in x: missing material at the ends
+    trimesh.creation.box((50, 40, 6)).export(str(short))
+    scale = build_heatmap(reference, [short], tmp_path / 'short.glb')
+    assert scale['threshold'] > 0 and scale['range'] >= 4 * scale['threshold']
+    vertices, colours = _heat_colours(tmp_path / 'short.glb')
+    ends = abs(vertices[:, 0]) > 29.9
+    assert (colours[ends, 0] > colours[ends, 2]).all()      # red at the uncovered ends
+
+    long = tmp_path / 'long.stl'  # CAD 10 mm too long: the reference ends sit inside it
+    trimesh.creation.box((70, 40, 6)).export(str(long))
+    build_heatmap(reference, [long], tmp_path / 'long.glb')
+    vertices, colours = _heat_colours(tmp_path / 'long.glb')
+    # Inside of the end faces (their rims touch the CAD's side faces, distance 0, white).
+    ends = (abs(vertices[:, 0]) > 29.9) & (abs(vertices[:, 1]) < 19) & (abs(vertices[:, 2]) < 2.5)
+    assert ends.any() and (colours[ends, 2] > colours[ends, 0]).all()  # blue: CAD has extra material
+
+
+async def test_snapshot_hook_publishes_heatmap_after_mesh(tmp_path):
+    import trimesh
+    from aida.api.cad_sessions import CadSession
+
+    session = CadSession(FakeArtifacts(tmp_path), 'prompt', 'mm')
+    trimesh.creation.box((60, 40, 6)).export(str(tmp_path / 'reference.stl'))
+    cad = FakeCad(tmp_path, {'reference_mesh': {}, 'generated_cad': {}})
+    await snapshot_hook(cad, session)()
+
+    types = [e['type'] for e in session.events]
+    assert types.index('mesh') < types.index('heatmap')
+    heat = next(e for e in session.events if e['type'] == 'heatmap')
+    assert heat['revision'] == 0 and heat['url'].endswith('/heatmap.glb?rev=0')
+    assert session.meshes[0]['heatmap_path'].is_file()
+
+
+def test_heatmap_route_404_without_heatmap(client, tmp_path):
+    session_id = start_session(client, tmp_path)['session_id']
+    assert client.get(f'/api/v1/cad-sessions/{session_id}/heatmap.glb?rev=0').status_code == 404
