@@ -8,18 +8,23 @@ export function Composer() {
   const [text, setText] = useState('');
   const input = useRef<HTMLInputElement>(null);
   const status = useStore((s) => s.status);
+  const stage = useStore((s) => s.stage);
   const meshFile = useStore((s) => s.meshFile);
   const images = useStore((s) => s.images);
   const error = useStore((s) => s.error);
   const { setMesh, addImages, removeImage, submit } = useStore.getState();
 
   const live = status === 'running' || status === 'queued';
+  // The session stays open between turns; only say "working" while a turn runs.
+  const working = live && stage !== 'idle';
   const ended = status === 'done' || status === 'failed';
   const busy = status === 'starting';
   const canSend = !busy && !ended && text.trim().length > 0 && (live || meshFile !== null);
-  const placeholder = live
+  const placeholder = working
     ? 'Aida is working. You can queue a follow-up…'
-    : ended
+    : live
+      ? 'Ask for a change, or tell Aida what to check next…'
+      : ended
       ? 'Session ended. Reload to start a new one.'
       : 'Describe the part, or ask for a change…';
 
@@ -96,7 +101,7 @@ export function Composer() {
             className="flex items-center gap-1 rounded-sm bg-cad px-3 py-2 text-[12px] font-semibold text-base hover:brightness-110 disabled:opacity-40"
           >
             <img src={sendIcon} alt="" width={14} height={14} />
-            {busy ? 'Starting…' : live ? 'Queue' : 'Send'}
+            {busy ? 'Starting…' : working ? 'Queue' : 'Send'}
           </button>
         </div>
       </div>

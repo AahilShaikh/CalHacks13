@@ -349,3 +349,31 @@ async def test_snapshot_hook_publishes_heatmap_after_mesh(tmp_path):
 def test_heatmap_route_404_without_heatmap(client, tmp_path):
     session_id = start_session(client, tmp_path)['session_id']
     assert client.get(f'/api/v1/cad-sessions/{session_id}/heatmap.glb?rev=0').status_code == 404
+
+
+def test_real_agent_needs_api_key(tmp_path, monkeypatch):
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    monkeypatch.setattr(server, 'cad_manager', CadSessionManager(tmp_path / 'cad'))  # real runner
+    with TestClient(server.app) as test_client:
+        response = test_client.post('/api/v1/cad-sessions',
+                                    files=[('mesh', ('box.stl', mesh_bytes(), 'model/stl'))],
+                                    data={'prompt': 'Build a plate'})
+    assert response.status_code == 400
+    assert 'ANTHROPIC_API_KEY' in response.json()['detail']
+
+
+def test_env_loads_from_repo_root_when_started_elsewhere(tmp_path, monkeypatch):
+    from aida import config
+
+    root = tmp_path / 'repo'
+    root.mkdir()
+    (root / '.env').write_text('AIDA_TEST_ROOT_ENV=from-root\n')
+    elsewhere = tmp_path / 'frontend'
+    elsewhere.mkdir()
+    monkeypatch.setattr(config, 'REPO_ROOT', root)
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.delenv('AIDA_TEST_ROOT_ENV', raising=False)
+    config.load_local_env()
+    import os
+    assert os.environ['AIDA_TEST_ROOT_ENV'] == 'from-root'
+    monkeypatch.delenv('AIDA_TEST_ROOT_ENV')

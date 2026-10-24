@@ -287,7 +287,7 @@ function note(text: string, tone: 'muted' | 'error' | 'ok'): FeedItem {
 
 function turnLine(e: Extract<ServerEvent, { type: 'turn_end' }>) {
   if (e.subtype === 'error_max_turns') return 'Turn limit reached. Ask Aida to continue.';
-  if (e.is_error) return `Turn stopped (${e.subtype})`;
+  if (e.is_error) return e.subtype === 'success' ? 'The turn failed; see the message above.' : `Turn stopped (${e.subtype})`;
   const parts = ['Turn complete'];
   if (e.turns) parts.push(`${e.turns} steps`);
   if (e.duration_s) parts.push(`${Math.round(e.duration_s)}s`);

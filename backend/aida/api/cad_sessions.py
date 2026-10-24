@@ -14,6 +14,7 @@ function so tests can substitute their own.
 import asyncio
 import io
 import json
+import os
 import re
 import threading
 import time
@@ -260,6 +261,11 @@ class CadSessionManager:
             self._sessions[session.id] = session
         return session
 
+    @property
+    def uses_real_agent(self) -> bool:
+        """False when a test or demo runner stands in for Claude."""
+        return self._runner is None
+
     def start(self, session: CadSession):
         """Kick off the runner on the current event loop."""
         runner = self._runner or run_cad_session
@@ -462,6 +468,11 @@ async def create_cad_session(
 ):
     if not prompt.strip():
         raise HTTPException(status_code=400, detail='prompt must not be empty')
+    if _manager().uses_real_agent and not os.environ.get('ANTHROPIC_API_KEY'):
+        # The agent runs with an isolated Claude config, so only the API key works.
+        raise HTTPException(status_code=400, detail=(
+            'ANTHROPIC_API_KEY is not set. Add it to .env in the repository root '
+            '(copy .env.example), then restart `uv run aida-api`.'))
     if units is not None and units not in UNITS:
         raise HTTPException(status_code=400, detail=f'units must be one of {sorted(UNITS)}')
     mesh_bytes = await mesh.read()

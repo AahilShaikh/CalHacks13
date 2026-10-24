@@ -24,7 +24,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..config import load_local_env
+from ..config import REPO_ROOT, load_local_env
 from ..scan.comfy import ComfyClient, ComfyConfig
 from ..scan.pipeline import run_scan
 from .cad_sessions import CadSessionManager, router as cad_sessions_router
@@ -32,8 +32,10 @@ from .jobs import JobManager
 
 load_local_env()
 
-DEFAULT_STORAGE = Path(os.environ.get('AIDA_SCAN_STORAGE', 'artifacts/scans'))
-CAD_STORAGE = Path(os.environ.get('AIDA_CAD_STORAGE', 'artifacts/cad'))
+# Relative to the repository root, so starting the server from another folder
+# (e.g. frontend/) does not scatter session artifacts there.
+DEFAULT_STORAGE = Path(os.environ.get('AIDA_SCAN_STORAGE', REPO_ROOT / 'artifacts' / 'scans'))
+CAD_STORAGE = Path(os.environ.get('AIDA_CAD_STORAGE', REPO_ROOT / 'artifacts' / 'cad'))
 WEB_DIR = Path(__file__).resolve().parent.parent / 'web'
 FRONTEND_DIST = Path(os.environ.get('AIDA_FRONTEND_DIST',
                                     Path(__file__).resolve().parents[3] / 'frontend' / 'dist'))
@@ -64,6 +66,7 @@ def health():
         'comfy_host': config.host,
         'comfy_reachable': ComfyClient(config).health(),
         'active_jobs': manager.count_active(),
+        'agent_ready': bool(os.environ.get('ANTHROPIC_API_KEY')),
     }
 
 
