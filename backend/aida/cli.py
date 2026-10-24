@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from .artifacts import Artifacts
+from .config import load_local_env
 from .cad import open_cad, text_of
 
 
@@ -40,10 +41,11 @@ async def run(args):
 def main():
     argparser = parser()
     args = argparser.parse_args()
+    load_local_env()
     if not args.mesh.is_file() or args.mesh.suffix.lower() != '.stl':
         argparser.error('--mesh must name an existing .stl file')
     if not args.check and not os.getenv('ANTHROPIC_API_KEY'):
-        argparser.error('Set ANTHROPIC_API_KEY in your environment, or use --check for a local test')
+        argparser.error('Set ANTHROPIC_API_KEY in .env or your environment, or use --check for a local test')
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:

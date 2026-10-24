@@ -1,4 +1,5 @@
 .venv/
+.venv-windows/
 __pycache__/
 .pytest_cache/
 .env

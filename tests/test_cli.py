@@ -17,6 +17,7 @@ def test_missing_credentials(monkeypatch, tmp_path, capsys):
     mesh = tmp_path / 'test.stl'
     mesh.write_text('solid test\nendsolid test\n')
     monkeypatch.setattr(sys, 'argv', ['aida', '--mesh', str(mesh)])
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
     with pytest.raises(SystemExit) as exc:
         main()

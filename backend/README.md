@@ -19,8 +19,8 @@ not a prescribed hardware protocol.
 
 Save the reconstructed STL, then run:
 
-```bash
-uv run aida --mesh /absolute/path/reconstruction.stl
+```powershell
+uv run aida --mesh "C:\path\to\reconstruction.stl"
 ```
 
 Pass `--units mm` only if the reconstruction is calibrated to millimeters.

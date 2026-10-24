@@ -1,4 +1,4 @@
-"""Local CAD test: AIDA_INTEGRATION=1 uv run pytest -m integration -s."""
+"""Local CAD test: set AIDA_INTEGRATION to 1, then run uv run pytest -m integration -s."""
 import os
 import re
 import json

@@ -3,7 +3,14 @@ name = "aida"
 version = "0.1.0"
 description = "A local CAD agent with mesh vision"
 requires-python = ">=3.12,<3.13"
-dependencies = ["claude-agent-sdk", "build123d-mcp", "mcp>=2,<3", "pillow", "vtk>=9.3,<10"]
+dependencies = [
+    "claude-agent-sdk",
+    "build123d-mcp",
+    "mcp>=2,<3",
+    "pillow",
+    "vtk>=9.3,<10",
+    "python-dotenv>=1.2.4",
+]
 
 [project.scripts]
 aida = "aida.cli:main"

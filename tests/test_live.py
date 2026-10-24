@@ -1,4 +1,4 @@
-"""Opt-in paid test: AIDA_LIVE_TEST=1 uv run pytest -m live -s."""
+"""Opt-in paid test: set AIDA_LIVE_TEST to 1, then run uv run pytest -m live -s."""
 import os
 
 import pytest

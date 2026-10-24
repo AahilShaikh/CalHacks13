@@ -7,48 +7,32 @@ vision, not automatic or dimensionally verified mesh-to-CAD reconstruction.
 ## Setup
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then from the
-repository root (on Linux/WSL, add `~/.local/bin` to `PATH` if `uv` is not found):
+repository root in PowerShell:
 
-```bash
+```powershell
 uv sync --locked
 uv run python examples/make_fixture.py
 uv run aida --mesh examples/asymmetric.stl --units mm --check
 ```
 
-### WSL checkouts on a Windows drive
-
-For a checkout under `/mnt/c`, put the virtual environment on the Linux
-filesystem before running the commands above:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-export UV_PROJECT_ENVIRONMENT="$HOME/.cache/aida-venv"
-uv sync --locked
-```
-
-Keep those variables set in the terminal where you run Aida. In this environment,
-the Windows-mounted virtual environment exceeded the CAD worker's 150-second
-health-check timeout; the same lockfile on Linux storage passed the CLI and all
-local tests. Native Windows users can use the normal `.venv` setup.
-
 Python 3.12 is pinned. uv can obtain that interpreter if needed. Run all commands
-in the same OS environment (for example, all inside WSL). The CAD stack includes
+in your Windows terminal. The CAD stack includes
 native OpenCascade and VTK dependencies; `--check` tests their rendering and export
 capabilities before spending API credits. If native libraries or a headless
 render backend are missing, inspect the printed error and the session's
 `cad-stderr.log`. The Claude Agent SDK bundles its Claude Code runtime.
 
-For the agent, set your Anthropic API key in the shell environment (do not commit
-it), then run:
+For the agent, open `.env` in the repository root and fill in `ANTHROPIC_API_KEY`.
+Aida loads this file automatically when started from the repository root. For a
+fresh checkout, copy `.env.example` to `.env` first. Then run:
 
-```bash
-export ANTHROPIC_API_KEY='your-key'
+```powershell
 uv run aida --mesh examples/asymmetric.stl --units mm
 ```
 
-PowerShell uses `$env:ANTHROPIC_API_KEY = 'your-key'` instead of `export`.
 `ANTHROPIC_MODEL` optionally overrides `claude-opus-5-5`; model access depends on
-your Anthropic account. `.env` files are not loaded automatically.
+your Anthropic account. Existing shell variables take precedence over `.env`.
+The `.env` file is excluded from Git; keep your actual key there.
 
 Example requests:
 
@@ -91,9 +75,10 @@ this local application is not a multi-tenant execution sandbox.
 
 ## Tests
 
-```bash
+```powershell
 uv run pytest -q
-AIDA_INTEGRATION=1 uv run pytest -m integration -s
+$env:AIDA_INTEGRATION = '1'
+uv run pytest -m integration -s
 ```
 
 The integration test uses real CAD tools, imports an asymmetric mesh, renders
@@ -102,8 +87,9 @@ and STL. It makes no Claude API calls.
 
 The following test **uses paid API credits** and is opt-in:
 
-```bash
-AIDA_LIVE_TEST=1 uv run pytest -m live -s
+```powershell
+$env:AIDA_LIVE_TEST = '1'
+uv run pytest -m live -s
 ```
 
 It also needs `ANTHROPIC_API_KEY`. It exercises visual inspection, CAD generation,
