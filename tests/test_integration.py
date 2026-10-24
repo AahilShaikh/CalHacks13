@@ -58,6 +58,30 @@ show(plate, "generated_cad")'''
         assert 'reference_mesh' in text_of(await cad.call('session_state', {}))
 
 
+async def test_execute_mesh_snapshot(tmp_path):
+    """Every successful execute should produce a GLB revision for the viewer."""
+    from aida.api.cad_sessions import CadSession, snapshot_hook
+
+    artifacts = Artifacts(tmp_path / 'sessions')
+    session = CadSession(artifacts, 'build a plate', 'mm')
+    code = '''from build123d import *
+plate = Box(60, 40, 6)
+for x in (-20, 20):
+    plate -= Pos(x, 0, 0) * Cylinder(2.5, 8)
+show(plate, "generated_cad")'''
+    async with open_cad(artifacts) as cad:
+        await cad.discover()
+        cad.on_execute = snapshot_hook(cad, session)
+        result = await cad.call('execute', {'code': code})
+        assert not failed(result), text_of(result)
+    assert len(session.meshes) == 1, [e for e in session.events if e['type'] in ('mesh', 'mesh_skipped')]
+    mesh = session.meshes[0]
+    assert mesh['generated'] and mesh['triangles'] > 0
+    assert mesh['path'].read_bytes()[:4] == b'glTF'
+    assert mesh['extents'][0] == pytest.approx(60, abs=0.1)
+    assert [e['type'] for e in session.events].count('mesh') == 1
+
+
 async def test_corrupt_stl_rejected(tmp_path):
     source = tmp_path / 'corrupt.stl'
     source.write_text('not an STL')

@@ -109,6 +109,25 @@ ChArUco photo alone. Without one the job fails with a clear error instead of
 returning wrong millimeter dimensions. Job artifacts are stored under
 `artifacts/scans/` (`AIDA_SCAN_STORAGE` overrides).
 
+## Web viewer (live CAD sessions)
+
+`uv run aida-api` also serves the web viewer at `http://127.0.0.1:8000/`. Upload a
+reference mesh (`.stl`/`.glb`/`.obj`/`.ply`), optional reference photos, and a
+prompt to start a live CAD session. The UI streams agent text, build123d
+snippets, tool activity and renders over SSE, and rebuilds its 3D preview after
+every successful `execute`: each revision is exported as a binary GLB and the
+viewer morphs from the previous mesh to the new one with a particle transition
+while the export runs. Follow-up prompts continue in the same session. The
+viewer loads Three.js from a CDN; the session needs the same `ANTHROPIC_API_KEY`
+as the CLI.
+
+- `POST /api/v1/cad-sessions` — multipart `mesh` + `prompt` (optional `units`,
+  `images`), returns 202 with session, `events` and `mesh` URLs.
+- `GET /api/v1/cad-sessions/{id}/events` — SSE stream; `?after=N` replays events.
+- `GET /api/v1/cad-sessions/{id}/mesh.glb?rev=N` — binary mesh revision.
+- `POST /api/v1/cad-sessions/{id}/turns` — follow-up prompt; `/close` ends the
+  session.
+
 ### Command line
 
 ```powershell
