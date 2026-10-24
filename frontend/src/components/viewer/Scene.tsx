@@ -22,6 +22,7 @@ function Models() {
   const workspace = useStore((s) => s.workspace);
   const selectedPart = useStore((s) => s.selectedPart);
   const selectPart = useStore((s) => s.selectPart);
+  const hidden = useStore((s) => s.hiddenParts);
   // 'assembly' selects the assembly in the Model tab; in 3D it highlights nothing.
   const highlighted = selectedPart === 'assembly' ? null : selectedPart;
   // Show the scan as a ghost while a slice plane is up, so the plane reads through it.
@@ -54,11 +55,11 @@ function Models() {
         {reference ? (
           <Suspense fallback={null}>
             {heat ? (
-              <Suspense fallback={<GlbModel url={reference.url} look="ghost" />}>
-                <GlbModel url={heat.url} look="heat" />
+              <Suspense fallback={<GlbModel hidden={hidden} url={reference.url} look="ghost" />}>
+                <GlbModel hidden={hidden} url={heat.url} look="heat" />
               </Suspense>
             ) : (
-              <GlbModel url={reference.url} look={(shown && !side) || slicing ? 'ghost' : 'solid'} x={-gap} />
+              <GlbModel hidden={hidden} url={reference.url} look={(shown && !side) || slicing ? 'ghost' : 'solid'} x={-gap} />
             )}
             <Refit token={`${reference.url}|${side ? 'side' : 'single'}`} />
           </Suspense>
@@ -75,10 +76,10 @@ function Models() {
         {shown && (
           <Suspense
             fallback={
-              fallback ? <GlbModel url={fallback} look={heat ? 'outline' : 'cad'} x={gap} selected={highlighted} /> : null
+              fallback ? <GlbModel hidden={hidden} url={fallback} look={heat ? 'outline' : 'cad'} x={gap} selected={highlighted} /> : null
             }
           >
-            <GlbModel url={shown.url} look={heat ? 'outline' : 'cad'} x={gap} selected={highlighted} onPick={selectPart} />
+            <GlbModel hidden={hidden} url={shown.url} look={heat ? 'outline' : 'cad'} x={gap} selected={highlighted} onPick={selectPart} />
           </Suspense>
         )}
       </Bounds>

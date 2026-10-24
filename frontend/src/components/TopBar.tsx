@@ -23,12 +23,9 @@ export function Logo({ size = 22 }: { size?: number }) {
   );
 }
 
-/** Workspace header: where you are, what the agent is doing, units and export. */
+/** Workspace header: where you are, what the agent is doing, and export. */
 export function TopBar() {
   const replay = useStore((s) => s.replay);
-  const units = useStore((s) => s.units);
-  const setUnits = useStore((s) => s.setUnits);
-  const ended = useStore((s) => s.status === 'done' || s.status === 'failed');
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line bg-surface px-3">
@@ -48,19 +45,6 @@ export function TopBar() {
         <StatusChip />
       </div>
 
-      {!replay && !ended && (
-        <label className="flex items-center gap-1.5 text-[12px] text-muted" title="Units of the meshes you add">
-          Units
-          <select
-            value={units}
-            onChange={(e) => setUnits(e.target.value as 'mm' | '')}
-            className="h-7 rounded-md border border-line bg-surface px-1.5 text-[12px] text-ink outline-none hover:border-line-strong"
-          >
-            <option value="mm">mm</option>
-            <option value="">unknown</option>
-          </select>
-        </label>
-      )}
       <DownloadMenu />
     </header>
   );

@@ -89,6 +89,12 @@ type State = {
   stepsOpen: boolean;
   /** The agent message the user closed in the reply card; newer messages show again. */
   replyDismissedId: number | null;
+  /** Parts the user hid in the 3D view (eye toggle in the explorer). */
+  hiddenParts: string[];
+  /** The file each scanned part came from, for the References list. */
+  referenceFiles: Record<string, string>;
+  /** Photos already sent to the agent (object URLs for thumbnails). */
+  sentPhotos: { name: string; url: string }[];
   /** A tool card the user clicked to see in 3D; null follows the agent (if followAgent). */
   focusId: number | null;
   followAgent: boolean;
@@ -109,6 +115,7 @@ type State = {
   showRevision: (revision: number | null) => void;
   setViewMode: (mode: ViewMode) => void;
   setStepsOpen: (open: boolean) => void;
+  toggleHidden: (part: string) => void;
   dismissReply: (id: number) => void;
   clearError: () => void;
   setFocus: (id: number | null) => void;
@@ -134,6 +141,7 @@ const REPLAY_MAX_GAP_S = 3;
 const freshSession = {
   error: null, feed: [], revisions: [], deviations: [], features: [], cost: 0, workspace: null, selectedPart: null,
   changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true, replyDismissedId: null,
+  hiddenParts: [], referenceFiles: {}, sentPhotos: [],
   stage: '', startedAt: null, endedAt: null, lastEventAt: null,
 } satisfies Partial<State>;
 
@@ -166,6 +174,9 @@ export const useStore = create<State>((set, get) => ({
   viewMode: 'overlay',
   stepsOpen: true,
   replyDismissedId: null,
+  hiddenParts: [],
+  referenceFiles: {},
+  sentPhotos: [],
   focusId: null,
   followAgent: true,
   replay: null,
@@ -214,7 +225,11 @@ export const useStore = create<State>((set, get) => ({
       return;
     }
     try {
-      await api.uploadMeshes(sessionId, added, units || undefined);
+      const { parts } = await api.uploadMeshes(sessionId, added, units || undefined);
+      // Several files: one part each, in order. One file may split into several parts.
+      const files: Record<string, string> = {};
+      parts.forEach((part, i) => (files[part] = (added.length === 1 ? added[0] : added[i] ?? added[0]).name));
+      set((s) => ({ referenceFiles: { ...s.referenceFiles, ...files } }));
     } catch (err) {
       set({ error: `${added.map((f) => f.name).join(', ')} not added: ${(err as Error).message}` });
     } finally {
@@ -251,7 +266,8 @@ export const useStore = create<State>((set, get) => ({
       // Photos go to the agent with this message.
       if (images.length) {
         await api.uploadImages(sessionId, images);
-        set({ images: [] });
+        const sent = images.map((file) => ({ name: file.name, url: URL.createObjectURL(file) }));
+        set((s) => ({ images: [], sentPhotos: [...s.sentPhotos, ...sent] }));
       }
       await api.sendTurn(sessionId, text);
     } catch (err) {
@@ -382,6 +398,8 @@ export const useStore = create<State>((set, get) => ({
   showRevision: (revision) => set({ shownRevision: revision }),
   setViewMode: (viewMode) => set({ viewMode }),
   setStepsOpen: (stepsOpen) => set({ stepsOpen }),
+  toggleHidden: (part) =>
+    set((s) => ({ hiddenParts: s.hiddenParts.includes(part) ? s.hiddenParts.filter((p) => p !== part) : [...s.hiddenParts, part] })),
   dismissReply: (replyDismissedId) => set({ replyDismissedId }),
   clearError: () => set({ error: null }),
   setFocus: (focusId) => set({ focusId }),
