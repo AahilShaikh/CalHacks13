@@ -19,10 +19,6 @@ def test_image_roundtrip_and_boundaries(tmp_path):
     Image.new('RGB', (16, 16)).save(outside)
     with pytest.raises(ValueError, match='session'):
         artifacts.image(str(outside))
-    link = artifacts.root / 'link.png'
-    link.symlink_to(outside)
-    with pytest.raises(ValueError, match='session'):
-        artifacts.image(str(link))
     with pytest.raises(ValueError):
         artifacts.output_path('../escape.step')
 
@@ -43,3 +39,18 @@ def test_blank_render_rejected(tmp_path):
     Image.new('RGB', (800, 600), 'white').save(blank)
     with pytest.raises(ValueError, match='blank'):
         artifacts.image(str(blank))
+
+
+def test_symlink_escape_rejected(tmp_path):
+    artifacts = Artifacts(tmp_path / 'sessions')
+    outside = tmp_path / 'outside.png'
+    outside.write_bytes(b'outside the session')
+    link = artifacts.root / 'link.png'
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        if getattr(exc, 'winerror', None) == 1314:
+            pytest.skip('Windows symlink creation requires Developer Mode or a symlink privilege')
+        raise
+    with pytest.raises(ValueError, match='session'):
+        artifacts.image(str(link))

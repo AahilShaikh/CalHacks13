@@ -23,3 +23,25 @@ def test_missing_credentials(monkeypatch, tmp_path, capsys):
         main()
     assert exc.value.code == 2
     assert 'ANTHROPIC_API_KEY' in capsys.readouterr().err
+
+
+def test_scan_dispatch_loads_local_env(monkeypatch, tmp_path):
+    import os
+    from types import ModuleType
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv('COMFY_HOST', raising=False)
+    (tmp_path / '.env').write_text('COMFY_HOST=127.0.0.1:9999\n')
+    scan_cli = ModuleType('aida.scan.cli')
+
+    def scan_main(args):
+        assert args == ['--help']
+        assert os.environ['COMFY_HOST'] == '127.0.0.1:9999'
+        return 0
+
+    scan_cli.main = scan_main
+    monkeypatch.setitem(sys.modules, 'aida.scan.cli', scan_cli)
+    monkeypatch.setattr(sys, 'argv', ['aida', 'scan', '--help'])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 0
