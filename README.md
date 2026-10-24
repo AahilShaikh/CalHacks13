@@ -15,6 +15,22 @@ uv run python examples/make_fixture.py
 uv run aida --mesh examples/asymmetric.stl --units mm --check
 ```
 
+### WSL checkouts on a Windows drive
+
+For a checkout under `/mnt/c`, put the virtual environment on the Linux
+filesystem before running the commands above:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+export UV_PROJECT_ENVIRONMENT="$HOME/.cache/aida-venv"
+uv sync --locked
+```
+
+Keep those variables set in the terminal where you run Aida. In this environment,
+the Windows-mounted virtual environment exceeded the CAD worker's 150-second
+health-check timeout; the same lockfile on Linux storage passed the CLI and all
+local tests. Native Windows users can use the normal `.venv` setup.
+
 Python 3.12 is pinned. uv can obtain that interpreter if needed. Run all commands
 in the same OS environment (for example, all inside WSL). The CAD stack includes
 native OpenCascade and VTK dependencies; `--check` tests their rendering and export
