@@ -877,6 +877,22 @@ wireDrop(dom.imageDrop, dom.imageInput, (files) => {
 dom.promptInput.addEventListener('input', validateForm);
 dom.startBtn.addEventListener('click', startSession);
 
+// Acquisition jobs can open an already-started CAD session in this viewer.
+const existingSession = new URLSearchParams(window.location.search).get('session');
+if (existingSession && /^[a-zA-Z0-9_-]+$/.test(existingSession)) {
+  fetch(`/api/v1/cad-sessions/${existingSession}`).then(async response => {
+    if (!response.ok) throw new Error('CAD session no longer exists in this server.');
+    const data = await response.json();
+    state.sessionId = existingSession;
+    dom.summary.classList.remove('hidden');
+    dom.closeBtn.classList.remove('hidden');
+    setComposerEnabled(true);
+    state.status = data.status;
+    connect(existingSession);
+    updateSummary();
+  }).catch(error => appendEntry(errorEntry('Cannot open session', error.message)));
+}
+
 dom.closeBtn.addEventListener('click', async () => {
   if (!state.sessionId) return;
   await fetch(`/api/v1/cad-sessions/${state.sessionId}/close`, { method: 'POST' });

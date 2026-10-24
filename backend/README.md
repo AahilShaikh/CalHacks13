@@ -5,9 +5,10 @@ root using `uv`; `uv sync --locked` installs the shared environment.
 
 ## Partner's starting points
 
-- `aida/turntable.py`: Arduino serial control and webcam capture.
-  `capture_views(output_directory)` returns captured image paths. Still an
-  unimplemented async stub; importing it performs no hardware operations.
+- `aida/turntable.py` and `aida/hardware/`: Arduino timed-pulse control, webcam
+  ChArUco feedback and photo capture. `capture_views(output_directory)` returns
+  captured image paths. Importing performs no hardware operations.
+  Setup and synchronous HTTP API: [turntable guide](../docs/TURNTABLE.md).
 - `aida/image_to_mesh.py`: implemented on the `aida.scan` pipeline.
   `images_to_mesh(images, output)` submits captures to the external
   ComfyUI/Pixal3D instance and writes an STL (unknown physical units).
@@ -28,8 +29,8 @@ Keep source photographs and pose/scale metadata alongside the mesh for later
 integration. For metric output, use `aida scan run` (or the HTTP API) with a
 caliper anchor; it writes `metric_model.stl` plus blueprints and
 dimensions.json for the agent. The terminal agent does not call the capture
-stub automatically yet.
+helper automatically yet.
 
 CAD/agent work lives in `agent.py`, `cad.py`, `artifacts.py`, `mesh_render.py`,
-and `cli.py`. Keeping capture work in its two starter modules avoids conflicts.
+and `cli.py`. Capture work lives in `turntable.py`, `hardware/`, and `api/turntable.py`.
 Add dependencies with `uv add <package>` and include the updated lockfile.
