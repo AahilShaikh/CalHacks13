@@ -40,7 +40,13 @@ export type ServerEvent = Stamp &
     | { type: 'user_prompt'; text: string }
     | ({ type: 'model_state' } & ModelState)
     | ({ type: 'workspace_state' } & WorkspaceState)
+    | { type: 'references'; items: ReferenceItem[] }
   );
+
+/** Something the agent can look at: a part's scan (and the file it came from), or a photo. */
+export type ReferenceItem =
+  | { kind: 'mesh'; part: string; name: string }
+  | { kind: 'photo'; name: string; url: string };
 
 /** Colour scale of a deviation heatmap: saturates at +-range; threshold is the match tolerance. */
 export type HeatScale = { range: number; threshold: number; share_within: number; vertices: number };

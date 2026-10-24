@@ -249,6 +249,31 @@ class ParametricModel:
         if self.on_saved is not None:
             self.on_saved()
 
+    def load_saved(self):
+        """Take the state saved in model.json by an earlier session, if any. True when loaded.
+        The undo stack is not saved, so a reopened part starts with nothing to undo."""
+        path = self.folder / 'model.json'
+        if not path.is_file():
+            return False
+        try:
+            state = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(state, dict) or not isinstance(state.get('features'), list):
+            return False
+        self.state = {**_empty_state(), **state}
+        return True
+
+    async def restore(self):
+        """Rebuild a loaded part in the CAD engine (no new revision). None, or why it failed."""
+        if not self.state['features']:
+            return None
+        try:
+            await self._build()
+        except Exception as exc:
+            return f'{self.name} could not be rebuilt: {str(exc)[:400]}'
+        return None
+
     # ---------------------------------------------------------- building
 
     async def _feature_at(self, spans, result):

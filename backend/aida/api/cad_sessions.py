@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..artifacts import Artifacts
+from .workspace_meta import read_meta, reference_items, transcript_exists, update_meta
 
 DEFAULT_STORAGE = Path('artifacts/cad')
 # Sample meshes offered by the UI's empty state ("Try the example part").
@@ -44,6 +45,13 @@ IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 UNITS = {'mm'}
 SSE_HEARTBEAT_S = 15.0
 REPLAY_LOG = 'ui-events.jsonl'
+# A workspace nobody is watching frees its CAD engine after this long; reopening rebuilds it.
+IDLE_MINUTES = float(os.environ.get('AIDA_IDLE_MINUTES', '20'))
+# Recorded events that describe the old run's lifecycle, not the workspace (dropped on reopen).
+LIFECYCLE_EVENTS = {'status', 'stage', 'session_done'}
+REOPEN_NOTE = ('This workspace was reopened in a new session; your earlier conversation is not '
+               'available. Its parts were rebuilt from their saved models: call workspace_status '
+               'and model_status before changing them.')
 # Tools whose results name a PNG the feed should show.
 IMAGE_TOOLS = {'render_view', 'view_mesh', 'slice_mesh', 'compare_to_mesh'}
 
@@ -139,9 +147,11 @@ def write_reference(mesh, artifacts: Artifacts, part: str | None = None) -> Path
     return target
 
 
-def plan_parts(uploads: list[tuple[str, object]], taken=()) -> tuple[list[tuple[str, object]], list[str]]:
+def plan_parts(uploads: list[tuple[str, object]], taken=(), sources: dict | None = None
+               ) -> tuple[list[tuple[str, object]], list[str]]:
     """[(file name, mesh)] -> ([(part name, mesh)], notes). One file may hold several parts;
-    names avoid ``taken`` (parts already in the workspace)."""
+    names avoid ``taken`` (parts already in the workspace). ``sources`` (if given) is filled
+    with part name -> the file it came from."""
     from ..workspace import part_name_from
 
     parts, notes, taken = [], [], set(taken)
@@ -157,6 +167,8 @@ def plan_parts(uploads: list[tuple[str, object]], taken=()) -> tuple[list[tuple[
             name = base if len(pieces) == 1 else part_name_from(f'{part_name_from(file_name)}_{index}', taken)
             taken.add(name)
             parts.append((name, piece))
+            if sources is not None:
+                sources[name] = file_name
     if len(taken) + len(parts) > MAX_MESHES:
         raise ValueError(f'At most {MAX_MESHES} parts per workspace')
     return parts, notes
@@ -239,7 +251,8 @@ def ingest_meshes(session, meshes: list[tuple[str, bytes]], existing=()) -> dict
         (root / f'upload-{index:02d}{Path(mesh_name).suffix.lower()}').write_bytes(data)
         loaded.append((mesh_name, mesh))
     existing = list(existing)
-    parts, notes = plan_parts(loaded, taken=[name for name, _ in existing])
+    sources = {}
+    parts, notes = plan_parts(loaded, taken=[name for name, _ in existing], sources=sources)
     specs = [{'name': name, 'reference': write_reference(mesh, session.artifacts, name)} for name, mesh in parts]
     items = [(name, path, [(f'{name}|reference', IDENTITY)]) for name, path in existing]
     items += [(name, mesh, [(f'{name}|reference', IDENTITY)]) for name, mesh in parts]
@@ -251,7 +264,7 @@ def ingest_meshes(session, meshes: list[tuple[str, bytes]], existing=()) -> dict
                + f" now part{'s' if len(names) > 1 else ''} {', '.join(names)} (reference meshes "
                + ', '.join(f'ref_{n}' for n in names) + ').')
     return {'specs': specs, 'notes': notes, 'glb': glb, 'stats': stats, 'summary': summary,
-            'parts': [name for name, _ in existing] + names}
+            'parts': [name for name, _ in existing] + names, 'sources': sources}
 
 
 def finish_ingest(session, added: dict) -> list[dict]:
@@ -262,6 +275,8 @@ def finish_ingest(session, added: dict) -> list[dict]:
     session.pending.append(added['summary'] + ''.join(f' {note}.' for note in added['notes']))
     events = [{'type': 'notice', 'text': note} for note in added['notes']]
     events.append({'type': 'notice', 'text': f"Added part{'s' if len(new) > 1 else ''} {', '.join(new)}"})
+    update_meta(session.artifacts.root, reference_files=added.get('sources') or {})
+    events.append(session.references_event())
     events.append(session.add_revision(added['glb'], False, added['stats'], parts=added['parts']))
     return events
 
@@ -277,9 +292,60 @@ def ingest_images(session, images: list[tuple[str, bytes]]):
         save_image_png(data, name, image_path)
         names.append(image_path.name)
     session.images += names
+    update_meta(root, photo_files={saved: original for saved, (original, _) in zip(names, images)})
     session.pending.append(f"Reference photos uploaded: {', '.join(names)}. "
                            'Call view_image to inspect them before modeling.')
     return names
+
+
+# --------------------------------------------------------------------------
+# Reopening saved workspaces
+# --------------------------------------------------------------------------
+
+WORKSPACE_JSON = 'workspace.json'
+_SESSION_PATH = re.compile(r'/api/v1/cad-sessions/[^/?"]+/')
+
+
+def load_events(folder: Path, session_id: str) -> list[dict]:
+    """A saved workspace's recorded events, ready to stream again: the old run's
+    lifecycle events are dropped, links point at ``session_id``, and seq restarts at 1."""
+    log = folder / REPLAY_LOG
+    if not log.is_file():
+        return []
+    events = []
+    prefix = f'/api/v1/cad-sessions/{session_id}/'
+    for line in log.read_text(encoding='utf-8').splitlines():
+        try:
+            event = json.loads(_SESSION_PATH.sub(prefix, line))
+        except ValueError:
+            continue  # a line cut off by a crash
+        if not isinstance(event, dict) or event.get('type') in LIFECYCLE_EVENTS:
+            continue
+        event['seq'] = len(events) + 1
+        events.append(event)
+    return events
+
+
+def meshes_from(events: list[dict], folder: Path) -> list[dict]:
+    """Mesh revisions (index = revision) from recorded mesh and heatmap events."""
+    by_revision: dict[int, dict] = {}
+    for event in events:
+        if event.get('type') == 'mesh' and isinstance(event.get('revision'), int):
+            revision = event['revision']
+            entry = {k: v for k, v in event.items() if k not in ('type', 'seq', 'at', 'url')}
+            entry['path'] = folder / f'mesh-{revision:03d}.glb'
+            by_revision[revision] = entry
+        elif event.get('type') == 'heatmap' and event.get('revision') in by_revision:
+            part = event.get('part') or 'part'
+            suffix = f"-{event['part']}" if event.get('part') else ''
+            by_revision[event['revision']].setdefault('heatmaps', {})[part] = \
+                folder / f"heatmap-{event['revision']:03d}{suffix}.glb"
+    meshes = []
+    for revision in range(max(by_revision, default=-1) + 1):
+        meshes.append(by_revision.get(revision) or {
+            'revision': revision, 'path': folder / f'mesh-{revision:03d}.glb', 'generated': False,
+            'triangles': 0, 'extents': [0, 0, 0]})
+    return meshes
 
 
 # --------------------------------------------------------------------------
@@ -289,8 +355,9 @@ def ingest_images(session, images: list[tuple[str, bytes]]):
 class CadSession:
     """One live session: artifact directory, event log, and mesh revisions."""
 
-    def __init__(self, artifacts: Artifacts, prompt: str, units: str | None):
-        self.id = uuid.uuid4().hex[:12]
+    def __init__(self, artifacts: Artifacts, prompt: str, units: str | None, session_id: str | None = None):
+        # The folder name: a workspace keeps its id (and its links) across reopens.
+        self.id = session_id or artifacts.root.name
         self.artifacts = artifacts
         self.prompt = prompt
         self.units = units
@@ -316,6 +383,12 @@ class CadSession:
         self.created_at = time.time()
         self.updated_at = self.created_at
         self._waiters: set[asyncio.Future] = set()
+        # Open event streams, and when the last one connected or left (for the idle timeout).
+        self.viewers = 0
+        self.last_seen = self.created_at
+        self.closing = False
+        # Built from a saved folder: rebuild its models and resume its agent conversation.
+        self.reopened = False
 
     # -- URLs ---------------------------------------------------------------
     def add_revision(self, glb: Path, generated: bool, stats: dict, **extra) -> dict:
@@ -358,6 +431,9 @@ class CadSession:
             'updated_at': self.updated_at,
         }
 
+    def references_event(self) -> dict:
+        return {'type': 'references', 'items': reference_items(self.artifacts.root, self.id)}
+
     # -- events -------------------------------------------------------------
     def record(self, event: dict) -> dict:
         """Append an event without waking streamers (used before clients can
@@ -396,18 +472,24 @@ class CadSession:
 
     async def stream(self, after: int = 0):
         """Server-sent events: replay from ``after`` then live tail."""
-        yield 'retry: 2000\n\n'
-        cursor = after
-        while True:
-            pending = self.replay(cursor)
-            if pending:
-                for event in pending:
-                    cursor = event['seq']
-                    yield f'id: {cursor}\ndata: {json.dumps(event, default=str)}\n\n'
-            elif await self._wait_for_more():
-                # Timed out quiet: keep-alive comment so proxies and the
-                # browser hold the stream open.
-                yield ': ping\n\n'
+        self.viewers += 1
+        self.last_seen = time.time()
+        try:
+            yield 'retry: 2000\n\n'
+            cursor = after
+            while True:
+                pending = self.replay(cursor)
+                if pending:
+                    for event in pending:
+                        cursor = event['seq']
+                        yield f'id: {cursor}\ndata: {json.dumps(event, default=str)}\n\n'
+                elif await self._wait_for_more():
+                    # Timed out quiet: keep-alive comment so proxies and the
+                    # browser hold the stream open.
+                    yield ': ping\n\n'
+        finally:
+            self.viewers -= 1
+            self.last_seen = time.time()
 
     async def _wait_for_more(self) -> bool:
         """Wait for the next publish; True when it timed out instead."""
@@ -436,13 +518,14 @@ class CadSessionManager:
     # -- lifecycle ----------------------------------------------------------
     def create(self, meshes: list[tuple[str, bytes]] = (),
                images: list[tuple[str, bytes]] = (), prompt: str = '',
-               units: str | None = None) -> CadSession:
+               units: str | None = None, name: str = '') -> CadSession:
         """Blocking preparation of a workspace session; meshes and photos are optional
         (a session can design from scratch, and both can be added later)."""
         from ..workspace import write_workspace
 
         artifacts = Artifacts(self.storage_dir)
         session = CadSession(artifacts, prompt, units)
+        update_meta(artifacts.root, name=name.strip(), units=units, created_at=session.created_at)
         session.record({'type': 'stage', 'stage': 'preparing'})
         write_workspace(artifacts.root, [])
         if meshes:
@@ -452,6 +535,7 @@ class CadSessionManager:
                 session.record(event)
         if images:
             ingest_images(session, images)
+            session.record(session.references_event())
         artifacts.log('session', {'meshes': [name for name, _ in meshes], 'parts': session.parts,
                                   'units': units, 'images': session.images, 'prompt': prompt})
         with self._mutex:
@@ -499,6 +583,9 @@ class CadSessionManager:
         return warm['ready'].result(), warm['release']
 
     async def shutdown(self):
+        reaper = getattr(self, '_reaper', None)
+        if reaper is not None:
+            reaper.cancel()
         if self._warm is not None:
             self._warm['release'].set()
             self._warm['task'].cancel()
@@ -541,6 +628,91 @@ class CadSessionManager:
     def get(self, session_id: str) -> CadSession | None:
         with self._mutex:
             return self._sessions.get(session_id)
+
+    def live(self, session_id: str) -> CadSession | None:
+        """The session if it is open and not shutting down."""
+        session = self.get(session_id)
+        if session is None or session.closing or session.status not in ('queued', 'running'):
+            return None
+        return session
+
+    # -- saved workspaces ----------------------------------------------------
+    def folder(self, workspace_id: str) -> Path | None:
+        """A saved workspace's folder, or None (also for ids that try to leave storage)."""
+        if not re.fullmatch(r'[\w.-]+', workspace_id or '') or workspace_id.startswith(('.', '_')):
+            return None
+        folder = (self.storage_dir / workspace_id).resolve()
+        if folder.parent != self.storage_dir.resolve() or not (folder / WORKSPACE_JSON).is_file():
+            return None
+        return folder
+
+    def reopen(self, workspace_id: str) -> CadSession:
+        """A session for a saved workspace: the live one if it is open, otherwise a new
+        one loaded from its folder (events, mesh revisions, parts, photos). Start it with
+        :meth:`start`; the runner rebuilds the models in a fresh CAD engine."""
+        live = self.live(workspace_id)
+        if live is not None:
+            return live
+        folder = self.folder(workspace_id)
+        if folder is None:
+            raise KeyError(workspace_id)
+        from ..workspace import read_workspace
+
+        artifacts = Artifacts.open(folder)
+        meta = read_meta(folder)
+        session = CadSession(artifacts, '', meta.get('units') or None, session_id=workspace_id)
+        session.reopened = True
+        session.events = load_events(folder, workspace_id)
+        session.meshes = meshes_from(session.events, folder)
+        session.parts = [p['name'] for p in read_workspace(folder)[0]]
+        session.images = sorted(p.name for p in folder.glob('input-*.png'))
+        session.record({'type': 'notice', 'text': 'Workspace reopened'})
+        session.record(session.references_event())
+        with self._mutex:
+            self._sessions[workspace_id] = session
+        return session
+
+    async def close(self, session: CadSession, wait_s: float = 15.0):
+        """End a session's run (its CAD engine and agent) and wait for it to finish."""
+        session.closing = True
+        session.turns.put_nowait(None)
+        task = session.task
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), wait_s)
+            except (TimeoutError, asyncio.CancelledError):
+                task.cancel()
+            except Exception:
+                pass  # the runner reports its own failures as events
+
+    def forget(self, session_id: str):
+        with self._mutex:
+            self._sessions.pop(session_id, None)
+
+    # -- idle workspaces -----------------------------------------------------
+    def reap_idle(self, now: float | None = None, idle_s: float | None = None) -> list[str]:
+        """Close workspaces nobody has watched for ``idle_s`` while the agent was idle.
+        Their files stay; reopening rebuilds them. Returns the closed ids."""
+        now = time.time() if now is None else now
+        idle_s = IDLE_MINUTES * 60 if idle_s is None else idle_s
+        with self._mutex:
+            sessions = list(self._sessions.values())
+        closed = []
+        for session in sessions:
+            if (session.status in ('queued', 'running') and not session.closing and session.viewers == 0
+                    and session.stage in ('idle', '') and now - max(session.last_seen, session.updated_at) > idle_s):
+                session.closing = True
+                session.turns.put_nowait(None)
+                closed.append(session.id)
+        return closed
+
+    def start_reaper(self, every_s: float = 60.0):
+        async def loop():
+            while True:
+                await asyncio.sleep(every_s)
+                self.reap_idle()
+        if getattr(self, '_reaper', None) is None or self._reaper.done():
+            self._reaper = asyncio.create_task(loop())
 
 
 # --------------------------------------------------------------------------
@@ -682,13 +854,17 @@ async def run_cad_session(session: CadSession):
                 workspace = Workspace.load(cad, session.artifacts)
                 for part, reference in workspace.references():
                     await cad.load_reference(reference, part)
+                if session.reopened and workspace.has_saved_models():
+                    session.set_stage('restoring')
+                    for note in await workspace.restore():
+                        session.publish({'type': 'notice', 'text': note})
+                    session.publish({'type': 'workspace_state', **workspace.snapshot()})
                 cad.on_execute = snapshot_hook(cad, session, workspace)
                 session.cad, session.workspace = cad, workspace
             options = options_for(cad, session.artifacts, session.units, on_event=bridge,
                                   workspace=workspace)
-            from claude_agent_sdk import ClaudeSDKClient
-
-            async with ClaudeSDKClient(options=options) as client:
+            client = await connect_agent(session, options, workspace)
+            try:
                 session.client = client
                 session.set_stage('idle')  # ready: the workspace waits for a prompt
                 while True:
@@ -697,10 +873,15 @@ async def run_cad_session(session: CadSession):
                         break
                     prompt = compose_turn(session, prompt)
                     session.set_stage('agent_running')
-                    await run_turn(client, prompt, session.artifacts, on_event=bridge)
+                    final = await run_turn(client, prompt, session.artifacts, on_event=bridge)
+                    if getattr(final, 'session_id', None):
+                        # Reopening the workspace resumes this conversation.
+                        update_meta(session.artifacts.root, agent_session=final.session_id)
                     if cad.broken:
                         raise RuntimeError('CAD session timed out; start a new session')
                     session.set_stage('idle')
+            finally:
+                await client.disconnect()
         session.set_status('done')
         session.publish({'type': 'session_done', 'status': 'done'})
     except asyncio.CancelledError:
@@ -711,6 +892,28 @@ async def run_cad_session(session: CadSession):
         session.publish({'type': 'error', 'message': message})
     finally:
         session.cad = session.client = None
+
+
+async def connect_agent(session: CadSession, options, workspace):
+    """Start the Claude client. A reopened workspace resumes its saved conversation when
+    the transcript is still there; otherwise the agent is told the workspace was reopened."""
+    from claude_agent_sdk import ClaudeSDKClient
+
+    agent_session = read_meta(session.artifacts.root).get('agent_session') if session.reopened else None
+    if agent_session and transcript_exists(session.artifacts.root, agent_session):
+        options.resume = agent_session
+        client = ClaudeSDKClient(options=options)
+        try:
+            await client.connect()
+            return client
+        except Exception as exc:
+            session.artifacts.log('resume_failed', {'agent_session': agent_session, 'error': str(exc)})
+            options.resume = None
+    if session.reopened and workspace.has_saved_models():
+        session.pending.append(REOPEN_NOTE)
+    client = ClaudeSDKClient(options=options)
+    await client.connect()
+    return client
 
 
 def explain_error(exc: BaseException) -> str:
@@ -766,6 +969,7 @@ async def create_cad_session(
     prompt: str | None = Form(None),
     units: str | None = Form(None),
     images: list[UploadFile] | None = File(None),
+    name: str | None = Form(None),
 ):
     """Open a workspace session. The CAD engine and agent start now; meshes, photos
     and a first prompt are optional (they can all come later)."""
@@ -780,7 +984,7 @@ async def create_cad_session(
     image_uploads = [(upload.filename or 'image', await upload.read()) for upload in images or []]
 
     def prepare():
-        return _manager().create(mesh_uploads, image_uploads, prompt, units)
+        return _manager().create(mesh_uploads, image_uploads, prompt, units, (name or '')[:120])
 
     try:
         session = await asyncio.to_thread(prepare)
@@ -800,8 +1004,9 @@ async def create_cad_session(
 
 def _open_session(session_id: str) -> CadSession:
     session = _session_or_404(session_id)
-    if session.status not in ('queued', 'running'):
-        raise HTTPException(status_code=409, detail=f'Session is {session.status}; start a new one')
+    if session.closing or session.status not in ('queued', 'running'):
+        # The workspace is saved; POST /api/v1/workspaces/{id}/open starts it again.
+        raise HTTPException(status_code=409, detail='This workspace is closed; reopen it to continue')
     return session
 
 
@@ -854,6 +1059,7 @@ async def add_cad_images(session_id: str, images: list[UploadFile] = File(...)):
         names = await asyncio.to_thread(ingest_images, session, uploads)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    session.publish(session.references_event())
     return {'images': names}
 
 
@@ -1008,5 +1214,6 @@ def _scene_to_stl(glb: Path, target: Path):
 @router.post('/api/v1/cad-sessions/{session_id}/close', status_code=202)
 async def close_cad_session(session_id: str):
     session = _session_or_404(session_id)
+    session.closing = True
     session.turns.put_nowait(None)
     return {'closing': True, 'session_id': session.id}

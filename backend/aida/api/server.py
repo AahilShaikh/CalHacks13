@@ -31,6 +31,7 @@ from ..scan.pipeline import run_scan
 from .cad_sessions import CadSessionManager, router as cad_sessions_router
 from .jobs import JobManager
 from .replays import router as replays_router
+from .workspaces import router as workspaces_router
 
 load_local_env()
 
@@ -47,6 +48,8 @@ async def lifespan(_app):
     # Start a CAD engine now so the first prompt does not wait ~10 s for it.
     if os.environ.get('ANTHROPIC_API_KEY'):
         cad_manager.prewarm()
+    # Workspaces nobody watches free their CAD engine; they reopen from disk.
+    cad_manager.start_reaper()
     yield
     await cad_manager.shutdown()
 
@@ -139,6 +142,7 @@ def get_scan_file(job_id: str, filename: str):
 
 app.include_router(cad_sessions_router)
 app.include_router(replays_router)
+app.include_router(workspaces_router)
 # The web UI is mounted last so API routes match first.
 if (FRONTEND_DIST / 'index.html').is_file():
     app.mount('/legacy', StaticFiles(directory=WEB_DIR, html=True), name='legacy-web')

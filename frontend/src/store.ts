@@ -12,6 +12,7 @@ import {
   type Deviation,
   type ModelState,
   type PartState,
+  type ReferenceItem,
   type Phase,
   type ServerEvent,
   type SessionStatus,
@@ -91,10 +92,8 @@ type State = {
   replyDismissedId: number | null;
   /** Parts the user hid in the 3D view (eye toggle in the explorer). */
   hiddenParts: string[];
-  /** The file each scanned part came from, for the References list. */
-  referenceFiles: Record<string, string>;
-  /** Photos already sent to the agent (object URLs for thumbnails). */
-  sentPhotos: { name: string; url: string }[];
+  /** Scans and photos the agent can use, as the server last reported them. */
+  references: ReferenceItem[];
   /** A tool card the user clicked to see in 3D; null follows the agent (if followAgent). */
   focusId: number | null;
   followAgent: boolean;
@@ -141,7 +140,7 @@ const REPLAY_MAX_GAP_S = 3;
 const freshSession = {
   error: null, feed: [], revisions: [], deviations: [], features: [], cost: 0, workspace: null, selectedPart: null,
   changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true, replyDismissedId: null,
-  hiddenParts: [], referenceFiles: {}, sentPhotos: [],
+  hiddenParts: [], references: [],
   stage: '', startedAt: null, endedAt: null, lastEventAt: null,
 } satisfies Partial<State>;
 
@@ -175,8 +174,7 @@ export const useStore = create<State>((set, get) => ({
   stepsOpen: true,
   replyDismissedId: null,
   hiddenParts: [],
-  referenceFiles: {},
-  sentPhotos: [],
+  references: [],
   focusId: null,
   followAgent: true,
   replay: null,
@@ -225,11 +223,7 @@ export const useStore = create<State>((set, get) => ({
       return;
     }
     try {
-      const { parts } = await api.uploadMeshes(sessionId, added, units || undefined);
-      // Several files: one part each, in order. One file may split into several parts.
-      const files: Record<string, string> = {};
-      parts.forEach((part, i) => (files[part] = (added.length === 1 ? added[0] : added[i] ?? added[0]).name));
-      set((s) => ({ referenceFiles: { ...s.referenceFiles, ...files } }));
+      await api.uploadMeshes(sessionId, added, units || undefined);
     } catch (err) {
       set({ error: `${added.map((f) => f.name).join(', ')} not added: ${(err as Error).message}` });
     } finally {
@@ -266,8 +260,7 @@ export const useStore = create<State>((set, get) => ({
       // Photos go to the agent with this message.
       if (images.length) {
         await api.uploadImages(sessionId, images);
-        const sent = images.map((file) => ({ name: file.name, url: URL.createObjectURL(file) }));
-        set((s) => ({ images: [], sentPhotos: [...s.sentPhotos, ...sent] }));
+        set({ images: [] });
       }
       await api.sendTurn(sessionId, text);
     } catch (err) {
@@ -277,7 +270,8 @@ export const useStore = create<State>((set, get) => ({
 
   apply: (events) =>
     set((s) => {
-      let { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error, endedAt } = s;
+      let { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error, endedAt,
+        references } = s;
       feed = [...feed];
       const updateLastTool = (name: string | null, change: (t: ToolItem) => ToolItem) => {
         for (let i = feed.length - 1; i >= 0; i--) {
@@ -360,6 +354,9 @@ export const useStore = create<State>((set, get) => ({
           case 'notice':
             feed.push(note(e.text, 'muted'));
             break;
+          case 'references':
+            references = e.items;
+            break;
           case 'heatmap_skipped':
           case 'mesh_skipped':
             break; // expected while the agent experiments; not worth a feed entry
@@ -392,7 +389,7 @@ export const useStore = create<State>((set, get) => ({
       }
       const lastEventAt = events.length ? events[events.length - 1].at : s.lastEventAt;
       return { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error,
-        endedAt, lastEventAt };
+        endedAt, lastEventAt, references };
     }),
 
   showRevision: (revision) => set({ shownRevision: revision }),

@@ -12,20 +12,24 @@ export function References() {
   const [dragging, setDragging] = useState(false);
   const workspace = useStore((s) => s.workspace);
   const revisions = useStore((s) => s.revisions);
-  const referenceFiles = useStore((s) => s.referenceFiles);
+  const references = useStore((s) => s.references);
   const meshFiles = useStore((s) => s.meshFiles);
   const images = useStore((s) => s.images);
-  const sentPhotos = useStore((s) => s.sentPhotos);
   const selected = useStore((s) => s.selectedPart);
   const replay = useStore((s) => s.replay);
   const ended = useStore((s) => s.status === 'done' || s.status === 'failed');
   const { addMeshes, addImages, selectPart } = useStore.getState();
   const canAdd = !replay && !ended;
 
-  const scans = workspace?.parts.length
+  // The server's list; recordings from before it existed fall back to the scanned parts.
+  const fallback = workspace?.parts.length
     ? workspace.parts.filter((p) => p.has_reference).map((p) => p.name)
     : referenceRevision(revisions)?.parts ?? [];
-  const count = scans.length + meshFiles.length + images.length + sentPhotos.length;
+  const scans = references.length
+    ? references.flatMap((r) => (r.kind === 'mesh' ? [{ part: r.part, name: r.name }] : []))
+    : fallback.map((part) => ({ part, name: `${part} scan` }));
+  const photos = references.flatMap((r) => (r.kind === 'photo' ? [r] : []));
+  const count = scans.length + meshFiles.length + images.length + photos.length;
 
   const take = (files: File[]) => {
     if (!canAdd) return;
@@ -78,11 +82,11 @@ export function References() {
 
       {open && (
         <ul className="scroll-thin flex min-h-0 flex-col gap-px overflow-y-auto px-1.5 pb-2">
-          {scans.map((part) => (
+          {scans.map(({ part, name }) => (
             <Row
               key={part}
               icon={<Box size={14} strokeWidth={1.75} className="text-mesh" aria-hidden />}
-              title={referenceFiles[part] ?? `${part} scan`}
+              title={name}
               detail={`Scan · part ${part}`}
               selected={selected === part}
               onClick={() => selectPart(selected === part ? null : part)}
@@ -93,8 +97,8 @@ export function References() {
               detail="Uploading…" />
           ))}
           <Photos files={images} />
-          {sentPhotos.map((photo, i) => (
-            <Row key={`${photo.url}-${i}`} icon={<Thumb url={photo.url} />} title={photo.name} detail="Photo · shared with Aida" />
+          {photos.map((photo) => (
+            <Row key={photo.url} icon={<Thumb url={photo.url} />} title={photo.name} detail="Photo · shared with Aida" />
           ))}
 
           {canAdd && (count === 0 ? (
