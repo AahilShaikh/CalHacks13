@@ -39,6 +39,29 @@ Example requests:
 1. “View the reference mesh from the top and isometric directions. Describe the visible features.”
 2. “Create a 60 x 40 x 6 mm plate with two 5 mm through holes 40 mm apart. Name it generated_cad and inspect its render.”
 3. “Change the plate thickness to 8 mm, preserve the holes, validate, and export plate.step and plate.stl.”
+4. “Run a slice series along Z, slice the reference between each change, and rebuild it parametrically.”
+
+### Mesh inspection tools
+
+Aida inspects the reference mesh with three local tools (VTK, trimesh and
+matplotlib, each run in a subprocess):
+
+- `view_mesh` frames the mesh exactly. To zoom or pan, pass `fit_box` or `center` +
+  `view_width`. To orbit, pass `direction`/`view_dir` + `azimuth`/`elevation`.
+  `slice_axis`/`slice_normal` + `slice_at` cut the mesh and shade the cut face.
+  Images carry a coordinate grid, a scale bar and an axis triad. The returned JSON
+  gives model units per pixel, so a pixel position maps back to model coordinates.
+- `slice_mesh` returns the exact section loops, outer or hole, and fits a primitive
+  to each: circle, rectangle, rounded rectangle, slot, or a line/arc profile. Each
+  fit has its maximum deviation and a build123d snippet placed in the right plane.
+- `slice_series` slices along an axis and reports the constant-profile ranges and
+  the positions where the section changes, refined to the fit tolerance.
+
+The CAD server's `mesh_holes` is exposed too. `render_view` of `reference_mesh`
+with `clip_plane`/`clip_at` now renders a sliced view.
+
+To try the tools without Claude:
+`uv run python -m aida.mesh_probe slice examples/asymmetric.stl --spec '{"axis": "z", "at": 1}' --out section.png`
 
 Use `/quit`, EOF, or Ctrl-C to exit. `--prompt "..."` runs a single paid request.
 Each launch starts a new conversation and CAD session; follow-ups within that

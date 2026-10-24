@@ -27,7 +27,7 @@ async def run(args):
     print(f'Artifacts: {artifacts.root}', flush=True)
     mesh = artifacts.copy_mesh(args.mesh.resolve())
     artifacts.log('session', {'mesh': str(mesh), 'units': args.units})
-    async with open_cad(artifacts) as cad:
+    async with open_cad(artifacts, args.units) as cad:
         await cad.startup(mesh)
         if args.check:
             result = await cad.call('render_view', {'objects': 'reference_mesh', 'direction': 'iso'})

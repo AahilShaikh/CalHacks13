@@ -8,6 +8,9 @@ from claude_agent_sdk import (
 )
 
 from .cad import EXPOSED
+from .mesh_tools import DESCRIPTIONS, SERIES_SCHEMA, SLICE_SCHEMA, VIEW_SCHEMA
+
+MESH_TOOLS = {'view_mesh', 'slice_mesh', 'slice_series'}
 
 
 def make_tools(cad, artifacts):
@@ -36,24 +39,49 @@ def make_tools(cad, artifacts):
             return {'is_error': True, 'content': [{'type': 'text', 'text': str(exc)}]}
 
     tools.append(view_image)
+
+    mesh = cad.mesh
+    for name, schema, method in (('view_mesh', VIEW_SCHEMA, mesh.view),
+                                 ('slice_mesh', SLICE_SCHEMA, mesh.slice),
+                                 ('slice_series', SERIES_SCHEMA, mesh.series)):
+        async def mesh_handler(args, method=method):
+            result = await method(args)
+            return {**result, 'is_error': result.get('isError', False)}
+        tools.append(tool(name, DESCRIPTIONS[name], schema)(mesh_handler))
     return tools
 
 
 def options_for(cad, artifacts, units=None):
     server = create_sdk_mcp_server(name='aida', version='0.1.0', tools=make_tools(cad, artifacts))
-    names = [f'mcp__aida__{name}' for name in sorted(EXPOSED | {'view_image'})]
+    names = [f'mcp__aida__{name}' for name in sorted(EXPOSED | MESH_TOOLS | {'view_image'})]
     prompt = f'''You are Aida, a CAD assistant. Use your CAD tools to inspect meshes and build CAD.
 The STL is registered as reference_mesh. Preserve it; create generated CAD under a different name.
 Input units: {units or "unknown; do not claim physical dimensions"}. Never rescale implicitly.
-Inspect reference_mesh from multiple views before describing its geometry. Specify objects explicitly
-when rendering so the reference and generated CAD do not unintentionally obscure each other.
-After render_view returns a PNG path or [SEND: path], call view_image to actually inspect it.
-Do not claim to have seen an image before view_image succeeds. Use front, side, top, iso and
-azimuth/elevation to inspect geometry. Build incrementally using execute and named parameters.
-Use from build123d import * when necessary. Use measure and validate to verify generated CAD.
-Validate before exporting and export only when requested. Save exports inside {artifacts.root}.
-Use relative export filenames such as model.step. Tool errors are actionable feedback; correct
-ordinary code errors, but stop and tell the user to restart if the CAD session times out.
+
+Inspecting the reference mesh:
+- view_mesh renders it with exact framing and returns the image directly. Start with whole-part
+  views, then zoom/pan with fit_box (or center plus view_width) onto features you need to see.
+  Slice it (slice_axis/slice_normal plus slice_at) to see inside; the cut face is orange.
+- slice_series along each axis finds where the cross-section changes: those positions bound
+  extrusions, steps, pockets and holes.
+- slice_mesh gives exact section loops with fitted primitives, max_deviation and a build123d
+  snippet in the right plane. Take dimensions from these numbers, not from reading images.
+  Slice between transitions, never exactly on a flat face.
+- mesh_holes finds drilled holes (axis, diameter, depth, through) on the mesh.
+- render_view still renders generated CAD; render reference_mesh with view_mesh instead.
+
+Building CAD from the mesh:
+- Keep one script with a PARAMS dict of named dimensions and rebuild the whole part from it on
+  each execute. Build feature by feature: base extrusion from the dominant section, then cuts,
+  holes and fillets, each traced to a slice or series result.
+- Check each step with measure on the generated CAD and compare its size and sections with
+  the reference. Fits with large max_deviation are guesses; say so.
+- After render_view returns a PNG path or [SEND: path], call view_image to inspect it.
+  Do not claim to have seen an image before you have it.
+Use from build123d import * when necessary. Validate before exporting and export only when
+requested. Save exports inside {artifacts.root}; use relative filenames such as model.step.
+Tool errors are actionable feedback; correct ordinary code errors, but stop and tell the user
+to restart if the CAD session times out.
 A geometric approximation is not proof of accurate reconstruction. Explain uncertainty.
 Only the supplied CAD and image tools are available. Do not attempt shell or filesystem access.
 '''

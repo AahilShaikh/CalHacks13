@@ -3,7 +3,6 @@ import asyncio
 import json
 import os
 import shutil
-import sys
 from uuid import uuid4
 from contextlib import asynccontextmanager
 
@@ -11,9 +10,10 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from .artifacts import Artifacts
+from .mesh_tools import MeshTools
 
 EXPOSED = {'execute', 'render_view', 'measure', 'validate', 'export',
-           'session_state', 'last_error', 'version', 'health_check'}
+           'session_state', 'last_error', 'version', 'health_check', 'mesh_holes'}
 
 
 def text_of(result):
@@ -42,10 +42,11 @@ def normalize_result(result):
 
 
 class CadBridge:
-    def __init__(self, session, artifacts: Artifacts, timeout=180):
+    def __init__(self, session, artifacts: Artifacts, timeout=180, units=None):
         self.session = session
         self.artifacts = artifacts
         self.timeout = timeout
+        self.mesh = MeshTools(artifacts, units, timeout)
         self.lock = asyncio.Lock()
         self.broken = False
         self.schemas = {}
@@ -112,34 +113,16 @@ class CadBridge:
     async def _render_reference(self, args):
         if args['objects'] != 'reference_mesh':
             raise ValueError('Render reference_mesh separately from generated CAD in this milestone')
+        # The CAD server's own mesh render goes through a lossy STEP round-trip,
+        # so reference views use the direct STL renderer (which also slices).
+        spec = {'direction': args.get('direction') or 'iso',
+                'azimuth': args.get('azimuth', 0), 'elevation': args.get('elevation', 0)}
         if args.get('clip_plane'):
-            raise ValueError('Reference mesh clipping is not supported in this milestone')
+            spec['slice_axis'] = args['clip_plane']
+            if args.get('clip_at') is not None:
+                spec['slice_at'] = args['clip_at']
         self.artifacts.log('tool_call', {'name': 'render_reference', 'arguments': args})
-        command = [sys.executable, '-m', 'aida.mesh_render',
-                   str(self.artifacts.root / 'reference.stl'), args['save_to'],
-                   '--direction', args.get('direction', 'iso'),
-                   '--azimuth', str(args.get('azimuth', 0)),
-                   '--elevation', str(args.get('elevation', 0))]
-        process = await asyncio.create_subprocess_exec(
-            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), self.timeout)
-        except TimeoutError:
-            if process.returncode is None:
-                process.kill()
-            await process.communicate()
-            raise RuntimeError(f'STL rendering exceeded {self.timeout}s; renderer stopped') from None
-        except BaseException:
-            if process.returncode is None:
-                process.kill()
-            await process.communicate()
-            raise
-        self.artifacts.log('mesh_renderer', {'returncode': process.returncode,
-                                            'stderr': stderr.decode(errors='replace')})
-        if process.returncode:
-            raise RuntimeError(f'STL render failed: {stderr.decode(errors="replace")[-2000:]}')
-        result = self.artifacts.image(args['save_to'])
-        result['content'].append({'type': 'text', 'text': f"[SEND: {args['save_to']}]"})
+        result = await self.mesh.render(spec, args['save_to'])
         self.artifacts.log('tool_result', {'name': 'render_reference', **result})
         return result
 
@@ -165,7 +148,7 @@ class CadBridge:
 
 
 @asynccontextmanager
-async def open_cad(artifacts):
+async def open_cad(artifacts, units=None):
     executable = shutil.which('build123d-mcp')
     if not executable:
         raise RuntimeError('build123d-mcp is missing; run uv sync --locked')
@@ -176,4 +159,4 @@ async def open_cad(artifacts):
         async with stdio_client(params, errlog=errors) as (read, write):
             async with ClientSession(read, write, read_timeout_seconds=185) as session:
                 await session.initialize()
-                yield CadBridge(session, artifacts)
+                yield CadBridge(session, artifacts, units=units)
