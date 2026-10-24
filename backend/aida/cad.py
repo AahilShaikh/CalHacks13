@@ -50,6 +50,9 @@ class CadBridge:
         self.lock = asyncio.Lock()
         self.broken = False
         self.schemas = {}
+        # Optional async callback invoked after each successful execute; used by
+        # the web session runner to snapshot generated CAD for the live viewer.
+        self.on_execute = None
 
     async def discover(self):
         result = await self.session.list_tools()
@@ -108,6 +111,13 @@ class CadBridge:
                 except (OSError, ValueError) as exc:
                     result['isError'] = True
                     result['content'].append({'type': 'text', 'text': f'PNG render failed: {exc}'})
+            if name == 'execute' and not failed(result) and self.on_execute is not None:
+                try:
+                    await self.on_execute()
+                except Exception as exc:
+                    # A missed visualization snapshot must never break the
+                    # agent's execution flow.
+                    self.artifacts.log('snapshot_error', {'error': str(exc)})
             return result
 
     async def tessellate(self, object_name):
@@ -129,6 +139,37 @@ class CadBridge:
             target.unlink(missing_ok=True)
             raise ValueError(f'Could not tessellate {object_name}: {text_of(result)[:1500]}')
         return target
+
+    async def snapshot_stl(self, target, object_name='*'):
+        """Best-effort STL snapshot of one named object (or ``*`` for all),
+        without the export validation gate: intermediate design states are
+        expected to fail validation while the agent iterates, but the viewer
+        still wants them."""
+        fields = self.schemas['export'].input_schema.get('properties', {})
+        if 'format' not in fields:
+            raise RuntimeError('Installed export schema cannot select the STL format')
+        args = {'format': 'stl', 'object_name': object_name}
+        for field in ('filename', 'path', 'file_path'):
+            if field in fields:
+                args[field] = str(target)
+                break
+        else:
+            raise RuntimeError('Installed export schema has no output path field')
+        result = await self._call('export', args)
+        if failed(result):
+            raise RuntimeError(text_of(result))
+        return target
+
+    async def session_object_names(self):
+        """Named objects registered in the CAD session. Uses the unlocked call
+        path so it is safe from ``on_execute`` hooks running inside ``call``."""
+        result = await self._call('session_state', {})
+        if failed(result):
+            return []
+        try:
+            return list(json.loads(text_of(result)).get('objects', {}))
+        except Exception:
+            return []
 
     async def _render_reference(self, args):
         if args['objects'] != 'reference_mesh':

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aida — CAD Studio</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <div class="brand-text">
+        <h1>Aida</h1>
+        <span>CAD Studio</span>
+      </div>
+    </div>
+    <div class="session-meta">
+      <span id="stage-pill" class="pill pill-idle">Idle</span>
+      <span id="rev-label" class="muted"></span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Session setup -->
+    <aside class="panel setup-panel">
+      <h2>New session</h2>
+
+      <label class="field-label" for="mesh-input">Reference mesh</label>
+      <div id="mesh-drop" class="dropzone" tabindex="0">
+        <input id="mesh-input" type="file" accept=".stl,.glb,.obj,.ply" hidden>
+        <div class="drop-title">Drop a mesh or click to browse</div>
+        <div class="drop-sub">.stl &nbsp;·&nbsp; .glb &nbsp;·&nbsp; .obj &nbsp;·&nbsp; .ply</div>
+        <div id="mesh-chip" class="chip hidden"></div>
+      </div>
+
+      <label class="field-label" for="image-input">Reference photos <span class="muted">(optional)</span></label>
+      <div id="image-drop" class="dropzone dropzone-sm" tabindex="0">
+        <input id="image-input" type="file" accept="image/*" multiple hidden>
+        <div class="drop-title">Add photos the agent can inspect</div>
+        <div id="image-chips" class="chip-row"></div>
+      </div>
+
+      <label class="field-label" for="prompt-input">Prompt</label>
+      <textarea id="prompt-input" rows="5"
+        placeholder="e.g. Recreate this part as a parametric build123d model: 60 × 40 × 6 mm plate with two 5 mm through holes 40 mm apart."></textarea>
+
+      <div class="row">
+        <div class="field">
+          <label class="field-label" for="units-input">Units</label>
+          <select id="units-input">
+            <option value="">Unknown</option>
+            <option value="mm">Millimeters</option>
+          </select>
+        </div>
+      </div>
+
+      <button id="start-btn" class="btn-primary" disabled>Generate CAD</button>
+      <p id="setup-error" class="error-text hidden"></p>
+
+      <div id="session-summary" class="session-summary hidden">
+        <h2>Session</h2>
+        <div id="summary-body" class="summary-body"></div>
+        <button id="close-btn" class="btn-ghost hidden">Close session</button>
+      </div>
+    </aside>
+
+    <!-- 3D viewport -->
+    <section class="viewport-wrap">
+      <canvas id="viewport"></canvas>
+      <div id="viewport-empty" class="viewport-empty">
+        <div class="empty-glyph">◇</div>
+        <h3>Live CAD preview</h3>
+        <p>Upload a reference mesh, describe the part, and watch the model
+           rebuild here — every executed build123d snippet streams a new mesh.</p>
+      </div>
+      <div id="viewport-status" class="viewport-status hidden">
+        <span class="spinner"></span><span id="viewport-status-text">Working…</span>
+      </div>
+      <div class="viewport-toolbar">
+        <button class="tool-btn" data-view="iso" title="Isometric">Iso</button>
+        <button class="tool-btn" data-view="top" title="Top">Top</button>
+        <button class="tool-btn" data-view="front" title="Front">Front</button>
+        <button class="tool-btn" data-view="side" title="Side">Side</button>
+        <span class="tool-sep"></span>
+        <button id="toggle-reference" class="tool-btn toggle">Reference</button>
+        <button id="toggle-rotate" class="tool-btn toggle">Rotate</button>
+      </div>
+    </section>
+
+    <!-- Activity feed -->
+    <aside class="panel feed-panel">
+      <div class="feed-header">
+        <h2>Activity</h2>
+        <span id="feed-count" class="muted"></span>
+      </div>
+      <div id="feed" class="feed">
+        <div class="feed-empty muted">Agent text, build123d code, renders and mesh
+          updates will appear here as the model is generated.</div>
+      </div>
+      <form id="composer" class="composer">
+        <textarea id="followup-input" rows="2" placeholder="Follow-up: change dimensions, add features…"
+          disabled></textarea>
+        <button id="send-btn" class="btn-primary" type="submit" disabled>Send</button>
+      </form>
+    </aside>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

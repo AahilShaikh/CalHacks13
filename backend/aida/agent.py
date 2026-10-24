@@ -1,5 +1,6 @@
 """Claude integration; CAD and artifact services stay runtime-independent."""
 import dataclasses
+import inspect
 import os
 
 from claude_agent_sdk import (
@@ -7,7 +8,7 @@ from claude_agent_sdk import (
     TextBlock, ToolUseBlock, create_sdk_mcp_server, tool,
 )
 
-from .cad import EXPOSED
+from .cad import EXPOSED, text_of
 from .mesh_tools import (COMPARE_SCHEMA, DESCRIPTIONS, FRAME_SCHEMA, SERIES_SCHEMA, SLICE_SCHEMA,
                          VIEW_SCHEMA)
 from .model_tools import SCHEMAS as MODEL_SCHEMAS, model_tools
@@ -29,7 +30,16 @@ def resolve_max_turns(value=None):
     return turns
 
 
-def make_tools(cad, artifacts):
+async def _emit(on_event, event):
+    """Deliver one streamed event to the optional UI callback."""
+    if on_event is None:
+        return
+    result = on_event(event)
+    if inspect.isawaitable(result):
+        await result
+
+
+def make_tools(cad, artifacts, on_event=None):
     tools = []
     for name in sorted(EXPOSED):
         definition = cad.schemas[name]
@@ -38,9 +48,15 @@ def make_tools(cad, artifacts):
             try:
                 result = await cad.call(name, args)
                 # Agent SDK handlers use is_error; MCP wire results use isError.
-                return {**result, 'is_error': result.get('isError', False)}
+                payload = {**result, 'is_error': result.get('isError', False)}
+                await _emit(on_event, {'type': 'tool_result', 'name': name,
+                                       'ok': not payload['is_error'],
+                                       'text': text_of(result)[:4000]})
+                return payload
             except Exception as exc:
                 artifacts.log('tool_error', {'name': name, 'error': str(exc)})
+                await _emit(on_event, {'type': 'tool_result', 'name': name,
+                                       'ok': False, 'text': str(exc)[:4000]})
                 return {'is_error': True, 'content': [{'type': 'text', 'text': str(exc)}]}
 
         tools.append(tool(name, definition.description or name, definition.input_schema)(handler))
@@ -50,8 +66,12 @@ def make_tools(cad, artifacts):
         try:
             result = artifacts.image(args['path'])
             artifacts.log('image_viewed', {'path': args['path']})
+            await _emit(on_event, {'type': 'tool_result', 'name': 'view_image',
+                                   'ok': True, 'text': ''})
             return result
         except Exception as exc:
+            await _emit(on_event, {'type': 'tool_result', 'name': 'view_image',
+                                   'ok': False, 'text': str(exc)[:4000]})
             return {'is_error': True, 'content': [{'type': 'text', 'text': str(exc)}]}
 
     tools.append(view_image)
@@ -62,22 +82,31 @@ def make_tools(cad, artifacts):
                                  ('slice_series', SERIES_SCHEMA, mesh.series),
                                  ('compare_to_mesh', COMPARE_SCHEMA, mesh.compare),
                                  ('mesh_frame', FRAME_SCHEMA, mesh.frame)):
-        async def mesh_handler(args, method=method):
+        async def mesh_handler(args, method=method, name=name):
             result = await method(args)
-            return {**result, 'is_error': result.get('isError', False)}
+            payload = {**result, 'is_error': result.get('isError', False)}
+            await _emit(on_event, {'type': 'tool_result', 'name': name,
+                                   'ok': not payload['is_error'],
+                                   'text': text_of(result)[:4000]})
+            return payload
         tools.append(tool(name, DESCRIPTIONS[name], schema)(mesh_handler))
 
     _, table = model_tools(cad, artifacts)
     for name, description, schema, operation in table:
-        async def model_handler(args, operation=operation):
+        async def model_handler(args, operation=operation, name=name):
             result = await operation(args)
-            return {**result, 'is_error': result.get('isError', False)}
+            payload = {**result, 'is_error': result.get('isError', False)}
+            await _emit(on_event, {'type': 'tool_result', 'name': name,
+                                   'ok': not payload['is_error'],
+                                   'text': text_of(result)[:4000]})
+            return payload
         tools.append(tool(name, description, schema)(model_handler))
     return tools
 
 
-def options_for(cad, artifacts, units=None, max_turns=None):
-    server = create_sdk_mcp_server(name='aida', version='0.1.0', tools=make_tools(cad, artifacts))
+def options_for(cad, artifacts, units=None, max_turns=None, on_event=None):
+    server = create_sdk_mcp_server(name='aida', version='0.1.0',
+                                   tools=make_tools(cad, artifacts, on_event))
     names = [f'mcp__aida__{name}' for name in sorted(EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image'})]
     prompt = f'''You are Aida, a CAD assistant. Use your CAD tools to inspect meshes and build CAD.
 The STL is registered as reference_mesh. Preserve it; create generated CAD under a different name.
@@ -135,7 +164,10 @@ Only the supplied CAD and image tools are available. Do not attempt shell or fil
     )
 
 
-async def run_turn(client, prompt, artifacts):
+async def run_turn(client, prompt, artifacts, on_event=None):
+    """Run one conversational turn. With ``on_event`` the turn streams
+    ``agent_text``/``tool_call``/``tool_result``/``turn_end`` events to the UI
+    instead of printing to stdout."""
     artifacts.log('user', prompt)
     await client.query(prompt)
     final = None
@@ -144,14 +176,26 @@ async def run_turn(client, prompt, artifacts):
         if isinstance(message, AssistantMessage):
             for block in message.content:
                 if isinstance(block, TextBlock):
-                    print(block.text, flush=True)
+                    if on_event is None:
+                        print(block.text, flush=True)
+                    else:
+                        await _emit(on_event, {'type': 'agent_text', 'text': block.text})
                 elif isinstance(block, ToolUseBlock):
-                    print(f'  [agent tool] {block.name}', flush=True)
+                    if on_event is None:
+                        print(f'  [agent tool] {block.name}', flush=True)
+                    else:
+                        name = block.name.removeprefix('mcp__aida__')
+                        await _emit(on_event, {'type': 'tool_call', 'name': name,
+                                               'args': block.input})
         elif isinstance(message, ResultMessage):
             final = message
             summary = {'turns': message.num_turns, 'cost_usd': message.total_cost_usd,
                        'duration_s': round(message.duration_ms / 1000, 1), 'subtype': message.subtype}
             artifacts.log('turn_summary', summary)
+            if on_event is not None:
+                await _emit(on_event, {'type': 'turn_end', 'is_error': message.is_error,
+                                       'subtype': message.subtype, **summary})
+                continue
             cost = f', ${message.total_cost_usd:.2f}' if message.total_cost_usd is not None else ''
             print(f'  [done] {message.num_turns} agent turns, {summary["duration_s"]}s{cost}', flush=True)
             if message.subtype == 'error_max_turns':

@@ -1,0 +1,267 @@
+"""Live CAD session API tests: lifecycle, SSE stream, mesh revisions, turns.
+
+The agent runner is substituted with a stub so these tests are hermetic and
+fast; real CAD/agent runs are covered by the integration and live tests.
+"""
+import json
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+
+import aida.api.server as server
+from aida.api.cad_sessions import (
+    CadSessionManager, agent_event_bridge, first_prompt, snapshot_hook,
+)
+
+
+def mesh_bytes():
+    import trimesh
+    return trimesh.creation.box((60, 40, 6)).export(file_type='stl')
+
+
+def png_bytes(tmp_path):
+    from PIL import Image
+    path = tmp_path / 'photo.png'
+    Image.new('RGB', (16, 16), 'white').save(path)
+    return path.read_bytes()
+
+
+def stub_runner_factory(seen):
+    """A runner that mimics the real one's event pattern without Claude/CAD."""
+    async def runner(session):
+        session.set_status('running')
+        while True:
+            prompt = await session.turns.get()
+            if prompt is None:
+                break
+            seen.append(prompt)
+            session.set_stage('agent_running')
+            session.publish({'type': 'agent_text', 'text': f'echo: {prompt[:20]}'})
+            session.publish({'type': 'code', 'index': len(seen), 'code': 'show(part)'})
+            revision = len(session.meshes)
+            glb = session.artifacts.root / f'mesh-stub-{revision}.glb'
+            glb.write_bytes(b'glTF-stub')
+            session.meshes.append({'revision': revision, 'path': glb,
+                                   'generated': True, 'triangles': 12,
+                                   'vertices': 8, 'bbox': [0] * 6, 'extents': [1, 1, 1]})
+            session.publish({'type': 'mesh', 'revision': revision,
+                             'url': session.mesh_url(revision), 'generated': True,
+                             'triangles': 12, 'vertices': 8,
+                             'bbox': [0] * 6, 'extents': [1, 1, 1]})
+            session.set_stage('idle')
+        session.set_status('done')
+        session.publish({'type': 'session_done', 'status': 'done'})
+    return runner
+
+
+@pytest.fixture()
+def seen():
+    return []
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch, seen):
+    manager = CadSessionManager(tmp_path / 'cad', runner=stub_runner_factory(seen))
+    monkeypatch.setattr(server, 'cad_manager', manager)
+    # Context-manager form keeps one portal (event loop) alive for all
+    # requests, so the background session runner survives between them.
+    with TestClient(server.app) as test_client:
+        yield test_client
+
+
+def start_session(client, tmp_path, prompt='Build a plate', **fields):
+    response = client.post(
+        '/api/v1/cad-sessions',
+        files=[('mesh', ('box.stl', mesh_bytes(), 'model/stl'))],
+        data={'prompt': prompt, **fields})
+    assert response.status_code == 202, response.text
+    return response.json()
+
+
+def wait_for_status(client, session_id, wanted=('done', 'failed'), deadline=5.0):
+    end = time.time() + deadline
+    data = {}
+    while time.time() < end:
+        data = client.get(f'/api/v1/cad-sessions/{session_id}').json()
+        if data['status'] in wanted:
+            return data
+        time.sleep(0.02)
+    raise AssertionError(f'session {session_id} did not reach {wanted}: {data}')
+
+
+def read_events(client, session_id, stop_type='session_done', limit=200):
+    events = []
+    with client.stream('GET', f'/api/v1/cad-sessions/{session_id}/events') as response:
+        assert response.headers['content-type'].startswith('text/event-stream')
+        for line in response.iter_lines():
+            if line.startswith('data: '):
+                events.append(json.loads(line[len('data: '):]))
+                if events[-1]['type'] == stop_type or len(events) >= limit:
+                    break
+    return events
+
+
+def test_session_lifecycle_events_and_mesh(client, tmp_path):
+    created = start_session(client, tmp_path, units='mm')
+    session_id = created['session_id']
+    assert created['mesh_url'].endswith('mesh.glb?rev=0')
+
+    client.post(f'/api/v1/cad-sessions/{session_id}/close')
+    data = wait_for_status(client, session_id)
+    assert data['status'] == 'done'
+    assert data['revisions'] == 2        # revision 0 from upload + one stub revision
+
+    events = read_events(client, session_id)
+    types = [e['type'] for e in events]
+    assert 'mesh' in types and 'code' in types and 'agent_text' in types
+    assert types.index('mesh') < types.index('code')   # reference mesh first
+    assert [e['seq'] for e in events] == sorted(e['seq'] for e in events)
+    first_mesh = next(e for e in events if e['type'] == 'mesh')
+    assert first_mesh['revision'] == 0 and not first_mesh['generated']
+    assert first_mesh['triangles'] > 0
+
+    # Binary GLB fetch: explicit revision is cacheable, latest is not.
+    response = client.get(f'/api/v1/cad-sessions/{session_id}/mesh.glb?rev=1')
+    assert response.status_code == 200
+    assert response.headers['content-type'] == 'model/gltf-binary'
+    assert response.content == b'glTF-stub'
+    assert 'immutable' in response.headers['cache-control']
+    latest = client.get(f'/api/v1/cad-sessions/{session_id}/mesh.glb')
+    assert latest.content == b'glTF-stub'
+    assert 'no-cache' in latest.headers['cache-control']
+    assert client.get(f'/api/v1/cad-sessions/{session_id}/mesh.glb?rev=9').status_code == 404
+
+    # Session artifacts are downloadable.
+    assert client.get(f'/api/v1/cad-sessions/{session_id}/files/reference.stl').status_code == 200
+    assert client.get(f'/api/v1/cad-sessions/{session_id}/files/..%2Fsecret').status_code == 404
+
+
+def test_turn_queue_reaches_runner(client, seen, tmp_path):
+    created = start_session(client, tmp_path, prompt='First')
+    session_id = created['session_id']
+    assert client.post(f'/api/v1/cad-sessions/{session_id}/turns',
+                       json={'prompt': 'Second'}).status_code == 202
+    assert client.post(f'/api/v1/cad-sessions/{session_id}/close').status_code == 202
+
+    data = wait_for_status(client, session_id)
+    assert data['status'] == 'done'
+    assert len(seen) == 2
+    assert seen[0].startswith('First')          # composed with image list if any
+    assert seen[1] == 'Second'
+    # Sessions are closed: further turns are refused.
+    assert client.post(f'/api/v1/cad-sessions/{session_id}/turns',
+                       json={'prompt': 'More'}).status_code == 409
+
+
+def test_images_join_the_agent_prompt(client, tmp_path):
+    response = client.post(
+        '/api/v1/cad-sessions',
+        files=[('mesh', ('box.stl', mesh_bytes(), 'model/stl')),
+               ('images', ('photo.png', png_bytes(tmp_path), 'image/png'))],
+        data={'prompt': 'Match this photo'})
+    assert response.status_code == 202
+    session_id = response.json()['session_id']
+    data = client.get(f'/api/v1/cad-sessions/{session_id}').json()
+    assert data['images'] == ['input-01.png']
+    session = server.cad_manager.get(session_id)
+    assert 'input-01.png' in first_prompt(session)
+    assert 'view_image' in first_prompt(session)
+
+
+def test_invalid_uploads_rejected(client, tmp_path):
+    response = client.post('/api/v1/cad-sessions',
+                           files=[('mesh', ('bad.stl', b'not an stl', 'model/stl'))],
+                           data={'prompt': 'x'})
+    assert response.status_code == 400
+    assert 'Mesh' in response.json()['detail']
+
+    response = client.post('/api/v1/cad-sessions',
+                           files=[('mesh', ('box.stl', mesh_bytes(), 'model/stl'))],
+                           data={'prompt': 'x', 'units': 'm'})
+    assert response.status_code == 400
+
+    response = client.post('/api/v1/cad-sessions',
+                           files=[('mesh', ('box.stl', mesh_bytes(), 'model/stl'))])
+    assert response.status_code == 422
+
+    assert client.get('/api/v1/cad-sessions/nope').status_code == 404
+    assert client.get('/api/v1/cad-sessions/nope/events').status_code == 404
+
+
+class FakeCad:
+    """Just enough of CadBridge for snapshot_hook."""
+
+    def __init__(self, root, objects):
+        self.root = root
+        self.objects = objects
+        self.exports = []
+
+    async def session_object_names(self):
+        return list(self.objects)
+
+    async def snapshot_stl(self, target, object_name='*'):
+        import trimesh
+        self.exports.append(object_name)
+        trimesh.creation.box((10, 10, 10)).export(str(target), file_type='stl')
+        return target
+
+
+class FakeArtifacts:
+    def __init__(self, root):
+        from pathlib import Path
+        self.root = Path(root)
+
+
+async def test_snapshot_hook_meshes_generated_objects_only(tmp_path):
+    from aida.api.cad_sessions import CadSession
+
+    session = CadSession(FakeArtifacts(tmp_path), 'prompt', 'mm')
+    cad = FakeCad(tmp_path, {'reference_mesh': {}, 'generated_cad': {}})
+    await snapshot_hook(cad, session)()
+
+    assert cad.exports == ['generated_cad']        # never re-mesh the reference
+    assert len(session.meshes) == 1
+    mesh = session.meshes[0]
+    assert mesh['generated'] and mesh['triangles'] == 12
+    assert mesh['path'].is_file()
+    events = [e['type'] for e in session.events]
+    assert events.count('mesh') == 1
+    assert 'stage' in events
+
+
+async def test_snapshot_hook_skips_when_no_generated_objects(tmp_path):
+    from aida.api.cad_sessions import CadSession
+
+    session = CadSession(FakeArtifacts(tmp_path), 'prompt', None)
+    cad = FakeCad(tmp_path, {'reference_mesh': {}})
+    await snapshot_hook(cad, session)()
+
+    assert session.meshes == []
+    assert any(e['type'] == 'mesh_skipped' for e in session.events)
+
+
+async def test_agent_event_bridge_emits_code_and_render(tmp_path):
+    from pathlib import Path
+
+    from aida.api.cad_sessions import CadSession
+
+    session = CadSession(FakeArtifacts(tmp_path), 'prompt', None)
+    (session.artifacts.root / 'view-abc.png').write_bytes(b'png')
+    bridge = agent_event_bridge(session)
+
+    await bridge({'type': 'tool_call', 'name': 'execute', 'args': {'code': 'show(part)'}})
+    await bridge({'type': 'tool_result', 'name': 'render_view', 'ok': True,
+                  'text': '[SEND: /tmp/view-abc.png]'})
+    await bridge({'type': 'tool_result', 'name': 'view_mesh', 'ok': True,
+                  'text': '[SEND: /tmp/view-abc.png]'})
+    await bridge({'type': 'agent_text', 'text': 'done'})
+
+    types = [e['type'] for e in session.events]
+    assert types == ['code', 'tool_call', 'render', 'tool_result', 'render',
+                     'tool_result', 'agent_text']
+    code = next(e for e in session.events if e['type'] == 'code')
+    assert code['code'] == 'show(part)'
+    render = next(e for e in session.events if e['type'] == 'render')
+    assert render['url'].endswith('/files/view-abc.png')
+    assert Path(session.artifacts.root / 'view-abc.png').is_file()

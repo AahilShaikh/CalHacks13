@@ -1,6 +1,8 @@
-"""Job-based HTTP API for the image-to-metric-mesh scan pipeline.
+"""Job-based HTTP API for the image-to-metric-mesh scan pipeline, live CAD
+sessions (``/api/v1/cad-sessions`` in :mod:`aida.api.cad_sessions`), and the
+web viewer served from ``aida/web`` at ``/``.
 
-Endpoints:
+Scan endpoints:
 
 - ``GET  /health``                        service and ComfyUI reachability
 - ``POST /api/v1/scans``                  submit photos, returns 202 + job id
@@ -16,15 +18,19 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from ..config import load_local_env
 from ..scan.comfy import ComfyClient, ComfyConfig
 from ..scan.pipeline import run_scan
+from .cad_sessions import CadSessionManager, router as cad_sessions_router
 from .jobs import JobManager
 
 load_local_env()
 
 DEFAULT_STORAGE = Path(os.environ.get('AIDA_SCAN_STORAGE', 'artifacts/scans'))
+CAD_STORAGE = Path(os.environ.get('AIDA_CAD_STORAGE', 'artifacts/cad'))
+WEB_DIR = Path(__file__).resolve().parent.parent / 'web'
 
 app = FastAPI(
     title='Aida Scan API',
@@ -33,6 +39,7 @@ app = FastAPI(
 )
 
 manager = JobManager(DEFAULT_STORAGE)
+cad_manager = CadSessionManager(CAD_STORAGE)
 
 
 def _comfy_config() -> ComfyConfig:
@@ -107,6 +114,11 @@ def get_scan_file(job_id: str, filename: str):
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f'Artifact missing on disk: {filename}')
     return FileResponse(path, filename=filename)
+
+
+app.include_router(cad_sessions_router)
+# The web viewer is mounted last so API routes match first.
+app.mount('/', StaticFiles(directory=WEB_DIR, html=True), name='web')
 
 
 def main():
