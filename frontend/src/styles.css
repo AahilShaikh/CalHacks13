@@ -113,10 +113,47 @@ body {
   animation: spin 0.9s linear infinite;
 }
 
+/* The prompt pill's 1px frame. While the agent works, an orange arc sweeps around it. */
+@property --sweep {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes sweep {
+  to {
+    --sweep: 360deg;
+  }
+}
+.agent-frame {
+  background: var(--color-line-strong);
+}
+.agent-frame:focus-within {
+  background: color-mix(in srgb, var(--color-accent) 55%, var(--color-line-strong));
+}
+.agent-frame[data-working] {
+  background: conic-gradient(
+    from var(--sweep),
+    var(--color-line-strong) 0deg 200deg,
+    color-mix(in srgb, var(--color-accent) 50%, var(--color-line-strong)) 260deg,
+    var(--color-accent) 330deg,
+    var(--color-line-strong) 360deg
+  );
+  animation: sweep 2.4s linear infinite;
+}
+.agent-frame-drop,
+.agent-frame-drop[data-working] {
+  background: var(--color-accent);
+  animation: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-pulse-dot,
   .animate-flash,
   .animate-spin-slow {
+    animation: none;
+  }
+  .agent-frame[data-working] {
+    background: var(--color-accent);
     animation: none;
   }
 }

@@ -186,7 +186,7 @@ function ParamRow({ name, owner, param, revision }: { name: string; owner: strin
         type="button"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-left hover:bg-surface"
+        className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-left hover:bg-subtle"
       >
         <span className="min-w-0 truncate font-mono text-[12px]">{name}</span>
         <span className="flex-1" />
@@ -221,7 +221,7 @@ function FeatureRow({ feature, index, model }: { feature: ModelFeature; index: n
         type="button"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-left hover:bg-surface"
+        className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-left hover:bg-subtle"
       >
         <span className="font-mono text-[12px] text-faint">{index}</span>
         <span className="min-w-0 truncate font-mono text-[12px]">{feature.name}</span>

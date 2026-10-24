@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { downloadUrl, type DownloadKind } from '../lib/api';
+import { Download } from 'lucide-react';
 import { useStore } from '../store';
+import { Button } from './ui';
 
 const ITEMS: { kind: DownloadKind; label: string; hint: string }[] = [
   { kind: 'step', label: 'STEP', hint: 'Solid for Fusion, SolidWorks, Onshape' },
@@ -52,16 +54,11 @@ export function DownloadMenu() {
 
   return (
     <div ref={ref} className="relative">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-        className="rounded-sm border border-line-strong px-3 py-1 text-[12px] font-medium text-ink hover:bg-surface"
-      >
-        Download ▾
-      </button>
+      <Button size="sm" icon={Download} aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen(!open)}>
+        Export
+      </Button>
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1 flex w-64 flex-col rounded-md border border-line bg-surface p-1 shadow-pop">
+        <div role="menu" className="absolute right-0 top-full z-40 mt-1.5 flex w-64 flex-col rounded-lg border border-line bg-surface p-1 shadow-pop">
           {ITEMS.map((item) => {
             const disabled = item.kind === 'model.py' && !hasModel;
             return (
@@ -69,10 +66,11 @@ export function DownloadMenu() {
                 key={item.kind}
                 type="button"
                 disabled={disabled || busy !== null}
+                role="menuitem"
                 onClick={() => void save(item.kind)}
-                className="flex flex-col items-start rounded-sm px-3 py-2 text-left hover:bg-subtle disabled:opacity-40 disabled:hover:bg-transparent"
+                className="flex flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left hover:bg-subtle disabled:opacity-40 disabled:hover:bg-transparent"
               >
-                <span className="font-mono text-[12px] text-ink">{busy === item.kind ? 'Preparing…' : item.label}</span>
+                <span className="text-[13px] font-medium text-ink">{busy === item.kind ? 'Preparing…' : item.label}</span>
                 <span className="text-[11px] text-muted">{item.hint}</span>
               </button>
             );

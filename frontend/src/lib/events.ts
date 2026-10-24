@@ -298,3 +298,46 @@ export function resultSummary(tool: string, text: string): string {
     .find((l) => l && !l.startsWith('[SEND:'));
   return (line ?? '').slice(0, 220);
 }
+
+// ------------------------------------------------------------ readable step names ---
+
+const TOOL_LABEL: Record<string, string> = {
+  execute: 'Run CAD code',
+  render_view: 'Render view',
+  view_image: 'Look at render',
+  measure: 'Measure',
+  validate: 'Validate solid',
+  export: 'Export',
+  session_state: 'Read CAD state',
+  last_error: 'Read last error',
+  version: 'Check engine version',
+  health_check: 'Check CAD engine',
+  mesh_holes: 'Find holes in scan',
+  view_mesh: 'View scan',
+  slice_mesh: 'Slice scan',
+  slice_series: 'Sweep slices',
+  compare_to_mesh: 'Compare to scan',
+  mesh_frame: 'Check scan alignment',
+  model_set_params: 'Set parameters',
+  model_add_feature: 'Add feature',
+  model_edit_feature: 'Edit feature',
+  model_undo: 'Undo change',
+  model_status: 'Read part',
+  model_report: 'Part report',
+  workspace_add_part: 'Add part',
+  workspace_set_active: 'Switch part',
+  workspace_status: 'Read workspace',
+  assembly_set_params: 'Set assembly parameters',
+  assembly_add_feature: 'Place parts',
+  assembly_edit_feature: 'Edit layout',
+  assembly_undo: 'Undo layout change',
+  assembly_check: 'Check assembly',
+};
+
+/** "slice_mesh" -> "Slice scan"; unknown tools are made readable from their name. */
+export function toolLabel(tool: string): string {
+  const bare = tool.replace(/^mcp__[^_]+__/, '');
+  if (TOOL_LABEL[bare]) return TOOL_LABEL[bare];
+  const words = bare.replaceAll('_', ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}

@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
-import { RightPanel } from './components/RightPanel';
+import { LeftPanel } from './components/LeftPanel';
+import { StepsPanel } from './components/StepsPanel';
 import { TopBar } from './components/TopBar';
 import { Viewer } from './components/viewer/Viewer';
 import { closeSession } from './lib/api';
 import { useStore } from './store';
 
-/** Figma: Screen / 1 Empty, 2 Running, 3 Model (file "Aida CAD Studio UI"). */
+/** The workspace: explorer on the left, the 3D view with the agent dock, and the agent's steps on the right. */
 export default function App() {
   // This screen is a workspace: opening it starts a session (CAD engine + agent).
   // ?replay=<id> opens a recorded run instead (for demos and the video).
@@ -24,8 +25,9 @@ export default function App() {
     <div className="flex h-full flex-col bg-canvas">
       <TopBar />
       <main className="flex min-h-0 flex-1">
+        <LeftPanel />
         <Viewer />
-        <RightPanel />
+        <StepsPanel />
       </main>
     </div>
   );

@@ -1,49 +1,74 @@
-import { useEffect, useState } from 'react';
-import { PHASE_VERB } from '../lib/events';
+import { ChevronRight } from 'lucide-react';
+import { useActivity, useElapsed, type ActivityTone } from '../lib/activity';
 import { generatedRevisions, useStore } from '../store';
 import { DownloadMenu } from './DownloadMenu';
+import { Spinner, cx } from './ui';
 
-const CHIP = {
-  inspect: 'bg-inspect/10 text-inspect',
-  build: 'bg-build/10 text-build',
-  verify: 'bg-verify/10 text-verify',
-  idle: 'bg-muted/10 text-muted',
-  error: 'bg-error/10 text-error',
-} as const;
-const DOT = {
+const DOT: Record<ActivityTone, string> = {
   inspect: 'bg-inspect',
-  build: 'bg-build',
+  build: 'bg-accent',
   verify: 'bg-verify',
-  idle: 'bg-muted',
+  busy: 'bg-faint',
+  idle: 'bg-ok',
   error: 'bg-error',
-} as const;
-
-const STAGES: Record<string, string> = {
-  preparing: 'Preparing session',
-  cad_starting: 'Starting CAD engine',
-  agent_running: 'Thinking',
-  exporting_mesh: 'Updating preview',
-  reconnecting: 'Reconnecting',
-  idle: 'Waiting for you',
 };
 
-function useElapsed(start: number | null, end: number | null) {
-  const [now, setNow] = useState(() => Date.now() / 1000);
-  useEffect(() => {
-    if (!start || end) return;
-    const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
-    return () => clearInterval(timer);
-  }, [start, end]);
-  if (!start) return null;
-  const seconds = Math.max(0, Math.round((end ?? now) - start));
-  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+export function Logo({ size = 22 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden>
+      <rect width="32" height="32" rx="8" fill="#18181b" />
+      <path d="M9 23 16 8l7 15M11.6 18h8.8" fill="none" stroke="#f26b1d" strokeWidth="2.6" strokeLinecap="round"
+        strokeLinejoin="round" />
+    </svg>
+  );
 }
 
-/** Figma: TopBar (4:81). What the agent is doing now, plus revision, elapsed time and cost. */
+/** Workspace header: where you are, what the agent is doing, units and export. */
 export function TopBar() {
-  const status = useStore((s) => s.status);
-  const stage = useStore((s) => s.stage);
-  const feed = useStore((s) => s.feed);
+  const replay = useStore((s) => s.replay);
+  const units = useStore((s) => s.units);
+  const setUnits = useStore((s) => s.setUnits);
+  const ended = useStore((s) => s.status === 'done' || s.status === 'failed');
+
+  return (
+    <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line bg-surface px-3">
+      <a href="/" className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-subtle" aria-label="Aida home">
+        <Logo />
+        <span className="text-[14px] font-semibold tracking-[-0.01em]">Aida</span>
+      </a>
+      <ChevronRight size={14} className="text-line-strong" aria-hidden />
+      <span className="truncate text-[13px] font-medium">{replay ? 'Recorded run' : 'Untitled workspace'}</span>
+      {replay && (
+        <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 text-[11px] font-medium text-accent-ink">
+          Replay · {replay.speed}×
+        </span>
+      )}
+
+      <div className="flex flex-1 justify-center">
+        <StatusChip />
+      </div>
+
+      {!replay && !ended && (
+        <label className="flex items-center gap-1.5 text-[12px] text-muted" title="Units of the meshes you add">
+          Units
+          <select
+            value={units}
+            onChange={(e) => setUnits(e.target.value as 'mm' | '')}
+            className="h-7 rounded-md border border-line bg-surface px-1.5 text-[12px] text-ink outline-none hover:border-line-strong"
+          >
+            <option value="mm">mm</option>
+            <option value="">unknown</option>
+          </select>
+        </label>
+      )}
+      <DownloadMenu />
+    </header>
+  );
+}
+
+/** The agent's current step; hover or focus for revision, time and cost. */
+function StatusChip() {
+  const activity = useActivity();
   const revisions = useStore((s) => s.revisions);
   const cost = useStore((s) => s.cost);
   const startedAt = useStore((s) => s.startedAt);
@@ -52,47 +77,40 @@ export function TopBar() {
   const lastEventAt = useStore((s) => s.lastEventAt);
   // A replay's clock is the recorded timeline, not the wall clock.
   const elapsed = useElapsed(startedAt, endedAt ?? (replay ? lastEventAt ?? startedAt : null));
-
-  const running = feed.findLast((i) => i.kind === 'tool' && i.status === 'running');
-  let tone: keyof typeof CHIP = 'idle';
-  let activity = 'Ready';
-  if (status === 'failed') {
-    tone = 'error';
-    activity = 'Session failed';
-  } else if (status === 'done') {
-    activity = 'Session finished';
-  } else if (running?.kind === 'tool') {
-    tone = running.phase;
-    activity = `${PHASE_VERB[running.phase]} · ${running.name}`;
-  } else if (status === 'starting') {
-    activity = 'Opening workspace';
-  } else if (stage) {
-    activity = STAGES[stage] ?? stage;
-  }
-
   const rev = generatedRevisions(revisions).length;
-  const metrics = startedAt
-    ? [`rev ${rev}`, elapsed, cost > 0 ? `$${cost.toFixed(2)}` : null].filter(Boolean).join(' · ')
-    : 'no session';
-  const live = tone !== 'idle' && tone !== 'error';
+  const details = [
+    ['Revision', rev ? String(rev) : '—'],
+    ['Session time', elapsed ?? '—'],
+    ['Agent cost', cost > 0 ? `$${cost.toFixed(2)}` : '—'],
+  ];
 
   return (
-    <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-line bg-canvas px-4 py-2">
-      <div className="flex size-6 items-center justify-center rounded-sm bg-accent text-[13px] font-semibold text-white">A</div>
-      <span className="text-[14px] font-semibold">Aida</span>
-      <span className="text-[13px] text-muted">CAD Studio</span>
-      <div className="flex-1" />
-      <div className={`flex items-center gap-2 rounded-lg px-3 py-1 text-[12px] font-medium ${CHIP[tone]}`}>
-        <span className={`size-1.5 rounded-full ${DOT[tone]} ${live ? 'animate-pulse-dot' : ''}`} />
-        {activity}
+    <div className="group relative">
+      <button
+        type="button"
+        aria-describedby="status-details"
+        className="flex h-7 items-center gap-2 rounded-full border border-line bg-surface px-3 text-[12px] font-medium text-ink hover:border-line-strong"
+      >
+        {activity.working || activity.tone === 'busy' ? (
+          <Spinner size={12} className={activity.tone === 'busy' ? 'text-faint' : 'text-accent'} />
+        ) : (
+          <span className={cx('size-1.5 rounded-full', DOT[activity.tone])} aria-hidden />
+        )}
+        <span aria-live="polite">{activity.label}</span>
+        {rev > 0 && <span className="font-mono text-[11px] text-faint">r{rev}</span>}
+      </button>
+      <div
+        id="status-details"
+        role="tooltip"
+        className="invisible absolute left-1/2 top-full z-40 mt-2 w-48 -translate-x-1/2 rounded-lg border border-line bg-surface p-2 opacity-0 shadow-pop transition-opacity group-focus-within:visible group-focus-within:opacity-100 group-hover:visible group-hover:opacity-100"
+      >
+        {details.map(([label, value]) => (
+          <div key={label} className="flex items-center justify-between px-1 py-1 text-[12px]">
+            <span className="text-muted">{label}</span>
+            <span className="font-mono text-ink">{value}</span>
+          </div>
+        ))}
       </div>
-      {replay && (
-        <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.6px] text-accent-ink">
-          Replay {replay.speed}×
-        </span>
-      )}
-      <span className="font-mono text-[12px] text-muted">{metrics}</span>
-      <DownloadMenu />
-    </header>
+    </div>
   );
 }

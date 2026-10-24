@@ -113,7 +113,7 @@ export function Scene() {
       <directionalLight position={[-7, 4, -5]} intensity={0.55} color="#e6ebf5" />
       <Models />
       <OrbitControls makeDefault enableDamping dampingFactor={0.1} />
-      <GizmoHelper alignment="bottom-left" margin={[56, 56]}>
+      <GizmoHelper alignment="top-left" margin={[52, 100]}>
         {/* World axes relabelled to the part's Z-up frame: world Y is part Z, world Z is part -Y. */}
         <GizmoViewport axisColors={['#dc2626', '#2563eb', '#15803d']} labels={['X', 'Z', '-Y']} labelColor="#ffffff" />
       </GizmoHelper>

@@ -54,7 +54,6 @@ export type Revision = {
 };
 
 export type ViewMode = 'overlay' | 'side' | 'heatmap';
-export type Tab = 'activity' | 'model';
 export type AppStatus = 'idle' | 'starting' | SessionStatus;
 
 type State = {
@@ -86,7 +85,10 @@ type State = {
   // View.
   shownRevision: number | null; // null follows the latest generated revision
   viewMode: ViewMode;
-  tab: Tab;
+  /** The steps panel on the right is expanded (false: a thin rail). */
+  stepsOpen: boolean;
+  /** The agent message the user closed in the reply card; newer messages show again. */
+  replyDismissedId: number | null;
   /** A tool card the user clicked to see in 3D; null follows the agent (if followAgent). */
   focusId: number | null;
   followAgent: boolean;
@@ -106,7 +108,9 @@ type State = {
   apply: (events: ServerEvent[]) => void;
   showRevision: (revision: number | null) => void;
   setViewMode: (mode: ViewMode) => void;
-  setTab: (tab: Tab) => void;
+  setStepsOpen: (open: boolean) => void;
+  dismissReply: (id: number) => void;
+  clearError: () => void;
   setFocus: (id: number | null) => void;
   setFollow: (follow: boolean) => void;
   startReplay: (id: string) => Promise<void>;
@@ -129,7 +133,7 @@ const REPLAY_MAX_GAP_S = 3;
 /** Session fields reset when a live session or a replay starts. */
 const freshSession = {
   error: null, feed: [], revisions: [], deviations: [], features: [], cost: 0, workspace: null, selectedPart: null,
-  changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true,
+  changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true, replyDismissedId: null,
   stage: '', startedAt: null, endedAt: null, lastEventAt: null,
 } satisfies Partial<State>;
 
@@ -160,7 +164,8 @@ export const useStore = create<State>((set, get) => ({
   pendingCode: null,
   shownRevision: null,
   viewMode: 'overlay',
-  tab: 'activity',
+  stepsOpen: true,
+  replyDismissedId: null,
   focusId: null,
   followAgent: true,
   replay: null,
@@ -376,7 +381,9 @@ export const useStore = create<State>((set, get) => ({
 
   showRevision: (revision) => set({ shownRevision: revision }),
   setViewMode: (viewMode) => set({ viewMode }),
-  setTab: (tab) => set({ tab }),
+  setStepsOpen: (stepsOpen) => set({ stepsOpen }),
+  dismissReply: (replyDismissedId) => set({ replyDismissedId }),
+  clearError: () => set({ error: null }),
   setFocus: (focusId) => set({ focusId }),
   setFollow: (followAgent) => set({ followAgent, ...(followAgent ? { focusId: null } : {}) }),
 
