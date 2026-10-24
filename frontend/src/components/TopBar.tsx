@@ -48,7 +48,10 @@ export function TopBar() {
   const cost = useStore((s) => s.cost);
   const startedAt = useStore((s) => s.startedAt);
   const endedAt = useStore((s) => s.endedAt);
-  const elapsed = useElapsed(startedAt, endedAt);
+  const replay = useStore((s) => s.replay);
+  const lastEventAt = useStore((s) => s.lastEventAt);
+  // A replay's clock is the recorded timeline, not the wall clock.
+  const elapsed = useElapsed(startedAt, endedAt ?? (replay ? lastEventAt ?? startedAt : null));
 
   const running = feed.findLast((i) => i.kind === 'tool' && i.status === 'running');
   let tone: keyof typeof CHIP = 'idle';
@@ -83,6 +86,11 @@ export function TopBar() {
         <span className={`size-1.5 rounded-full ${DOT[tone]} ${live ? 'animate-pulse-dot' : ''}`} />
         {activity}
       </div>
+      {replay && (
+        <span className="rounded-sm bg-cad/16 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.6px] text-cad">
+          Replay {replay.speed}×
+        </span>
+      )}
       <span className="font-mono text-[12px] text-muted">{metrics}</span>
       <DownloadMenu />
     </header>

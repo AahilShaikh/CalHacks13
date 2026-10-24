@@ -437,3 +437,28 @@ def test_no_warm_engine_with_a_test_runner(tmp_path):
     manager = CadSessionManager(tmp_path, runner=lambda session: None)
     manager.prewarm()  # no running loop needed: test runners never start a CAD engine
     assert manager.take_warm() is None
+
+
+def test_finished_session_can_be_replayed(client, tmp_path):
+    started = start_session(client, tmp_path, prompt='Build a plate')
+    session_id = started['session_id']
+    wait_for_status(client, session_id, wanted=('running', 'done'))
+    client.post(f'/api/v1/cad-sessions/{session_id}/close')
+    wait_for_status(client, session_id)
+    folder = server.cad_manager.get(session_id).artifacts.root.name
+
+    listing = client.get('/api/v1/replays/index.json').json()
+    entry = next(r for r in listing if r['id'] == folder)
+    assert entry['prompt'] == 'Build a plate' and entry['events'] > 3
+
+    events = client.get(f'/api/v1/replays/{folder}/events.json').json()
+    assert events[0]['type'] in ('stage', 'user_prompt')
+    assert any(e['type'] == 'user_prompt' and e['text'] == 'Build a plate' for e in events)
+    reference = next(e for e in events if e['type'] == 'mesh' and e['revision'] == 0)
+    assert reference['url'] == f'/api/v1/replays/{folder}/files/mesh-000.glb'
+    glb = client.get(reference['url'])
+    assert glb.status_code == 200 and glb.content[:4] == b'glTF'
+
+    assert client.get('/api/v1/replays/nope/events.json').status_code == 404
+    assert client.get(f'/api/v1/replays/{folder}/files/..%2F..%2Fpyproject.toml').status_code == 404
+    assert client.get('/api/v1/replays/..%2F..%2F/events.json').status_code == 404

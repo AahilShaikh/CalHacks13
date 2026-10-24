@@ -84,6 +84,10 @@ type State = {
   /** A tool card the user clicked to see in 3D; null follows the agent (if followAgent). */
   focusId: number | null;
   followAgent: boolean;
+  /** Playing back a recorded session; null when live. */
+  replay: ReplayState | null;
+  /** Time (unix s) of the latest applied event; the replay's clock. */
+  lastEventAt: number | null;
 
   setMesh: (file: File | null) => void;
   setUnits: (units: 'mm' | '') => void;
@@ -97,10 +101,27 @@ type State = {
   setTab: (tab: Tab) => void;
   setFocus: (id: number | null) => void;
   setFollow: (follow: boolean) => void;
+  startReplay: (id: string) => Promise<void>;
+  setReplay: (change: Partial<Pick<ReplayState, 'playing' | 'speed'>>) => void;
+  skipReplay: () => void;
+  exitReplay: () => void;
 };
+
+export type ReplayState = { id: string; index: number; total: number; playing: boolean; speed: number };
 
 let unsubscribe: (() => void) | null = null;
 let nextId = 1;
+let replayEvents: ServerEvent[] = [];
+let replayTimer = 0;
+// Longest pause kept between recorded events; long agent thinking is shortened.
+const REPLAY_MAX_GAP_S = 3;
+
+/** Session fields reset when a live session or a replay starts. */
+const freshSession = {
+  error: null, feed: [], revisions: [], deviations: [], features: [], cost: 0, model: null,
+  changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true,
+  stage: '', startedAt: null, endedAt: null, lastEventAt: null,
+} satisfies Partial<State>;
 
 export const MESH_EXTENSIONS = ['.stl', '.obj', '.ply', '.glb'];
 export const isMeshFile = (file: File) => MESH_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext));
@@ -129,6 +150,8 @@ export const useStore = create<State>((set, get) => ({
   tab: 'activity',
   focusId: null,
   followAgent: true,
+  replay: null,
+  lastEventAt: null,
 
   setMesh: (file) => {
     const previous = get().meshPreviewUrl;
@@ -167,8 +190,7 @@ export const useStore = create<State>((set, get) => ({
       set({ error: 'Add a mesh first: drop it on the viewer or use Attach.' });
       return;
     }
-    set({ status: 'starting', error: null, feed: [userItem], revisions: [], deviations: [], features: [], cost: 0,
-      model: null, changedParams: [],
+    set({ ...freshSession, status: 'starting', feed: [userItem],
       focusId: null, followAgent: true });
     try {
       const { session_id } = await api.createSession(meshFile, text, images, units || undefined);
@@ -284,12 +306,18 @@ export const useStore = create<State>((set, get) => ({
           case 'session_done':
             feed.push(note('Session finished', 'muted'));
             break;
+          case 'user_prompt':
+            // Live sessions already show the prompt the user typed; replays need it.
+            if (s.replay) feed.push({ kind: 'user', id: nextId++, text: e.text });
+            break;
           case 'interrupted':
             feed.push(note('Stopped. Send a prompt to continue.', 'muted'));
             break;
         }
       }
-      return { feed, revisions, deviations, features, model, changedParams, pendingCode, cost, status, stage, error, endedAt };
+      const lastEventAt = events.length ? events[events.length - 1].at : s.lastEventAt;
+      return { feed, revisions, deviations, features, model, changedParams, pendingCode, cost, status, stage, error,
+        endedAt, lastEventAt };
     }),
 
   showRevision: (revision) => set({ shownRevision: revision }),
@@ -297,7 +325,67 @@ export const useStore = create<State>((set, get) => ({
   setTab: (tab) => set({ tab }),
   setFocus: (focusId) => set({ focusId }),
   setFollow: (followAgent) => set({ followAgent, ...(followAgent ? { focusId: null } : {}) }),
+
+  startReplay: async (id) => {
+    get().exitReplay();
+    unsubscribe?.();
+    unsubscribe = null;
+    try {
+      replayEvents = await api.replayEvents(id);
+    } catch (err) {
+      set({ error: `Replay not available: ${(err as Error).message}` });
+      return;
+    }
+    set({
+      ...freshSession,
+      sessionId: null,
+      status: 'queued',
+      startedAt: replayEvents[0]?.at ?? null,
+      replay: { id, index: 0, total: replayEvents.length, playing: true, speed: 4 },
+    });
+    scheduleReplay();
+  },
+  setReplay: (change) => {
+    const replay = get().replay;
+    if (!replay) return;
+    set({ replay: { ...replay, ...change } });
+    scheduleReplay();
+  },
+  skipReplay: () => {
+    const replay = get().replay;
+    if (!replay || replay.index >= replayEvents.length) return;
+    clearTimeout(replayTimer);
+    get().apply(replayEvents.slice(replay.index));
+    set({ replay: { ...replay, index: replayEvents.length, playing: false } });
+  },
+  exitReplay: () => {
+    clearTimeout(replayTimer);
+    if (!get().replay) return;
+    replayEvents = [];
+    set({ ...freshSession, replay: null, status: 'idle', sessionId: null });
+  },
 }));
+
+/** Apply the next recorded events, then wait the (shortened) recorded gap at the replay's speed. */
+function scheduleReplay() {
+  clearTimeout(replayTimer);
+  const { replay, apply } = useStore.getState();
+  if (!replay || !replay.playing) return;
+  if (replay.index >= replayEvents.length) {
+    useStore.setState({ replay: { ...replay, playing: false } });
+    return;
+  }
+  // Events recorded together (one burst) are applied together.
+  const first = replayEvents[replay.index];
+  let end = replay.index + 1;
+  while (end < replayEvents.length && replayEvents[end].at - first.at < 0.05) end++;
+  apply(replayEvents.slice(replay.index, end));
+  const done = end >= replayEvents.length;
+  useStore.setState({ replay: { ...replay, index: end, playing: !done } });
+  if (done) return;
+  const gap = Math.min(replayEvents[end].at - replayEvents[end - 1].at, REPLAY_MAX_GAP_S);
+  replayTimer = window.setTimeout(scheduleReplay, Math.max(16, (gap * 1000) / replay.speed));
+}
 
 function note(text: string, tone: 'muted' | 'error' | 'ok'): FeedItem {
   return { kind: 'note', id: nextId++, text, tone };

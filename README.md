@@ -177,6 +177,13 @@ or the parametric `model.py` (`GET /api/v1/cad-sessions/{id}/download/{step|stl|
 The server keeps one CAD engine started and health-checked in the background, so a new session
 is ready in about 2 s instead of ~13 s; set `AIDA_PREWARM=0` to turn that off.
 
+Replays: every session records what the UI received in `ui-events.jsonl` in its artifacts
+folder. The empty state lists past runs under "Watch a past run", and `/?replay=<folder>` opens
+one directly. Replays play back at 1–10× with long pauses shortened, need no API key or CAD
+engine, and keep working after a server restart (`/api/v1/replays/index.json`,
+`/api/v1/replays/{folder}/events.json`, `/api/v1/replays/{folder}/files/{name}`). Record a good
+run before a demo and replay it if the network or API misbehaves.
+
 ```powershell
 cd frontend
 npm install

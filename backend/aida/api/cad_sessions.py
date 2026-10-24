@@ -39,6 +39,7 @@ MESH_SUFFIXES = {'.stl', '.glb', '.obj', '.ply'}
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 UNITS = {'mm'}
 SSE_HEARTBEAT_S = 15.0
+REPLAY_LOG = 'ui-events.jsonl'
 # Tools whose results name a PNG the feed should show.
 IMAGE_TOOLS = {'render_view', 'view_mesh', 'slice_mesh', 'compare_to_mesh'}
 
@@ -170,6 +171,12 @@ class CadSession:
         stamped = {'seq': len(self.events) + 1, 'at': time.time(), **event}
         self.events.append(stamped)
         self.updated_at = stamped['at']
+        # Kept on disk too, so the session can be replayed later (aida.api.replays).
+        try:
+            with (self.artifacts.root / REPLAY_LOG).open('a', encoding='utf-8') as log:
+                log.write(json.dumps(stamped, default=str) + '\n')
+        except OSError:
+            pass  # a replay log is a convenience; never break the live session for it
         return stamped
 
     def publish(self, event: dict) -> dict:
@@ -568,6 +575,7 @@ async def create_cad_session(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # The initial turn starts the agent as soon as the session exists.
+    session.record({'type': 'user_prompt', 'text': session.prompt})
     session.turns.put_nowait(first_prompt(session))
     _manager().start(session)
     return {'session_id': session.id,
@@ -653,6 +661,7 @@ async def add_cad_turn(session_id: str, body: TurnRequest):
     if session.status not in ('queued', 'running'):
         raise HTTPException(status_code=409,
                             detail=f'Session is {session.status}; start a new one')
+    session.publish({'type': 'user_prompt', 'text': body.prompt.strip()})
     session.turns.put_nowait(body.prompt.strip())
     return {'queued': True, 'session_id': session.id}
 

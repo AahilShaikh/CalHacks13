@@ -33,6 +33,21 @@ export type DownloadKind = 'step' | 'stl' | 'model.py';
 export const downloadUrl = (sessionId: string, kind: DownloadKind) =>
   `/api/v1/cad-sessions/${sessionId}/download/${kind}`;
 
+export type ReplaySummary = {
+  id: string;
+  prompt: string;
+  revisions: number;
+  events: number;
+  started_at: number;
+  duration_s: number;
+};
+export async function listReplays() {
+  return json<ReplaySummary[]>(await fetch('/api/v1/replays/index.json'));
+}
+export async function replayEvents(id: string) {
+  return json<ServerEvent[]>(await fetch(`/api/v1/replays/${encodeURIComponent(id)}/events.json`));
+}
+
 export async function listExamples() {
   return json<{ name: string; bytes: number }[]>(await fetch('/api/v1/examples'));
 }

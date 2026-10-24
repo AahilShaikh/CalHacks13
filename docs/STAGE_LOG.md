@@ -77,3 +77,15 @@ tool call the agent makes.
 - **Friction:** generated CAD first rendered black (the API's GLBs have no normals), fixed with
   flat shading. The camera didn't re-frame in side-by-side mode. Vite 6.3.5 had a Windows dev
   server advisory, so we bumped it to 6.4.5.
+
+## 4b. Iterating in code (after the handoff)
+
+- **Tools:** Claude Code; the Figma components stayed the reference for each new panel.
+- **What we added:** the agent's slice planes and camera mirrored in 3D, a live Model tab (params
+  with evidence, features, history), a deviation heatmap, Stop / Download / units, a pre-started
+  CAD engine (first prompt ready in ~2 s instead of ~13 s), and replay of recorded runs.
+- **Rating:** 4/5. Each feature was checked against a scripted fake agent before a real run.
+- **Friction:** the first real run said "Not logged in" because the server was started from
+  `frontend/` and missed the root `.env`. The CAD server only reads files under its working
+  directory, which broke the first version of the pre-started engine. Both were fixed and are
+  now covered by tests.

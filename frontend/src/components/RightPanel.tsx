@@ -4,6 +4,7 @@ import { Composer } from './Composer';
 import { Feed } from './Feed';
 import { ModelTab } from './ModelTab';
 import { PanelTabs } from './PanelTabs';
+import { ReplayControls, ReplayList } from './Replay';
 
 const STEPS = [
   { label: 'Inspect', dot: 'bg-inspect', text: 'text-inspect', line: 'Slices and views of the mesh' },
@@ -13,7 +14,8 @@ const STEPS = [
 
 /** Figma: "Right panel" in Screen / 1 Empty (7:7) and Screen / 2 Running (7:58). */
 export function RightPanel() {
-  const hasSession = useStore((s) => s.sessionId !== null || s.status === 'starting');
+  const hasSession = useStore((s) => s.sessionId !== null || s.status === 'starting' || s.replay !== null);
+  const replaying = useStore((s) => s.replay !== null);
   const tab = useStore((s) => s.tab);
 
   return (
@@ -43,9 +45,10 @@ export function RightPanel() {
             ))}
           </ul>
           <div className="flex-1" />
+          <ReplayList />
         </div>
       )}
-      <Composer />
+      {replaying ? <ReplayControls /> : <Composer />}
     </aside>
   );
 }

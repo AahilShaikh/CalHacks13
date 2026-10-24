@@ -34,6 +34,7 @@ export type ServerEvent = Stamp &
       }
     | { type: 'session_done'; status: string }
     | { type: 'interrupted' }
+    | { type: 'user_prompt'; text: string }
     | ({ type: 'model_state' } & ModelState)
   );
 
