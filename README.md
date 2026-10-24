@@ -63,6 +63,10 @@ A timed-out CAD session must be restarted because its state is uncertain.
 
 ## Scan pipeline (images to metric mesh)
 
+For a complete walkthrough — installing ComfyUI, placing the Pixal3D models,
+capture setup, and how each stage works — see
+[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md).
+
 The Pixal3D/ComfyUI image-to-mesh pipeline and the ChArUco 1:1 calibration
 (originally `cad_calibration`) live in `backend/aida/scan/`. The ComfyUI
 installation with its models stays external and is reached over HTTP

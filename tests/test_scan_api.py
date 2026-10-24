@@ -99,6 +99,16 @@ def test_front_image_is_required(client):
     assert client.post('/api/v1/scans', data={'known_height_mm': '60'}).status_code == 422
 
 
+def test_workflow_override_from_env(monkeypatch, tmp_path):
+    workflow = tmp_path / 'custom_api.json'
+    workflow.write_text('{}')
+    monkeypatch.setenv('COMFY_HOST', '10.0.0.5:8188')
+    monkeypatch.setenv('AIDA_PIXAL3D_WORKFLOW', str(workflow))
+    config = server._comfy_config()
+    assert config.host == '10.0.0.5:8188'
+    assert config.workflow_path == workflow
+
+
 def test_health_reports_comfy_host(client):
     data = client.get('/health').json()
     assert data['status'] == 'ok'
