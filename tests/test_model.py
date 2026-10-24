@@ -193,3 +193,18 @@ async def test_feature_needs_evidence(model):
     await build_plate(model)
     with pytest.raises(ModelError, match='evidence'):
         await model.add_feature('chamfer', 'part = part', evidence=' ')
+
+
+async def test_snapshot_for_ui(model):
+    import json
+    await build_plate(model)
+    snap = model.snapshot()
+    json.dumps(snap)  # streamed to the UI as an event
+    assert snap['revision'] == model.state['revision']
+    assert snap['params']['width']['source'] == 'measured'
+    assert [f['name'] for f in snap['features']] == [f['name'] for f in model.state['features']]
+    assert all('code' in f and 'used_params' in f for f in snap['features'])
+    assert len(snap['history']) == len(model.state['history'])
+    checked = [h for h in snap['history'] if h['deviation']]
+    assert checked and set(checked[-1]['deviation']) == {'verdict', 'threshold', 'p95', 'max', 'share_within'}
+    assert snap['can_undo'] is True

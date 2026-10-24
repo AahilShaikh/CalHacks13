@@ -31,7 +31,28 @@ export type ServerEvent = Stamp &
         duration_s?: number;
       }
     | { type: 'session_done'; status: string }
+    | ({ type: 'model_state' } & ModelState)
   );
+
+/** The parametric model, sent after every model_* tool call (aida/model.py snapshot()). */
+export type ModelState = {
+  revision: number;
+  params: Record<string, ModelParam>;
+  features: ModelFeature[];
+  placement: string | null;
+  deviation: DeviationBrief | null;
+  history: { revision: number; action: string; trend: string; deviation: DeviationBrief | null }[];
+  can_undo: boolean;
+};
+export type ModelParam = {
+  value: number | string;
+  source: 'measured' | 'estimated' | 'assumed';
+  evidence: string;
+  measured: number | null;
+  note: string;
+};
+export type ModelFeature = { id: string; name: string; evidence: string; used_params: string[]; code: string };
+export type DeviationBrief = { verdict: string; threshold: number; p95: number; max: number; share_within: number };
 
 export type SessionStatus = 'queued' | 'running' | 'done' | 'failed';
 

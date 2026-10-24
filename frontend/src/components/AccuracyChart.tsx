@@ -2,6 +2,8 @@ import { useStore } from '../store';
 import { VerdictBadge } from './VerdictBadge';
 
 const W = 344;
+// Model revisions when known (model_state), otherwise the check's position.
+const label = (d: { revision?: number }, n: number) => (d.revision !== undefined ? `rev ${d.revision}` : `check ${n}`);
 const H = 72;
 
 /** Figma: AccuracyChart (4:63). p95 deviation per model check, against the threshold. */
@@ -62,11 +64,11 @@ export function AccuracyChart() {
         ))}
       </div>
       <div className="flex font-mono text-[10px]">
-        <span className="text-faint">check 1</span>
+        <span className="text-faint">{label(deviations[0], 1)}</span>
         <span className="flex-1" />
         <span className="text-ok">threshold {threshold.toFixed(2)}</span>
         <span className="flex-1" />
-        <span className="text-faint">check {deviations.length}</span>
+        <span className="text-faint">{label(last, deviations.length)}</span>
       </div>
     </section>
   );

@@ -162,6 +162,9 @@ plus a right panel with the accuracy chart, the agent's tool calls, the model's 
 prompt box. While the agent inspects the mesh, the viewer mirrors it: slice planes appear where it
 cuts, and the camera flies to the exact view each `view_mesh` call rendered ("Following agent";
 drag to look around yourself). Clicking a tool card marked 3D replays that step's view.
+The Model tab shows the parametric model live (from `model_state` events sent after every
+`model_*` call): each parameter with its source (measured / estimated / assumed) and evidence,
+features in build order with the deviation trend each one caused, and the revision history.
 
 ```powershell
 cd frontend

@@ -59,3 +59,16 @@ body {
 .animate-pulse-dot {
   animation: pulse-dot 1.2s ease-in-out infinite;
 }
+
+/* A changed model parameter glows briefly. */
+@keyframes flash {
+  0% {
+    background-color: color-mix(in srgb, var(--color-cad) 22%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.animate-flash {
+  animation: flash 1.6s ease-out;
+}

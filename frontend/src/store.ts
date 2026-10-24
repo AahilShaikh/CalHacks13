@@ -9,6 +9,7 @@ import {
   viewOf,
   type AgentView,
   type Deviation,
+  type ModelState,
   type Phase,
   type ServerEvent,
   type SessionStatus,
@@ -66,6 +67,10 @@ type State = {
   revisions: Revision[];
   deviations: Deviation[];
   features: string[];
+  /** Latest parametric model snapshot; null until the agent first touches the model. */
+  model: ModelState | null;
+  /** Parameters whose value or source changed in the latest snapshot (highlighted briefly). */
+  changedParams: string[];
   pendingCode: string | null;
   // View.
   shownRevision: number | null; // null follows the latest generated revision
@@ -108,6 +113,8 @@ export const useStore = create<State>((set, get) => ({
   revisions: [],
   deviations: [],
   features: [],
+  model: null,
+  changedParams: [],
   pendingCode: null,
   shownRevision: null,
   viewMode: 'overlay',
@@ -143,6 +150,7 @@ export const useStore = create<State>((set, get) => ({
       return;
     }
     set({ status: 'starting', error: null, feed: [userItem], revisions: [], deviations: [], features: [], cost: 0,
+      model: null, changedParams: [],
       focusId: null, followAgent: true });
     try {
       const { session_id } = await api.createSession(meshFile, text, images);
@@ -162,7 +170,7 @@ export const useStore = create<State>((set, get) => ({
 
   apply: (events) =>
     set((s) => {
-      let { feed, revisions, deviations, features, pendingCode, cost, status, stage, error, endedAt } = s;
+      let { feed, revisions, deviations, features, model, changedParams, pendingCode, cost, status, stage, error, endedAt } = s;
       feed = [...feed];
       const updateLastTool = (name: string | null, change: (t: ToolItem) => ToolItem) => {
         for (let i = feed.length - 1; i >= 0; i--) {
@@ -207,7 +215,8 @@ export const useStore = create<State>((set, get) => ({
               endedAt: e.at,
               view: e.ok ? viewOf(t.name, t.args, e.text) ?? t.view : t.view,
             }));
-            const dev = e.ok ? deviationFrom(e.name, e.text) : null;
+            // Without model_state events (older servers), read checks from tool results.
+            const dev = e.ok && !model ? deviationFrom(e.name, e.text) : null;
             if (dev) deviations = [...deviations, dev];
             const f = e.ok ? featuresFrom(e.text) : null;
             if (f) features = f;
@@ -216,6 +225,21 @@ export const useStore = create<State>((set, get) => ({
           case 'mesh':
             revisions = [...revisions.filter((r) => r.revision !== e.revision), e].sort((a, b) => a.revision - b.revision);
             break;
+          case 'model_state': {
+            const { type: _type, seq: _seq, at: _at, ...next } = e;
+            const before = model?.params ?? {};
+            changedParams = Object.keys(next.params).filter((name) => {
+              const old = before[name];
+              return !old || old.value !== next.params[name].value || old.source !== next.params[name].source;
+            });
+            model = next;
+            features = next.features.map((f) => `${f.id} ${f.name}`);
+            // The model's own history is the authoritative accuracy record.
+            deviations = next.history
+              .filter((h) => h.deviation)
+              .map((h) => ({ ...h.deviation!, trend: h.trend, revision: h.revision }));
+            break;
+          }
           case 'mesh_skipped':
             break; // expected while the agent experiments; not worth a feed entry
           case 'stage':
@@ -238,7 +262,7 @@ export const useStore = create<State>((set, get) => ({
             break;
         }
       }
-      return { feed, revisions, deviations, features, pendingCode, cost, status, stage, error, endedAt };
+      return { feed, revisions, deviations, features, model, changedParams, pendingCode, cost, status, stage, error, endedAt };
     }),
 
   showRevision: (revision) => set({ shownRevision: revision }),

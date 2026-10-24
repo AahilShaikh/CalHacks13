@@ -365,6 +365,29 @@ class ParametricModel:
                 'features': [f"{f['id']} {f['name']}" for f in self.state['features']],
                 'note': 'generated_cad was rebuilt from the restored script.'}
 
+    def snapshot(self):
+        """Compact state for the UI's model panel: parameters with provenance, features in
+        build order, and the revision history with each check's deviation."""
+        state = self.state
+
+        def brief(deviation):
+            if not deviation:
+                return None
+            return {k: deviation.get(k) for k in ('verdict', 'threshold', 'p95', 'max', 'share_within')}
+
+        return {
+            'revision': state['revision'],
+            'params': {name: {k: entry.get(k) for k in ('value', 'source', 'evidence', 'measured', 'note')}
+                       for name, entry in state['params'].items()},
+            'features': [{k: f[k] for k in ('id', 'name', 'evidence', 'used_params', 'code')}
+                         for f in state['features']],
+            'placement': state['placement'],
+            'deviation': brief(state['deviation']),
+            'history': [{'revision': h['revision'], 'action': h['action'], 'trend': h['trend'],
+                         'deviation': brief(h['deviation'])} for h in state['history']],
+            'can_undo': bool(self.undo_stack),
+        }
+
     def status(self):
         script, _ = generate_script(self.state)
         return {'revision': self.state['revision'], 'params': self.state['params'],
