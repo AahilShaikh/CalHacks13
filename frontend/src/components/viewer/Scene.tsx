@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef } from 'react';
 import { activeTool, generatedRevisions, heatmapOf, referenceRevision, useStore } from '../../store';
 import { AgentCamera, AgentPlanes } from './AgentFocus';
 import { GlbModel, MeshPreview } from './Models';
+import { Thumbnailer } from './Thumbnailer';
 
 /** Re-frame the camera when the reference geometry changes (not on every CAD revision). */
 function Refit({ token }: { token: string }) {
@@ -100,7 +101,8 @@ export function Scene() {
       frameloop="demand"
       dpr={[1, 2]}
       camera={{ position: [1.2, 0.9, 1.4], fov: 40, near: 0.01, far: 100000 }}
-      gl={{ antialias: true }}
+      // preserveDrawingBuffer lets the thumbnailer read the last frame.
+      gl={{ antialias: true, preserveDrawingBuffer: true }}
       className="!absolute inset-0"
       onPointerMissed={(e) => {
         // A click on empty space clears the part selection (not the end of an orbit drag).
@@ -113,6 +115,7 @@ export function Scene() {
       <directionalLight position={[5, 9, 7]} intensity={1.7} />
       <directionalLight position={[-7, 4, -5]} intensity={0.55} color="#e6ebf5" />
       <Models />
+      <Thumbnailer />
       <OrbitControls makeDefault enableDamping dampingFactor={0.1} />
       <GizmoHelper alignment="top-left" margin={[52, 100]}>
         {/* World axes relabelled to the part's Z-up frame: world Y is part Z, world Z is part -Y. */}

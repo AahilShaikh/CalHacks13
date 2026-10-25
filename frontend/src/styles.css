@@ -67,13 +67,16 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-}
+/* In the base layer so utilities such as outline-none (text fields inside the pill) win. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
 
-::selection {
-  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  }
 }
 
 /* Thin scrollbars that match the panels. */

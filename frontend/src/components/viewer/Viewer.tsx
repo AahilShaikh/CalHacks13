@@ -9,7 +9,6 @@ import { Scene } from './Scene';
 
 /** The 3D viewer fills the centre; controls float over it and the agent dock sits at the bottom. */
 export function Viewer() {
-  const status = useStore((s) => s.status);
   const meshFiles = useStore((s) => s.meshFiles);
   const revisions = useStore((s) => s.revisions);
   const addMeshes = useStore((s) => s.addMeshes);
@@ -18,7 +17,7 @@ export function Viewer() {
   const [dragging, setDragging] = useState(false);
 
   // The workspace is always open; meshes can be added to it at any time.
-  const canDrop = !replay && status !== 'done' && status !== 'failed';
+  const canDrop = !replay;
   const empty = revisions.length === 0 && meshFiles.length === 0;
   const hasCad = revisions.some((r) => r.generated);
 

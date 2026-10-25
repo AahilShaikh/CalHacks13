@@ -102,7 +102,15 @@ type State = {
   /** Time (unix s) of the latest applied event; the replay's clock. */
   lastEventAt: number | null;
 
-  openWorkspace: () => Promise<void>;
+  /** The workspace's name, and whether the user named it (otherwise it comes from the first prompt). */
+  workspaceName: string;
+  workspaceNamed: boolean;
+
+  /** Open a saved (or running) workspace by id and follow its events. */
+  openWorkspace: (id: string) => Promise<void>;
+  /** Stop following the open workspace (it keeps running on the server until idle). */
+  leaveWorkspace: () => void;
+  renameWorkspace: (name: string) => Promise<void>;
   addMeshes: (files: File[]) => Promise<void>;
   selectPart: (part: string | null) => void;
   setUnits: (units: 'mm' | '') => void;
@@ -130,6 +138,25 @@ export type ReplayState = { id: string; index: number; total: number; playing: b
 let unsubscribe: (() => void) | null = null;
 // The workspace being opened, so uploads and prompts made meanwhile wait for it.
 let opening: Promise<void> | null = null;
+let openingId: string | null = null;
+
+/**
+ * Run a request against the open workspace. A paused workspace (closed while idle, or its
+ * session ended) is reopened first, and a request refused because it closed meanwhile is
+ * retried once after reopening.
+ */
+async function whileOpen<T>(request: () => Promise<T>): Promise<T> {
+  const { sessionId, status, openWorkspace } = useStore.getState();
+  if (!sessionId) throw new Error('No workspace is open.');
+  if (status === 'done' || status === 'failed') await openWorkspace(sessionId);
+  try {
+    return await request();
+  } catch (err) {
+    if (!(err instanceof api.ApiError) || err.status !== 409) throw err;
+    await openWorkspace(sessionId);
+    return request();
+  }
+}
 let nextId = 1;
 let replayEvents: ServerEvent[] = [];
 let replayTimer = 0;
@@ -179,30 +206,63 @@ export const useStore = create<State>((set, get) => ({
   followAgent: true,
   replay: null,
   lastEventAt: null,
+  workspaceName: '',
+  workspaceNamed: false,
 
-  openWorkspace: async () => {
-    if (opening) return opening;
+  openWorkspace: async (id) => {
+    if (opening && openingId === id) return opening;
+    openingId = id;
     opening = (async () => {
-      set({ ...freshSession, status: 'starting', sessionId: null, meshFiles: [] });
+      clearTimeout(replayTimer);
+      unsubscribe?.();
+      unsubscribe = null;
+      set({ ...freshSession, status: 'starting', sessionId: id, meshFiles: [], replay: null });
       setPreviews([]);
       try {
-        const { session_id } = await api.createSession(get().units || undefined);
-        unsubscribe?.();
-        set({ sessionId: session_id, status: 'queued', startedAt: Date.now() / 1000 });
+        // Rebuilds the workspace from disk if it is not running; its history streams back in.
+        await api.openWorkspace(id);
+        if (get().sessionId !== id) return; // the user moved on meanwhile
+        set({ status: 'queued', startedAt: Date.now() / 1000 });
         unsubscribe = api.subscribe(
-          session_id,
+          id,
           (events) => get().apply(events),
           () => {
             if (get().status === 'running') set({ stage: 'reconnecting' });
           },
         );
+        api.getWorkspace(id)
+          .then((w) => get().sessionId === id && set({ workspaceName: w.name, workspaceNamed: w.named }))
+          .catch(() => {});
       } catch (err) {
-        set({ status: 'failed', error: `Could not open the workspace: ${(err as Error).message}` });
+        const missing = err instanceof api.ApiError && err.status === 404;
+        set({ status: 'failed', error: missing ? 'This workspace no longer exists.'
+          : `Could not open the workspace: ${(err as Error).message}` });
       } finally {
         opening = null;
+        openingId = null;
       }
     })();
     return opening;
+  },
+  leaveWorkspace: () => {
+    clearTimeout(replayTimer);
+    unsubscribe?.();
+    unsubscribe = null;
+    setPreviews([]);
+    set({ ...freshSession, sessionId: null, status: 'idle', replay: null, meshFiles: [], images: [],
+      workspaceName: '', workspaceNamed: false });
+  },
+  renameWorkspace: async (name) => {
+    const { sessionId } = get();
+    const text = name.trim();
+    if (!sessionId || !text) return;
+    const before = { workspaceName: get().workspaceName, workspaceNamed: get().workspaceNamed };
+    set({ workspaceName: text, workspaceNamed: true });
+    try {
+      await api.renameWorkspace(sessionId, text);
+    } catch (err) {
+      set({ ...before, error: `Could not rename: ${(err as Error).message}` });
+    }
   },
   addMeshes: async (files) => {
     const added = files.filter(isMeshFile).slice(0, MAX_MESHES);
@@ -219,11 +279,11 @@ export const useStore = create<State>((set, get) => ({
     };
     if (!sessionId) {
       done();
-      set({ error: 'No workspace is open; reload the page.' });
+      set({ error: 'No workspace is open.' });
       return;
     }
     try {
-      await api.uploadMeshes(sessionId, added, units || undefined);
+      await whileOpen(() => api.uploadMeshes(sessionId, added, units || undefined));
     } catch (err) {
       set({ error: `${added.map((f) => f.name).join(', ')} not added: ${(err as Error).message}` });
     } finally {
@@ -252,17 +312,20 @@ export const useStore = create<State>((set, get) => ({
     if (opening) await opening;
     const { sessionId, images } = get();
     if (!sessionId) {
-      set({ error: 'No workspace is open; reload the page.' });
+      set({ error: 'No workspace is open.' });
       return;
     }
-    set((s) => ({ feed: [...s.feed, { kind: 'user', id: nextId++, text }], error: null }));
+    set({ error: null });
     try {
-      // Photos go to the agent with this message.
-      if (images.length) {
-        await api.uploadImages(sessionId, images);
-        set({ images: [] });
-      }
-      await api.sendTurn(sessionId, text);
+      // The prompt shows once the server records it (user_prompt), so history and live agree.
+      await whileOpen(async () => {
+        // Photos go to the agent with this message.
+        if (images.length) {
+          await api.uploadImages(sessionId, images);
+          set({ images: [] });
+        }
+        await api.sendTurn(sessionId, text);
+      });
     } catch (err) {
       set((s) => ({ feed: [...s.feed, note(`Message not sent: ${(err as Error).message}`, 'error')] }));
     }
@@ -379,8 +442,7 @@ export const useStore = create<State>((set, get) => ({
             feed.push(note('Session finished', 'muted'));
             break;
           case 'user_prompt':
-            // Live sessions already show the prompt the user typed; replays need it.
-            if (s.replay) feed.push({ kind: 'user', id: nextId++, text: e.text });
+            feed.push({ kind: 'user', id: nextId++, text: e.text });
             break;
           case 'interrupted':
             feed.push(note('Stopped. Send a prompt to continue.', 'muted'));
@@ -406,9 +468,7 @@ export const useStore = create<State>((set, get) => ({
     clearTimeout(replayTimer);
     unsubscribe?.();
     unsubscribe = null;
-    // A replay replaces the open workspace; end it so its CAD engine is freed.
-    const live = get().sessionId;
-    if (live) api.closeSession(live);
+    // The open workspace (if any) keeps running on the server and frees itself when idle.
     try {
       replayEvents = await api.replayEvents(id);
     } catch (err) {
@@ -442,7 +502,6 @@ export const useStore = create<State>((set, get) => ({
     if (!get().replay) return;
     replayEvents = [];
     set({ ...freshSession, replay: null, status: 'idle', sessionId: null });
-    void get().openWorkspace();
   },
 }));
 

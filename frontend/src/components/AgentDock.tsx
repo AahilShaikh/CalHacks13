@@ -147,10 +147,11 @@ function PromptPill() {
   const { addMeshes, addImages, removeImage, submit, stop } = useStore.getState();
   const activity = useActivity();
 
-  const ended = status === 'done' || status === 'failed';
-  const canSend = !ended && status !== 'idle' && text.trim().length > 0;
-  const placeholder = ended
-    ? 'This session has ended. Reload to start again.'
+  // A closed workspace is only paused: sending (or adding files) reopens it.
+  const paused = status === 'done' || status === 'failed';
+  const canSend = status !== 'idle' && text.trim().length > 0;
+  const placeholder = paused
+    ? 'Paused. Send a message to pick up where you left off…'
     : activity.working
       ? `Aida is working: ${activity.label.toLowerCase()}. Type to queue a follow-up…`
       : asked
@@ -185,7 +186,6 @@ function PromptPill() {
   };
 
   const takeFiles = (files: File[]) => {
-    if (ended) return;
     const meshes = files.filter(isMeshFile);
     if (meshes.length) void addMeshes(meshes);
     const photos = files.filter((f) => f.type.startsWith('image/'));
@@ -197,7 +197,6 @@ function PromptPill() {
       data-working={activity.working || undefined}
       className={cx('agent-frame rounded-[24px] p-px shadow-float', dragging && 'agent-frame-drop')}
       onDragOver={(e) => {
-        if (ended) return;
         e.preventDefault();
         e.stopPropagation();
         setDragging(true);
@@ -242,7 +241,6 @@ function PromptPill() {
                 takeFiles(files);
               }
             }}
-            disabled={ended}
             rows={1}
             aria-label="Message Aida"
             placeholder={placeholder}

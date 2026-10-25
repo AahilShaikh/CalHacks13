@@ -1,14 +1,17 @@
 import { ChevronRight } from 'lucide-react';
+import { useState } from 'react';
 import { useActivity, useElapsed, type ActivityTone } from '../lib/activity';
+import { linkProps } from '../lib/router';
 import { generatedRevisions, useStore } from '../store';
 import { DownloadMenu } from './DownloadMenu';
-import { Spinner, cx } from './ui';
+import { RenameField, Spinner, cx } from './ui';
 
 const DOT: Record<ActivityTone, string> = {
   inspect: 'bg-inspect',
   build: 'bg-accent',
   verify: 'bg-verify',
   busy: 'bg-faint',
+  paused: 'bg-line-strong',
   idle: 'bg-ok',
   error: 'bg-error',
 };
@@ -29,12 +32,12 @@ export function TopBar() {
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line bg-surface px-3">
-      <a href="/" className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-subtle" aria-label="Aida home">
+      <a {...linkProps('/')} className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-subtle" aria-label="All workspaces">
         <Logo />
         <span className="text-[14px] font-semibold tracking-[-0.01em]">Aida</span>
       </a>
       <ChevronRight size={14} className="text-line-strong" aria-hidden />
-      <span className="truncate text-[13px] font-medium">{replay ? 'Recorded run' : 'Untitled workspace'}</span>
+      {replay ? <span className="truncate text-[13px] font-medium">Recorded run</span> : <WorkspaceName />}
       {replay && (
         <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 text-[11px] font-medium text-accent-ink">
           Replay · {replay.speed}×
@@ -47,6 +50,39 @@ export function TopBar() {
 
       <DownloadMenu />
     </header>
+  );
+}
+
+/** The workspace's name; click to rename. Unnamed workspaces show their first prompt. */
+function WorkspaceName() {
+  const name = useStore((s) => s.workspaceName);
+  const named = useStore((s) => s.workspaceNamed);
+  const sessionId = useStore((s) => s.sessionId);
+  const rename = useStore((s) => s.renameWorkspace);
+  const [editing, setEditing] = useState(false);
+  if (editing) {
+    return (
+      <RenameField
+        className="w-64 text-[13px]"
+        initial={named ? name : ''}
+        placeholder={name || 'Untitled workspace'}
+        onDone={(text) => {
+          setEditing(false);
+          if (text) void rename(text);
+        }}
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      disabled={!sessionId}
+      onClick={() => setEditing(true)}
+      title="Rename"
+      className="min-w-0 truncate rounded-md px-1.5 py-1 text-[13px] font-medium hover:bg-subtle"
+    >
+      {name || 'Untitled workspace'}
+    </button>
   );
 }
 

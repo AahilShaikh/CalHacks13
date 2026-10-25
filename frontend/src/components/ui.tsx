@@ -1,5 +1,5 @@
 import { LoaderCircle, type LucideIcon } from 'lucide-react';
-import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { forwardRef, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 
 /** Shared building blocks for the light theme. Keep variants few; the UI should stay quiet. */
 
@@ -124,4 +124,38 @@ export function FloatCard({ className, children }: { className?: string; childre
   );
 }
 
+/** An inline name field: Enter or blur saves, Escape cancels (reports ''). */
+export function RenameField({ initial, placeholder, onDone, className }: {
+  initial: string;
+  placeholder?: string;
+  onDone: (name: string) => void;
+  className?: string;
+}) {
+  const [value, setValue] = useState(initial);
+  const done = useRef(false);
+  const finish = (name: string) => {
+    if (done.current) return;
+    done.current = true;
+    onDone(name.trim());
+  };
+  return (
+    <input
+      autoFocus
+      value={value}
+      maxLength={120}
+      placeholder={placeholder}
+      aria-label="Workspace name"
+      onChange={(e) => setValue(e.target.value)}
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={() => finish(value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') finish(value);
+        if (e.key === 'Escape') finish('');
+      }}
+      className={cx('h-7 w-full rounded-md border border-accent/60 bg-surface px-2 text-[13.5px] outline-none', className)}
+    />
+  );
+}
+
 export { cx };
+

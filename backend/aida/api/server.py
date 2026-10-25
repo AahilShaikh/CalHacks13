@@ -145,6 +145,12 @@ app.include_router(replays_router)
 app.include_router(workspaces_router)
 # The web UI is mounted last so API routes match first.
 if (FRONTEND_DIST / 'index.html').is_file():
+    # The app's own pages (a workspace, a replay) all load index.html; the app routes them.
+    @app.get('/w/{workspace_id}', include_in_schema=False)
+    @app.get('/replay/{replay_id}', include_in_schema=False)
+    def app_page(workspace_id: str = '', replay_id: str = ''):
+        return FileResponse(FRONTEND_DIST / 'index.html')
+
     app.mount('/legacy', StaticFiles(directory=WEB_DIR, html=True), name='legacy-web')
     app.mount('/', StaticFiles(directory=FRONTEND_DIST, html=True), name='web')
 else:

@@ -17,9 +17,8 @@ export function References() {
   const images = useStore((s) => s.images);
   const selected = useStore((s) => s.selectedPart);
   const replay = useStore((s) => s.replay);
-  const ended = useStore((s) => s.status === 'done' || s.status === 'failed');
   const { addMeshes, addImages, selectPart } = useStore.getState();
-  const canAdd = !replay && !ended;
+  const canAdd = !replay;
 
   // The server's list; recordings from before it existed fall back to the scanned parts.
   const fallback = workspace?.parts.length

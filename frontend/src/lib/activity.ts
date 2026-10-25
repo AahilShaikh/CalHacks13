@@ -6,12 +6,13 @@ const STAGES: Record<string, string> = {
   preparing: 'Preparing workspace',
   cad_starting: 'Starting CAD engine',
   agent_running: 'Thinking',
+  restoring: 'Rebuilding parts',
   exporting_mesh: 'Updating preview',
   reconnecting: 'Reconnecting',
   idle: 'Ready',
 };
 
-export type ActivityTone = Phase | 'idle' | 'busy' | 'error';
+export type ActivityTone = Phase | 'idle' | 'busy' | 'paused' | 'error';
 
 export type Activity = {
   tone: ActivityTone;
@@ -36,8 +37,8 @@ export function useActivity(): Activity {
   // The session stays open between turns; only "working" while a turn runs.
   const working = live && !['', 'idle', 'preparing', 'cad_starting'].includes(stage);
 
-  if (status === 'failed') return { tone: 'error', label: 'Session failed', working: false, running: null };
-  if (status === 'done') return { tone: 'idle', label: replay ? 'Replay finished' : 'Session ended', working: false, running: null };
+  if (status === 'failed') return { tone: 'error', label: replay ? 'Run failed' : 'Stopped with an error', working: false, running: null };
+  if (status === 'done') return { tone: 'paused', label: replay ? 'Replay finished' : 'Paused', working: false, running: null };
   if (running) return { tone: running.phase, label: toolLabel(running.name), working: true, running };
   if (status === 'starting') return { tone: 'busy', label: 'Opening workspace', working: false, running: null };
   if (stage) {

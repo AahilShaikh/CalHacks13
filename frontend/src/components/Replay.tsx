@@ -1,6 +1,7 @@
 import { Pause, Play, PlayCircle, RotateCcw, SkipForward, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { listReplays, type ReplaySummary } from '../lib/api';
+import { linkProps, navigate } from '../lib/router';
 import { useStore } from '../store';
 import { IconButton, SectionLabel, cx } from './ui';
 
@@ -51,7 +52,10 @@ export function ReplayControls() {
         ))}
       </div>
       <IconButton icon={SkipForward} label="Skip to the end" size="sm" onClick={skipReplay} disabled={done} />
-      <IconButton icon={X} label="Exit the replay" size="sm" onClick={exitReplay} />
+      <IconButton icon={X} label="Exit the replay" size="sm" onClick={() => {
+        exitReplay();
+        navigate('/');
+      }} />
     </div>
   );
 }
@@ -59,7 +63,6 @@ export function ReplayControls() {
 /** Past runs on this server. */
 export function ReplayList() {
   const [replays, setReplays] = useState<ReplaySummary[]>([]);
-  const startReplay = useStore((s) => s.startReplay);
   useEffect(() => {
     listReplays()
       .then((list) => setReplays(list.filter((r) => r.revisions > 0).slice(0, 5)))
@@ -70,10 +73,9 @@ export function ReplayList() {
     <div className="-mx-3 flex flex-col">
       <SectionLabel>Recorded runs</SectionLabel>
       {replays.map((r) => (
-        <button
+        <a
           key={r.id}
-          type="button"
-          onClick={() => void startReplay(r.id)}
+          {...linkProps(`/replay/${encodeURIComponent(r.id)}`)}
           className="flex items-center gap-2.5 rounded-md px-3 py-2 text-left hover:bg-subtle"
         >
           <PlayCircle size={16} strokeWidth={1.75} className="shrink-0 text-faint" aria-hidden />
@@ -84,7 +86,7 @@ export function ReplayList() {
               {new Date(r.started_at * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}
             </span>
           </span>
-        </button>
+        </a>
       ))}
     </div>
   );
