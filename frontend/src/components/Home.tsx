@@ -1,4 +1,5 @@
 import { ArrowUp, Box, ImageIcon, MoreHorizontal, Pencil, Plus, Trash2, Upload, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import * as api from '../lib/api';
 import { linkProps, navigate, workspacePath } from '../lib/router';
@@ -227,9 +228,9 @@ function WorkspaceCard({ workspace: w, onChanged }: { workspace: api.WorkspaceSu
   const detail = [parts ? `${parts} part${parts === 1 ? '' : 's'}` : 'No parts yet', ago(w.updated_at)].join(' · ');
 
   return (
-    <li className="group relative flex flex-col overflow-hidden rounded-xl border border-line bg-surface transition-shadow hover:shadow-float">
+    <li className="group relative flex flex-col rounded-xl border border-line bg-surface transition-shadow hover:shadow-float">
       <a {...linkProps(workspacePath(w.id))} className="flex flex-col" tabIndex={-1} aria-hidden>
-        <div className="flex h-[150px] items-center justify-center border-b border-line bg-[#eef0f3]">
+        <div className="flex h-[150px] overflow-hidden rounded-t-xl items-center justify-center border-b border-line bg-[#eef0f3]">
           {w.thumbnail ? (
             <img src={`${w.thumbnail}?t=${Math.round(w.updated_at)}`} alt="" className="size-full object-cover" loading="lazy" />
           ) : (
@@ -265,6 +266,8 @@ function WorkspaceCard({ workspace: w, onChanged }: { workspace: api.WorkspaceSu
           </span>
           {error && <span className="text-[12px] text-error">{error}</span>}
         </div>
+        <IconButton icon={Trash2} label={`Delete ${w.name}`} size="sm"
+          onClick={() => setConfirming(true)} />
         <div ref={menuRef} className="relative">
           <IconButton icon={MoreHorizontal} label={`More for ${w.name}`} size="sm" aria-haspopup="menu" aria-expanded={menu}
             onClick={() => setMenu(!menu)} />
@@ -316,23 +319,38 @@ function ConfirmDialog({ title, body, confirm, busy, onCancel, onConfirm }: {
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const dialog = useRef<HTMLDivElement>(null);
+  const returnFocus = useRef(document.activeElement as HTMLElement | null);
+  const cancel = useRef(onCancel);
+  cancel.current = onCancel;
   useEffect(() => {
-    const key = (e: KeyboardEvent) => e.key === 'Escape' && onCancel();
+    return () => returnFocus.current?.focus();
+  }, []);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) cancel.current();
+      if (e.key !== 'Tab') return;
+      const buttons = dialog.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+      if (!buttons?.length) { e.preventDefault(); return; }
+      const first = buttons[0], last = buttons[buttons.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
-  }, [onCancel]);
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20 p-4" onMouseDown={onCancel}>
-      <div role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body"
+  }, [busy]);
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20 p-4" onMouseDown={() => !busy && onCancel()}>
+      <div ref={dialog} role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body"
         onMouseDown={(e) => e.stopPropagation()}
         className="flex w-full max-w-[400px] flex-col gap-3 rounded-xl border border-line bg-surface p-5 shadow-pop">
         <h2 id="confirm-title" className="text-[15px] font-semibold">{title}</h2>
         <p id="confirm-body" className="text-[13px] leading-[1.5] text-muted">{body}</p>
         <div className="flex justify-end gap-2 pt-1">
-          <Button autoFocus onClick={onCancel}>Cancel</Button>
-          <Button variant="danger" busy={busy} onClick={onConfirm}>{confirm}</Button>
+          <Button autoFocus disabled={busy} onClick={onCancel}>Cancel</Button>
+          <Button variant="danger" busy={busy} disabled={busy} onClick={onConfirm}>{confirm}</Button>
         </div>
       </div>
-    </div>
+    </div>, document.body
   );
 }
