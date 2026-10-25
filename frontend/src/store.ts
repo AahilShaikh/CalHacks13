@@ -11,9 +11,11 @@ import {
   type AgentView,
   type Deviation,
   type ModelState,
+  type PartState,
   type Phase,
   type ServerEvent,
   type SessionStatus,
+  type WorkspaceState,
 } from './lib/events';
 
 export type ToolItem = {
@@ -45,8 +47,10 @@ export type Revision = {
   generated: boolean;
   triangles: number;
   extents: number[];
-  /** The reference coloured by distance to this revision, once computed. */
-  heatmap?: HeatScale & { url: string };
+  /** Parts in this revision's scene. */
+  parts?: string[];
+  /** Each referenced part's scan coloured by distance to this revision, once computed. */
+  heatmaps?: Record<string, HeatScale & { url: string }>;
 };
 
 export type ViewMode = 'overlay' | 'side' | 'heatmap';
@@ -54,9 +58,9 @@ export type Tab = 'activity' | 'model';
 export type AppStatus = 'idle' | 'starting' | SessionStatus;
 
 type State = {
-  // Before a session: what the user picked.
-  meshFile: File | null;
-  meshPreviewUrl: string | null;
+  // Meshes on their way to the workspace (each becomes a part), previewed while they upload.
+  meshFiles: File[];
+  meshPreviews: MeshPreview[];
   images: File[];
   /** Units of the uploaded mesh; '' tells the agent not to claim physical sizes. */
   units: 'mm' | '';
@@ -72,9 +76,11 @@ type State = {
   revisions: Revision[];
   deviations: Deviation[];
   features: string[];
-  /** Latest parametric model snapshot; null until the agent first touches the model. */
-  model: ModelState | null;
-  /** Parameters whose value or source changed in the latest snapshot (highlighted briefly). */
+  /** Latest workspace snapshot (every part and the assembly); null until the agent first touches it. */
+  workspace: WorkspaceState | null;
+  /** The part the user picked (or 'assembly'); null follows the agent's active part. */
+  selectedPart: string | null;
+  /** "<part>.<param>" keys whose value or source changed in the latest snapshot (highlighted briefly). */
   changedParams: string[];
   pendingCode: string | null;
   // View.
@@ -89,7 +95,9 @@ type State = {
   /** Time (unix s) of the latest applied event; the replay's clock. */
   lastEventAt: number | null;
 
-  setMesh: (file: File | null) => void;
+  openWorkspace: () => Promise<void>;
+  addMeshes: (files: File[]) => Promise<void>;
+  selectPart: (part: string | null) => void;
   setUnits: (units: 'mm' | '') => void;
   stop: () => Promise<void>;
   addImages: (files: File[]) => void;
@@ -110,6 +118,8 @@ type State = {
 export type ReplayState = { id: string; index: number; total: number; playing: boolean; speed: number };
 
 let unsubscribe: (() => void) | null = null;
+// The workspace being opened, so uploads and prompts made meanwhile wait for it.
+let opening: Promise<void> | null = null;
 let nextId = 1;
 let replayEvents: ServerEvent[] = [];
 let replayTimer = 0;
@@ -118,17 +128,19 @@ const REPLAY_MAX_GAP_S = 3;
 
 /** Session fields reset when a live session or a replay starts. */
 const freshSession = {
-  error: null, feed: [], revisions: [], deviations: [], features: [], cost: 0, model: null,
+  error: null, feed: [], revisions: [], deviations: [], features: [], cost: 0, workspace: null, selectedPart: null,
   changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true,
   stage: '', startedAt: null, endedAt: null, lastEventAt: null,
 } satisfies Partial<State>;
 
 export const MESH_EXTENSIONS = ['.stl', '.obj', '.ply', '.glb'];
+export type MeshPreview = { url: string; kind: 'stl' | 'obj' | 'ply' | 'glb' };
 export const isMeshFile = (file: File) => MESH_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext));
+export const MAX_MESHES = 12;
 
 export const useStore = create<State>((set, get) => ({
-  meshFile: null,
-  meshPreviewUrl: null,
+  meshFiles: [],
+  meshPreviews: [],
   images: [],
   units: 'mm',
   sessionId: null,
@@ -142,7 +154,8 @@ export const useStore = create<State>((set, get) => ({
   revisions: [],
   deviations: [],
   features: [],
-  model: null,
+  workspace: null,
+  selectedPart: null,
   changedParams: [],
   pendingCode: null,
   shownRevision: null,
@@ -153,12 +166,59 @@ export const useStore = create<State>((set, get) => ({
   replay: null,
   lastEventAt: null,
 
-  setMesh: (file) => {
-    const previous = get().meshPreviewUrl;
-    if (previous) URL.revokeObjectURL(previous);
-    const preview = file && file.name.toLowerCase().endsWith('.stl') ? URL.createObjectURL(file) : null;
-    set({ meshFile: file, meshPreviewUrl: preview, error: null });
+  openWorkspace: async () => {
+    if (opening) return opening;
+    opening = (async () => {
+      set({ ...freshSession, status: 'starting', sessionId: null, meshFiles: [] });
+      setPreviews([]);
+      try {
+        const { session_id } = await api.createSession(get().units || undefined);
+        unsubscribe?.();
+        set({ sessionId: session_id, status: 'queued', startedAt: Date.now() / 1000 });
+        unsubscribe = api.subscribe(
+          session_id,
+          (events) => get().apply(events),
+          () => {
+            if (get().status === 'running') set({ stage: 'reconnecting' });
+          },
+        );
+      } catch (err) {
+        set({ status: 'failed', error: `Could not open the workspace: ${(err as Error).message}` });
+      } finally {
+        opening = null;
+      }
+    })();
+    return opening;
   },
+  addMeshes: async (files) => {
+    const added = files.filter(isMeshFile).slice(0, MAX_MESHES);
+    if (!added.length) return;
+    const meshFiles = [...get().meshFiles, ...added];
+    setPreviews(meshFiles);
+    set({ meshFiles, error: null });
+    if (opening) await opening;
+    const { sessionId, units } = get();
+    const done = () => {
+      const rest = get().meshFiles.filter((f) => !added.includes(f));
+      setPreviews(rest);
+      set({ meshFiles: rest });
+    };
+    if (!sessionId) {
+      done();
+      set({ error: 'No workspace is open; reload the page.' });
+      return;
+    }
+    try {
+      await api.uploadMeshes(sessionId, added, units || undefined);
+    } catch (err) {
+      set({ error: `${added.map((f) => f.name).join(', ')} not added: ${(err as Error).message}` });
+    } finally {
+      done();
+    }
+  },
+
+  selectPart: (selectedPart) =>
+    set((s) => ({ selectedPart, deviations: s.workspace ? deviationsOf(s.workspace, selectedPart) : s.deviations })),
   setUnits: (units) => set({ units }),
   stop: async () => {
     const { sessionId } = get();
@@ -173,44 +233,30 @@ export const useStore = create<State>((set, get) => ({
   removeImage: (index) => set((s) => ({ images: s.images.filter((_, i) => i !== index) })),
 
   submit: async (prompt) => {
-    const { sessionId, status, meshFile, images, units } = get();
     const text = prompt.trim();
     if (!text) return;
-    const userItem: FeedItem = { kind: 'user', id: nextId++, text };
-    if (sessionId && (status === 'running' || status === 'queued')) {
-      set((s) => ({ feed: [...s.feed, userItem] }));
-      try {
-        await api.sendTurn(sessionId, text);
-      } catch (err) {
-        set((s) => ({ feed: [...s.feed, note(`Follow-up not sent: ${(err as Error).message}`, 'error')] }));
-      }
+    if (opening) await opening;
+    const { sessionId, images } = get();
+    if (!sessionId) {
+      set({ error: 'No workspace is open; reload the page.' });
       return;
     }
-    if (!meshFile) {
-      set({ error: 'Add a mesh first: drop it on the viewer or use Attach.' });
-      return;
-    }
-    set({ ...freshSession, status: 'starting', feed: [userItem],
-      focusId: null, followAgent: true });
+    set((s) => ({ feed: [...s.feed, { kind: 'user', id: nextId++, text }], error: null }));
     try {
-      const { session_id } = await api.createSession(meshFile, text, images, units || undefined);
-      unsubscribe?.();
-      set({ sessionId: session_id, status: 'queued', startedAt: Date.now() / 1000, endedAt: null, shownRevision: null });
-      unsubscribe = api.subscribe(
-        session_id,
-        (events) => get().apply(events),
-        () => {
-          if (get().status === 'running') set({ stage: 'reconnecting' });
-        },
-      );
+      // Photos go to the agent with this message.
+      if (images.length) {
+        await api.uploadImages(sessionId, images);
+        set({ images: [] });
+      }
+      await api.sendTurn(sessionId, text);
     } catch (err) {
-      set({ status: 'idle', error: (err as Error).message });
+      set((s) => ({ feed: [...s.feed, note(`Message not sent: ${(err as Error).message}`, 'error')] }));
     }
   },
 
   apply: (events) =>
     set((s) => {
-      let { feed, revisions, deviations, features, model, changedParams, pendingCode, cost, status, stage, error, endedAt } = s;
+      let { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error, endedAt } = s;
       feed = [...feed];
       const updateLastTool = (name: string | null, change: (t: ToolItem) => ToolItem) => {
         for (let i = feed.length - 1; i >= 0; i--) {
@@ -255,8 +301,8 @@ export const useStore = create<State>((set, get) => ({
               endedAt: e.at,
               view: e.ok ? viewOf(t.name, t.args, e.text) ?? t.view : t.view,
             }));
-            // Without model_state events (older servers), read checks from tool results.
-            const dev = e.ok && !model ? deviationFrom(e.name, e.text) : null;
+            // Without workspace events (older servers), read checks from tool results.
+            const dev = e.ok && !workspace ? deviationFrom(e.name, e.text) : null;
             if (dev) deviations = [...deviations, dev];
             const f = e.ok ? featuresFrom(e.text) : null;
             if (f) features = f;
@@ -265,26 +311,34 @@ export const useStore = create<State>((set, get) => ({
           case 'mesh':
             revisions = [...revisions.filter((r) => r.revision !== e.revision), e].sort((a, b) => a.revision - b.revision);
             break;
-          case 'model_state': {
-            const { type: _type, seq: _seq, at: _at, ...next } = e;
-            const before = model?.params ?? {};
-            changedParams = Object.keys(next.params).filter((name) => {
-              const old = before[name];
-              return !old || old.value !== next.params[name].value || old.source !== next.params[name].source;
-            });
-            model = next;
-            features = next.features.map((f) => `${f.id} ${f.name}`);
-            // The model's own history is the authoritative accuracy record.
-            deviations = next.history
-              .filter((h) => h.deviation)
-              .map((h) => ({ ...h.deviation!, trend: h.trend, revision: h.revision }));
+          case 'model_state':
+          case 'workspace_state': {
+            const { type: _type, seq: _seq, at: _at, ...rest } = e;
+            // Recordings from before workspaces sent one model: show it as a single part.
+            const next: WorkspaceState = e.type === 'workspace_state' ? (rest as WorkspaceState) : {
+              active: 'part',
+              parts: [{ ...(rest as ModelState), name: 'part', object: 'generated_cad', description: '', has_reference: true }],
+              assembly: { ...EMPTY_MODEL, instances: {}, instance_count: 0, variants: [] },
+            };
+            changedParams = changedKeys(workspace, next);
+            workspace = next;
+            const active = next.parts.find((p) => p.name === next.active);
+            features = active ? active.features.map((f) => `${f.id} ${f.name}`) : features;
+            // The models' own histories are the authoritative accuracy record.
+            deviations = deviationsOf(next, s.selectedPart);
             break;
           }
           case 'heatmap': {
-            const { type: _t, seq: _s, at: _a, revision, ...heat } = e;
-            revisions = revisions.map((r) => (r.revision === revision ? { ...r, heatmap: heat } : r));
+            const { type: _t, seq: _s, at: _a, revision, part, ...heat } = e;
+            const key = part ?? 'part';
+            revisions = revisions.map((r) =>
+              r.revision === revision ? { ...r, heatmaps: { ...r.heatmaps, [key]: heat } } : r,
+            );
             break;
           }
+          case 'notice':
+            feed.push(note(e.text, 'muted'));
+            break;
           case 'heatmap_skipped':
           case 'mesh_skipped':
             break; // expected while the agent experiments; not worth a feed entry
@@ -316,7 +370,7 @@ export const useStore = create<State>((set, get) => ({
         }
       }
       const lastEventAt = events.length ? events[events.length - 1].at : s.lastEventAt;
-      return { feed, revisions, deviations, features, model, changedParams, pendingCode, cost, status, stage, error,
+      return { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error,
         endedAt, lastEventAt };
     }),
 
@@ -327,9 +381,12 @@ export const useStore = create<State>((set, get) => ({
   setFollow: (followAgent) => set({ followAgent, ...(followAgent ? { focusId: null } : {}) }),
 
   startReplay: async (id) => {
-    get().exitReplay();
+    clearTimeout(replayTimer);
     unsubscribe?.();
     unsubscribe = null;
+    // A replay replaces the open workspace; end it so its CAD engine is freed.
+    const live = get().sessionId;
+    if (live) api.closeSession(live);
     try {
       replayEvents = await api.replayEvents(id);
     } catch (err) {
@@ -363,6 +420,7 @@ export const useStore = create<State>((set, get) => ({
     if (!get().replay) return;
     replayEvents = [];
     set({ ...freshSession, replay: null, status: 'idle', sessionId: null });
+    void get().openWorkspace();
   },
 }));
 
@@ -385,6 +443,65 @@ function scheduleReplay() {
   if (done) return;
   const gap = Math.min(replayEvents[end].at - replayEvents[end - 1].at, REPLAY_MAX_GAP_S);
   replayTimer = window.setTimeout(scheduleReplay, Math.max(16, (gap * 1000) / replay.speed));
+}
+
+let previews: MeshPreview[] = [];
+/** Object URLs for previewing dropped meshes before a session starts (the URL has no extension, so keep the kind). */
+function setPreviews(files: File[]) {
+  for (const preview of previews) URL.revokeObjectURL(preview.url);
+  previews = files.map((file) => ({
+    url: URL.createObjectURL(file),
+    kind: file.name.toLowerCase().split('.').pop() as MeshPreview['kind'],
+  }));
+  useStore.setState({ meshPreviews: previews });
+}
+
+const EMPTY_MODEL: ModelState = {
+  revision: 0, params: {}, features: [], placement: null, deviation: null, history: [], can_undo: false,
+};
+
+/** "<part>.<param>" for every parameter whose value or source changed between two snapshots. */
+function changedKeys(before: WorkspaceState | null, next: WorkspaceState): string[] {
+  const models: [string, ModelState][] = [...next.parts.map((p) => [p.name, p] as [string, ModelState]),
+    ['assembly', next.assembly]];
+  const old = new Map<string, ModelState>(before ? [...before.parts.map((p) => [p.name, p] as [string, ModelState]),
+    ['assembly', before.assembly]] : []);
+  const keys: string[] = [];
+  for (const [name, model] of models) {
+    const previous = old.get(name)?.params ?? {};
+    for (const [param, value] of Object.entries(model.params)) {
+      const was = previous[param];
+      if (!was || JSON.stringify(was.value) !== JSON.stringify(value.value) || was.source !== value.source) {
+        keys.push(`${name}.${param}`);
+      }
+    }
+  }
+  return keys;
+}
+
+/** The part a view should follow: the user's pick, else the agent's active part. */
+export function partOf(workspace: WorkspaceState | null, selected: string | null): PartState | null {
+  if (!workspace) return null;
+  const name = selected ?? workspace.active;
+  return workspace.parts.find((p) => p.name === name) ?? null;
+}
+
+/** Accuracy history for the chart: the followed part if it has a scan, else the first part that does. */
+function deviationsOf(workspace: WorkspaceState, selected: string | null): Deviation[] {
+  const followed = partOf(workspace, selected);
+  const part = followed?.has_reference ? followed : workspace.parts.find((p) => p.has_reference);
+  if (!part) return [];
+  return part.history
+    .filter((h) => h.deviation)
+    .map((h) => ({ ...h.deviation!, trend: h.trend, revision: h.revision }));
+}
+
+/** The heatmap to show for a revision: the followed part's, else the first one computed. */
+export function heatmapOf(revision: Revision | undefined, workspace: WorkspaceState | null, selected: string | null) {
+  const heatmaps = revision?.heatmaps;
+  if (!heatmaps) return undefined;
+  const part = partOf(workspace, selected);
+  return (part && heatmaps[part.name]) || Object.values(heatmaps)[0];
 }
 
 function note(text: string, tone: 'muted' | 'error' | 'ok'): FeedItem {

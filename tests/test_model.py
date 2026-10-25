@@ -50,11 +50,11 @@ class LocalCad:
         self.last_line = None
         return _text('ok')
 
-    async def stats(self, object_name, samples):
+    async def stats(self, object_name, samples, reference=None):
         from build123d import export_stl
         path = self.tmp_path / 'cad.stl'
         export_stl(self.shown[object_name], str(path))
-        return deviation(self.reference, path, samples=samples)
+        return deviation(reference or self.reference, path, samples=samples)
 
 
 def _text(value):
@@ -69,7 +69,7 @@ HOLE = 'part -= Pos(P.hole_x, P.hole_y, 0) * Cylinder(P.hole_d / 2, P.thickness 
 def model(tmp_path, plate_stl):
     artifacts = Artifacts(tmp_path / 'session')
     artifacts.copy_mesh(plate_stl)
-    return ParametricModel(LocalCad(plate_stl, tmp_path), artifacts)
+    return ParametricModel(LocalCad(plate_stl, tmp_path), artifacts, 'plate', reference=plate_stl)
 
 
 def measured(value):
@@ -92,11 +92,14 @@ async def test_build_verify_and_persist(model):
     assert result['deviation']['verdict'] == 'within_threshold'
     assert result['size']['volume'] == pytest.approx(60 * 40 * 6 - math.pi * 16 * 6, rel=1e-3)
     assert result['features'] == ['F1 base plate', 'F2 hole']
-    script = (model.artifacts.root / 'model.py').read_text()
-    assert 'class P:' in script and 'def build():' in script and 'width = 60  # measured' in script
-    saved = json.loads((model.artifacts.root / 'model.json').read_text())
+    assert result['part'] == 'plate'
+    folder = model.artifacts.root / 'parts' / 'plate'
+    script = (folder / 'model.py').read_text()
+    assert 'DEFAULTS_plate = {' in script and 'def build_plate(**overrides):' in script
+    assert "'width': 60,  # measured" in script and "PARTS['plate'] = build_plate" in script
+    saved = json.loads((folder / 'model.json').read_text())
     assert saved['params']['width']['measured'] == 60.002
-    assert len(list((model.artifacts.root / 'model-history').glob('*.py'))) == model.state['revision']
+    assert len(list((folder / 'model-history').glob('*.py'))) == model.state['revision']
 
 
 async def test_failed_build_rolls_back_and_names_feature(model):
@@ -140,7 +143,7 @@ async def test_worse_change_then_undo(model):
     restored = await model.undo()
     assert model.state['params']['hole_x']['value'] == 15
     assert restored['deviation'] == good
-    assert model.cad.shown['generated_cad'].volume == pytest.approx(60 * 40 * 6 - math.pi * 16 * 6, rel=1e-3)
+    assert model.cad.shown['part_plate'].volume == pytest.approx(60 * 40 * 6 - math.pi * 16 * 6, rel=1e-3)
     assert model.state['history'][-1]['trend'] == 'restored'
 
 
@@ -170,7 +173,7 @@ async def test_placement_and_report(model):
     assert '**Verdict: within_threshold**' in text
     assert '| width | 60 | measured | 60 | slice z=1 L0 |' in text
     assert 'F2. **hole** uses hole_d, hole_x, hole_y, thickness.' in text
-    assert (model.artifacts.root / 'report.md').read_text() == text
+    assert (model.artifacts.root / 'parts' / 'plate' / 'report.md').read_text() == text
 
 
 def test_script_spans_and_trend():

@@ -5,14 +5,14 @@ import { useStore } from '../store';
 const ITEMS: { kind: DownloadKind; label: string; hint: string }[] = [
   { kind: 'step', label: 'STEP', hint: 'Solid for Fusion, SolidWorks, Onshape' },
   { kind: 'stl', label: 'STL', hint: 'Mesh for printing and slicers' },
-  { kind: 'model.py', label: 'model.py', hint: 'Parametric build123d source' },
+  { kind: 'model.py', label: 'model.py', hint: 'Parametric build123d source, every part' },
 ];
 
 /** Download the generated CAD. Errors (e.g. a STEP blocked by validation) show inline. */
 export function DownloadMenu() {
   const sessionId = useStore((s) => s.sessionId);
   const hasCad = useStore((s) => s.revisions.some((r) => r.generated));
-  const hasModel = useStore((s) => (s.model?.features.length ?? 0) > 0);
+  const hasModel = useStore((s) => s.workspace?.parts.some((p) => p.features.length > 0) ?? false);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<DownloadKind | null>(null);
   const [error, setError] = useState<string | null>(null);

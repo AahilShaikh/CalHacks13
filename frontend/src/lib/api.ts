@@ -6,13 +6,33 @@ async function json<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export async function createSession(mesh: File, prompt: string, images: File[], units?: string) {
+/** Open a workspace session: the CAD engine and agent start now, with nothing uploaded yet. */
+export async function createSession(units?: string) {
   const form = new FormData();
-  form.append('mesh', mesh);
-  form.append('prompt', prompt);
   if (units) form.append('units', units);
+  return json<{ session_id: string; parts: string[] }>(await fetch('/api/v1/cad-sessions', { method: 'POST', body: form }));
+}
+
+/** Add meshes to a running workspace; each becomes a part. */
+export async function uploadMeshes(sessionId: string, meshes: File[], units?: string) {
+  const form = new FormData();
+  for (const mesh of meshes) form.append('mesh', mesh);
+  if (units) form.append('units', units);
+  return json<{ parts: string[]; notes: string[] }>(
+    await fetch(`/api/v1/cad-sessions/${sessionId}/meshes`, { method: 'POST', body: form }),
+  );
+}
+
+/** Reference photos for the agent's next turn. */
+export async function uploadImages(sessionId: string, images: File[]) {
+  const form = new FormData();
   for (const image of images) form.append('images', image);
-  return json<{ session_id: string }>(await fetch('/api/v1/cad-sessions', { method: 'POST', body: form }));
+  return json<{ images: string[] }>(await fetch(`/api/v1/cad-sessions/${sessionId}/images`, { method: 'POST', body: form }));
+}
+
+/** End a session when the page goes away (a beacon survives the unload). */
+export function closeSession(sessionId: string) {
+  navigator.sendBeacon(`/api/v1/cad-sessions/${sessionId}/close`);
 }
 
 export async function sendTurn(sessionId: string, prompt: string) {

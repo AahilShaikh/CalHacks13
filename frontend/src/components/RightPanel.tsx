@@ -14,7 +14,8 @@ const STEPS = [
 
 /** Figma: "Right panel" in Screen / 1 Empty (7:7) and Screen / 2 Running (7:58). */
 export function RightPanel() {
-  const hasSession = useStore((s) => s.sessionId !== null || s.status === 'starting' || s.replay !== null);
+  // The workspace is open from the start; the feed takes over once something happens in it.
+  const hasSession = useStore((s) => s.feed.length > 0 || s.replay !== null);
   const replaying = useStore((s) => s.replay !== null);
   const tab = useStore((s) => s.tab);
 
@@ -31,8 +32,9 @@ export function RightPanel() {
           <div className="flex flex-col gap-2 pt-2">
             <h2 className="text-[18px] font-semibold">Scan in, CAD out.</h2>
             <p className="text-[13px] leading-[1.5] text-muted">
-              Aida inspects your mesh, builds a parametric build123d model one feature at a time, and checks every
-              revision against the scan. You watch each step here.
+              Drop meshes to rebuild them as parametric build123d parts, or describe a part to design it from
+              scratch. Aida builds one feature at a time, checks every revision against the scan, and can assemble
+              parts together. You watch each step here.
             </p>
           </div>
           <ul className="flex flex-col gap-2">

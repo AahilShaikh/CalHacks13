@@ -8,6 +8,7 @@ from pathlib import Path
 from .artifacts import Artifacts
 from .config import load_local_env
 from .cad import open_cad, text_of
+from .workspace import part_name_from, write_workspace
 
 
 def parser():
@@ -27,9 +28,11 @@ async def run(args):
     artifacts = Artifacts(args.artifacts)
     print(f'Artifacts: {artifacts.root}', flush=True)
     mesh = artifacts.copy_mesh(args.mesh.resolve())
-    artifacts.log('session', {'mesh': str(mesh), 'units': args.units})
+    part = part_name_from(args.mesh.name)
+    write_workspace(artifacts.root, [{'name': part, 'reference': mesh}])
+    artifacts.log('session', {'mesh': str(mesh), 'part': part, 'units': args.units})
     async with open_cad(artifacts, args.units) as cad:
-        await cad.startup(mesh)
+        await cad.startup(mesh, part)
         if args.check:
             result = await cad.call('render_view', {'objects': 'reference_mesh', 'direction': 'iso'})
             print(text_of(result))

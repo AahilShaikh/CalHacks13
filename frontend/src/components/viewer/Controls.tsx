@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import playIcon from '../../assets/icons/play.svg';
-import { generatedRevisions, useStore, type ViewMode } from '../../store';
+import { generatedRevisions, heatmapOf, useStore, type ViewMode } from '../../store';
 
 const MODES: { id: ViewMode; label: string }[] = [
   { id: 'overlay', label: 'Overlay' },
@@ -16,11 +16,19 @@ function useShownRevision() {
   return shownRevision === null ? generated.at(-1) : generated.find((r) => r.revision === shownRevision);
 }
 
+/** The shown revision's heatmap for the followed part, if computed. */
+function useShownHeatmap() {
+  const shown = useShownRevision();
+  const workspace = useStore((s) => s.workspace);
+  const selected = useStore((s) => s.selectedPart);
+  return heatmapOf(shown, workspace, selected);
+}
+
 /** Figma: ViewModeToggle (4:54). */
 export function ViewModeToggle() {
   const viewMode = useStore((s) => s.viewMode);
   const setViewMode = useStore((s) => s.setViewMode);
-  const hasHeat = Boolean(useShownRevision()?.heatmap);
+  const hasHeat = Boolean(useShownHeatmap());
   const ready = (id: ViewMode) => id !== 'heatmap' || hasHeat;
   return (
     <div role="radiogroup" aria-label="View mode" className="flex gap-1 rounded-md border border-line bg-raised/90 p-1 backdrop-blur">
@@ -74,7 +82,7 @@ export function FollowControl() {
 
 export function Legend() {
   const viewMode = useStore((s) => s.viewMode);
-  const heat = useShownRevision()?.heatmap;
+  const heat = useShownHeatmap();
   if (viewMode === 'heatmap' && heat) return <HeatLegend range={heat.range} threshold={heat.threshold} share={heat.share_within} />;
   return (
     <div className="flex items-center gap-3 rounded-md border border-line bg-raised/90 px-3 py-2 text-[12px] text-muted backdrop-blur">

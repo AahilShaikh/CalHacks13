@@ -65,7 +65,7 @@ export function TopBar() {
     tone = running.phase;
     activity = `${PHASE_VERB[running.phase]} · ${running.name}`;
   } else if (status === 'starting') {
-    activity = 'Uploading mesh';
+    activity = 'Opening workspace';
   } else if (stage) {
     activity = STAGES[stage] ?? stage;
   }

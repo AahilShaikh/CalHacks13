@@ -87,8 +87,8 @@ class AcquisitionManager:
                 def prepare():
                     images = [(path.name, path.read_bytes()) for path in job.directory.glob('*.png')
                               if path.stem in ('front', 'left', 'back', 'right', 'blueprints')]
-                    session = cad_manager.create(result.metric_stl.read_bytes(), 'metric_model.stl', images,
-                                                 request.prompt+'\n\n'+result.agent_prompt, 'mm')
+                    session = cad_manager.create([('metric_model.stl', result.metric_stl.read_bytes())],
+                                                 images, request.prompt+'\n\n'+result.agent_prompt, 'mm')
                     for name in ('dimensions.json', 'camera.json', 'agent_prompt.txt'):
                         source = job.directory / name
                         if source.exists():

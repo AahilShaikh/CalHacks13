@@ -30,6 +30,7 @@ from ..scan.comfy import ComfyClient, ComfyConfig
 from ..scan.pipeline import run_scan
 from .cad_sessions import CadSessionManager, router as cad_sessions_router
 from .jobs import JobManager
+from .replays import router as replays_router
 from .turntable import router as turntable_router
 from .camera import router as camera_router
 from .acquisition import router as acquisition_router
@@ -157,8 +158,13 @@ app.include_router(cad_sessions_router)
 app.include_router(turntable_router)
 app.include_router(camera_router)
 app.include_router(acquisition_router)
-# The web viewer is mounted last so API routes match first.
-app.mount('/', StaticFiles(directory=WEB_DIR, html=True), name='web')
+app.include_router(replays_router)
+# The web UI is mounted last so API routes match first.
+if (FRONTEND_DIST / 'index.html').is_file():
+    app.mount('/legacy', StaticFiles(directory=WEB_DIR, html=True), name='legacy-web')
+    app.mount('/', StaticFiles(directory=FRONTEND_DIST, html=True), name='web')
+else:
+    app.mount('/', StaticFiles(directory=WEB_DIR, html=True), name='web')
 
 
 def main():

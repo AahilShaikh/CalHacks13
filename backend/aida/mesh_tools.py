@@ -83,28 +83,34 @@ FRAME_SCHEMA = {
     'properties': {'tolerance_deg': {'type': 'number', 'description': 'Tilt that still counts as aligned (default 1).'}},
 }
 
+# Every mesh tool works on one part's reference mesh.
+PART_ARG = {'type': 'string', 'description': 'Part whose reference mesh to use (default: the active part, '
+                                             'or the only part with a mesh).'}
+for _schema in (VIEW_SCHEMA, SLICE_SCHEMA, COMPARE_SCHEMA, SERIES_SCHEMA, FRAME_SCHEMA):
+    _schema['properties']['part'] = PART_ARG
+
 DESCRIPTIONS = {
     'mesh_frame': (
-        'Check whether reference_mesh is aligned with the world axes. Returns the dominant flat-face '
+        'Check whether a part reference mesh is aligned with the world axes. Returns the dominant flat-face '
         'directions with their plane levels (e.g. Z=3), the oriented bounding box, and for a tilted '
         'mesh a placement expression for the model. Run it first.'),
     'view_mesh': (
-        'Render reference_mesh with exact framing. Zoom/pan with fit_box, or center plus view_width; '
+        'Render a part reference mesh with exact framing. Zoom/pan with fit_box, or center plus view_width; '
         'orbit with direction/view_dir plus azimuth/elevation. A slice cuts the mesh and shades the cut '
         'face orange; the half facing the camera is removed. The image has a coordinate grid, '
         'scale bar and axis triad. The JSON gives units_per_pixel and screen axes, so pixels map to '
         'model coordinates. Returns the image directly; view_image is not needed.'),
     'slice_mesh': (
-        'Exact cross-section of reference_mesh. Returns each loop (outer or hole, nesting, area, '
+        'Exact cross-section of a part reference mesh. Returns each loop (outer or hole, nesting, area, '
         'bbox) with a fitted primitive (circle, rectangle, rounded_rectangle, slot, or a line/arc '
         'profile), its max_deviation, and a build123d snippet in the returned plane. Also draws the '
         'section with fits dashed. Use the numbers, not the picture, as dimensions.'),
     'slice_series': (
-        'Slice reference_mesh at evenly spaced positions along an axis and report constant-profile '
+        'Slice a part reference mesh at evenly spaced positions along an axis and report constant-profile '
         'ranges plus the transitions between them (refined to the tolerance). Use it to find where '
         'extrusions, steps, pockets and holes start and end, then slice_mesh near each one.'),
     'compare_to_mesh': (
-        'Measure how far a generated CAD object is from reference_mesh. Returns a heatmap of the '
+        'Measure how far a generated CAD object is from a part reference mesh. Returns a heatmap of the '
         'reference coloured by signed distance (red = CAD missing material, blue = CAD has extra '
         'material), distance statistics both ways, bounding box and volume deltas, and the worst '
         'regions with bounding boxes to zoom or slice into. verdict is within_threshold or deviates.'),
@@ -122,10 +128,30 @@ class MeshTools:
         self.timeout = timeout
         self.tessellate = tessellate  # async (object_name) -> STL path of generated CAD
         self.lock = asyncio.Lock()
+        # Part name -> reference STL, filled in by the workspace. Without any, the
+        # session's single reference.stl is used (CLI sessions and older tests).
+        self.references = {}
+        self.active_part = lambda: None
+
+    def mesh_for(self, part=None):
+        """The reference STL of ``part``, or of the active / only part with a mesh."""
+        if part:
+            if part in self.references:
+                return self.references[part]
+            have = sorted(self.references) or 'none'
+            raise ValueError(f'Part {part!r} has no reference mesh; parts with meshes: {have}')
+        if not self.references:
+            return self.artifacts.root / 'reference.stl'
+        if len(self.references) == 1:
+            return next(iter(self.references.values()))
+        active = self.active_part()
+        if active in self.references:
+            return self.references[active]
+        raise ValueError(f'Several parts have reference meshes; pass part (one of {sorted(self.references)})')
 
     @property
     def mesh(self):
-        return self.artifacts.root / 'reference.stl'
+        return self.mesh_for(None)
 
     async def _run(self, module, argv):
         command = [sys.executable, '-m', module, *argv]
@@ -168,12 +194,13 @@ class MeshTools:
             raise ValueError('Name the generated CAD object to compare (as passed to show())')
         return await self.tessellate(object_name.strip())
 
-    async def render(self, spec, save_to, overlay=None):
-        """Render reference_mesh to ``save_to`` and return image + metadata content."""
+    async def render(self, spec, save_to, overlay=None, part=None):
+        """Render a reference mesh to ``save_to`` and return image + metadata content."""
+        mesh = self.mesh_for(part)
         normalize_spec(spec)  # fail fast with a clean message
         extra = ['--overlay', str(overlay)] if overlay else []
         async with self.lock:
-            out = await self._run('aida.mesh_render', [str(self.mesh), str(save_to), '--spec',
+            out = await self._run('aida.mesh_render', [str(mesh), str(save_to), '--spec',
                                                        json.dumps(spec), *self._units_args(), *extra])
         meta = json.loads(out)
         result = self.artifacts.image(str(save_to))
@@ -186,12 +213,14 @@ class MeshTools:
         try:
             self.artifacts.log('tool_call', {'name': 'view_mesh', 'arguments': args})
             spec = dict(args)
+            part = spec.pop('part', None)
             target = spec.pop('compare_to', None)
             normalize_spec(spec)
+            self.mesh_for(part)  # unknown part: fail before tessellating
             if target:
                 cad = await self._cad_stl(target)
             path = self.artifacts.output_path(f'view-{uuid4().hex[:8]}.png')
-            result = await self.render(spec, path, overlay=cad)
+            result = await self.render(spec, path, overlay=cad, part=part)
         except (SpecError, ValueError, RuntimeError, OSError) as exc:
             result = _error(str(exc))
         finally:
@@ -204,6 +233,7 @@ class MeshTools:
         try:
             self.artifacts.log('tool_call', {'name': 'slice_mesh', 'arguments': args})
             spec = dict(args)
+            mesh = self.mesh_for(spec.pop('part', None))
             target = spec.pop('compare_to', None)
             extra = []
             if target:
@@ -211,7 +241,7 @@ class MeshTools:
                 extra = ['--cad', str(cad)]
             path = self.artifacts.output_path(f'slice-{uuid4().hex[:8]}.png')
             async with self.lock:
-                out = await self._run('aida.mesh_probe', ['slice', str(self.mesh), '--spec', json.dumps(spec),
+                out = await self._run('aida.mesh_probe', ['slice', str(mesh), '--spec', json.dumps(spec),
                                                           '--out', str(path), *self._units_args(), *extra])
             result = self.artifacts.image(str(path))
             result['content'].append({'type': 'text', 'text': out.strip()})
@@ -226,8 +256,10 @@ class MeshTools:
     async def series(self, args):
         try:
             self.artifacts.log('tool_call', {'name': 'slice_series', 'arguments': args})
+            spec = dict(args)
+            mesh = self.mesh_for(spec.pop('part', None))
             async with self.lock:
-                out = await self._run('aida.mesh_probe', ['series', str(self.mesh), '--spec', json.dumps(args)])
+                out = await self._run('aida.mesh_probe', ['series', str(mesh), '--spec', json.dumps(spec)])
             result = {'content': [{'type': 'text', 'text': out.strip()}]}
         except (ValueError, RuntimeError, OSError) as exc:
             result = _error(str(exc))
@@ -240,11 +272,12 @@ class MeshTools:
             self.artifacts.log('tool_call', {'name': 'compare_to_mesh', 'arguments': args})
             spec = dict(args)
             target = spec.pop('object_name', None)
+            mesh = self.mesh_for(spec.pop('part', None))
             normalize_spec(spec.get('view') or {})
             cad = await self._cad_stl(target)
             path = self.artifacts.output_path(f'deviation-{uuid4().hex[:8]}.png')
             async with self.lock:
-                out = await self._run('aida.mesh_compare', [str(self.mesh), str(cad), '--spec', json.dumps(spec),
+                out = await self._run('aida.mesh_compare', [str(mesh), str(cad), '--spec', json.dumps(spec),
                                                             '--out', str(path), *self._units_args()])
             report = json.loads(out)
             report['object_name'] = target
@@ -258,12 +291,13 @@ class MeshTools:
         self.artifacts.log('tool_result', {'name': 'compare_to_mesh', **result})
         return result
 
-    async def stats(self, object_name, samples=8000):
+    async def stats(self, object_name, samples=8000, reference=None):
         """Deviation report for a CAD object without the heatmap image (for model checks)."""
+        mesh = reference or self.mesh
         cad = await self._cad_stl(object_name)
         try:
             async with self.lock:
-                out = await self._run('aida.mesh_compare', [str(self.mesh), str(cad), '--spec',
+                out = await self._run('aida.mesh_compare', [str(mesh), str(cad), '--spec',
                                                             json.dumps({'samples': samples})])
             return json.loads(out)
         finally:
@@ -272,8 +306,10 @@ class MeshTools:
     async def frame(self, args):
         try:
             self.artifacts.log('tool_call', {'name': 'mesh_frame', 'arguments': args})
+            spec = dict(args)
+            mesh = self.mesh_for(spec.pop('part', None))
             async with self.lock:
-                out = await self._run('aida.mesh_probe', ['frame', str(self.mesh), '--spec', json.dumps(args)])
+                out = await self._run('aida.mesh_probe', ['frame', str(mesh), '--spec', json.dumps(spec)])
             result = {'content': [{'type': 'text', 'text': out.strip()}]}
         except (ValueError, RuntimeError, OSError) as exc:
             result = _error(str(exc))

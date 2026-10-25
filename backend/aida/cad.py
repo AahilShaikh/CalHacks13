@@ -20,6 +20,18 @@ def text_of(result):
     return '\n'.join(b.get('text', '') for b in result.get('content', []) if b.get('type') == 'text')
 
 
+REFERENCE_ALIAS = 'reference_mesh'
+
+
+def reference_object(part=None):
+    """CAD session name of a part's imported reference mesh."""
+    return f'ref_{part}' if part else REFERENCE_ALIAS
+
+
+def is_reference(name):
+    return name == REFERENCE_ALIAS or name.startswith('ref_')
+
+
 def failed(result):
     text = text_of(result).strip()
     return result.get('isError', False) or text.startswith(('Error:', 'ERROR:', 'Traceback'))
@@ -53,6 +65,9 @@ class CadBridge:
         # Optional async callback invoked after each successful execute; used by
         # the web session runner to snapshot generated CAD for the live viewer.
         self.on_execute = None
+        # While above zero, execute does not snapshot (a model tool snapshots once
+        # when it finishes, after the part and the assembly using it are rebuilt).
+        self.paused_snapshots = 0
 
     async def discover(self):
         result = await self.session.list_tools()
@@ -82,7 +97,7 @@ class CadBridge:
                 self.artifacts.save_code(args['code'])
             if name == 'render_view':
                 args['format'] = 'png'
-                args['objects'] = args.get('objects') or 'reference_mesh'
+                args['objects'] = args.get('objects') or REFERENCE_ALIAS
                 args['save_to'] = str(self.artifacts.output_path(f'view-{uuid4().hex[:8]}.png'))
             if name == 'export':
                 validation = await self._call('validate', {'object_name': args.get('object_name', '')})
@@ -101,7 +116,7 @@ class CadBridge:
                             raise ValueError('The reference mesh cannot be overwritten')
                         args[field] = str(target)
                         break
-            if name == 'render_view' and 'reference_mesh' in args['objects']:
+            if name == 'render_view' and any(is_reference(o.strip()) for o in str(args['objects']).split(',')):
                 result = await self._render_reference(args)
             else:
                 result = await self._call(name, args)
@@ -111,7 +126,8 @@ class CadBridge:
                 except (OSError, ValueError) as exc:
                     result['isError'] = True
                     result['content'].append({'type': 'text', 'text': f'PNG render failed: {exc}'})
-            if name == 'execute' and not failed(result) and self.on_execute is not None:
+            if name == 'execute' and not failed(result) and self.on_execute is not None \
+                    and not self.paused_snapshots:
                 try:
                     await self.on_execute()
                 except Exception as exc:
@@ -122,8 +138,8 @@ class CadBridge:
 
     async def tessellate(self, object_name):
         """Write a named CAD object to a temporary STL for comparison; return its path."""
-        if object_name == 'reference_mesh':
-            raise ValueError('Compare a generated CAD object, not reference_mesh itself')
+        if is_reference(object_name):
+            raise ValueError('Compare a generated CAD object, not a reference mesh itself')
         target = self.artifacts.temp / f'compare-{uuid4().hex[:8]}.stl'
         fields = self.schemas['export'].input_schema.get('properties', {})
         field = next((f for f in ('path', 'filename', 'file_path') if f in fields), None)
@@ -172,8 +188,10 @@ class CadBridge:
             return []
 
     async def _render_reference(self, args):
-        if args['objects'] != 'reference_mesh':
-            raise ValueError('Render reference_mesh separately from generated CAD in this milestone')
+        target = args['objects'].strip()
+        if not is_reference(target):
+            raise ValueError('Render a reference mesh on its own, not together with generated CAD')
+        part = None if target == REFERENCE_ALIAS else target[len('ref_'):]
         # The CAD server's own mesh render goes through a lossy STEP round-trip,
         # so reference views use the direct STL renderer (which also slices).
         spec = {'direction': args.get('direction') or 'iso',
@@ -183,14 +201,14 @@ class CadBridge:
             if args.get('clip_at') is not None:
                 spec['slice_at'] = args['clip_at']
         self.artifacts.log('tool_call', {'name': 'render_reference', 'arguments': args})
-        result = await self.mesh.render(spec, args['save_to'])
+        result = await self.mesh.render(spec, args['save_to'], part=part)
         self.artifacts.log('tool_result', {'name': 'render_reference', **result})
         return result
 
-    async def startup(self, mesh):
+    async def startup(self, mesh, part=None):
         await self.discover()
         await self.check_health()
-        return await self.load_reference(mesh)
+        return await self.load_reference(mesh, part)
 
     async def check_health(self):
         """Version and render/export self-test (the slow part of startup, ~10 s)."""
@@ -203,13 +221,17 @@ class CadBridge:
                 if not report.get('ok'):
                     raise RuntimeError(f'CAD rendering/export dependencies failed: {report}')
 
-    async def load_reference(self, mesh):
+    async def load_reference(self, mesh, part=None):
+        """Import a reference mesh as ref_<part> (or reference_mesh without a part)."""
         # OpenCascade accepts some malformed STL files as empty shapes. Verify
         # real triangles and a usable preview before importing the reference.
-        preview = await self.call('render_view', {'objects': 'reference_mesh', 'direction': 'iso'})
+        name = reference_object(part)
+        if part and part not in self.mesh.references:
+            self.mesh.references[part] = mesh
+        preview = await self.call('render_view', {'objects': name, 'direction': 'iso'})
         if failed(preview):
-            raise RuntimeError(f'STL preview failed: {text_of(preview)}')
-        result = await self.call('import_cad_file', {'path': str(mesh), 'name': 'reference_mesh'})
+            raise RuntimeError(f'STL preview of {name} failed: {text_of(preview)}')
+        result = await self.call('import_cad_file', {'path': str(mesh), 'name': name})
         if failed(result):
             raise RuntimeError(f'STL import failed: {text_of(result)}')
         return result

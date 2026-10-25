@@ -8,47 +8,51 @@ import { Scene } from './Scene';
 export function Viewer() {
   const status = useStore((s) => s.status);
   const stage = useStore((s) => s.stage);
-  const meshFile = useStore((s) => s.meshFile);
+  const meshFiles = useStore((s) => s.meshFiles);
   const revisions = useStore((s) => s.revisions);
-  const setMesh = useStore((s) => s.setMesh);
+  const addMeshes = useStore((s) => s.addMeshes);
+  const replay = useStore((s) => s.replay);
+  const asked = useStore((s) => s.feed.some((i) => i.kind === 'user'));
   const [dragging, setDragging] = useState(false);
 
-  const hasSession = status !== 'idle';
+  // The workspace is always open; meshes can be added to it at any time.
+  const canDrop = !replay && status !== 'done' && status !== 'failed';
+  const empty = revisions.length === 0 && meshFiles.length === 0;
   const hasCad = revisions.some((r) => r.generated);
+  const engineStarting = status === 'starting' || stage === 'cad_starting' || stage === 'preparing';
 
   return (
     <section
       className="relative min-w-0 flex-1 overflow-hidden bg-sunken"
       onDragOver={(e) => {
-        if (hasSession) return;
+        if (!canDrop) return;
         e.preventDefault();
         setDragging(true);
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
-        if (hasSession) return;
+        if (!canDrop) return;
         e.preventDefault();
         setDragging(false);
-        const mesh = [...e.dataTransfer.files].find(isMeshFile);
-        if (mesh) setMesh(mesh);
+        const meshes = [...e.dataTransfer.files].filter(isMeshFile);
+        if (meshes.length) void addMeshes(meshes);
         const photos = [...e.dataTransfer.files].filter((f) => f.type.startsWith('image/'));
         if (photos.length) useStore.getState().addImages(photos);
       }}
     >
       <Scene />
 
-      {!hasSession && !meshFile && <DropZone />}
-      {!hasSession && meshFile && (
-        <Hint text={`${meshFile.name} loaded. Describe the part in the panel to start.`} />
-      )}
-      {hasSession && !hasCad && (status === 'starting' || stage === 'cad_starting' || stage === 'preparing') && (
-        <Hint text={status === 'starting' ? 'Uploading mesh…' : 'Starting the CAD engine…'} spinner />
+      {empty && !asked && !replay && <DropZone />}
+      {meshFiles.length > 0 ? (
+        <Hint text={`Adding ${meshFiles.map((f) => f.name).join(', ')} to the workspace…`} spinner />
+      ) : (
+        asked && !hasCad && engineStarting && <Hint text="Starting the CAD engine…" spinner />
       )}
 
       <div className="pointer-events-none absolute inset-x-4 top-4 flex items-start justify-between gap-4">
         <div className="pointer-events-auto">{hasCad && <ViewModeToggle />}</div>
         <div className="pointer-events-auto flex flex-wrap items-start justify-end gap-2">
-          {hasSession && <FollowControl />}
+          {(asked || replay) && <FollowControl />}
           {hasCad && <Legend />}
         </div>
       </div>
@@ -66,7 +70,7 @@ export function Viewer() {
 }
 
 function DropZone() {
-  const setMesh = useStore((s) => s.setMesh);
+  const addMeshes = useStore((s) => s.addMeshes);
   const [examples, setExamples] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -78,8 +82,9 @@ function DropZone() {
   const browse = () => {
     const input = document.createElement('input');
     input.type = 'file';
+    input.multiple = true;
     input.accept = '.stl,.obj,.ply,.glb';
-    input.onchange = () => input.files?.[0] && setMesh(input.files[0]);
+    input.onchange = () => input.files?.length && void addMeshes([...input.files]);
     input.click();
   };
 
@@ -90,16 +95,17 @@ function DropZone() {
           <path d="M12 2l9 5v10l-9 5-9-5V7z M3 7l9 5 9-5 M12 12v10" stroke="#6EE7FF" strokeWidth="1.5" strokeLinejoin="round" />
         </svg>
         <button type="button" onClick={browse} className="text-[16px] font-semibold hover:text-cad">
-          Drop a mesh to start
+          Drop meshes to start
         </button>
-        <p className="text-[12px] text-muted">.stl · .obj · .ply · .glb, or attach photos for context</p>
+        <p className="text-[12px] text-muted">.stl · .obj · .ply · .glb, one part per file</p>
+        <p className="text-[12px] text-muted">or describe a part in the panel to design it from scratch</p>
         {examples.slice(0, 2).map((name) => (
           <button
             key={name}
             type="button"
             onClick={() =>
               fetchExample(name)
-                .then(setMesh)
+                .then((file) => void addMeshes([file]))
                 .catch((e) => setError(e.message))
             }
             className="rounded-lg bg-cad/16 px-3 py-1 text-[12px] font-medium text-cad hover:bg-cad/25"
