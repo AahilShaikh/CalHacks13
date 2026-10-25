@@ -67,15 +67,20 @@ def reconstruct(captures, calibration, directory, client, progress):
     progress('rendering_blueprints')
     blueprint = directory / 'blueprints.png'
     blueprints.render_mesh_projections(metric_mesh, blueprint)
-    prompt = (agent_prompt_for(specs).replace('object_dimensions.json', 'dimensions.json') +
-              '\nThe reference mesh is ALREADY in millimeters. Do not apply the scale multiplier again. '
-              'Calibration and fit evidence are in dimensions.json. Treat internal details as estimates.\n' +
-              json.dumps(specs, separators=(',', ':')))
+    prompt = scan_agent_prompt(specs)
     (directory / 'agent_prompt.txt').write_text(prompt+'\n')
     # Keep every captured pose/mask and calibration file available for inspection.
     files = {p.name: p for p in directory.iterdir() if p.is_file()}
     return ScanResult(directory, metric_mesh, stl, dimensions, blueprint, specs, prompt,
                       unscaled_mesh=raw_mesh, files=files)
+
+
+def scan_agent_prompt(specs):
+    """What the agent is told about a finished scan whose evidence is in dimensions.json."""
+    return (agent_prompt_for(specs).replace('object_dimensions.json', 'dimensions.json') +
+            '\nThe reference mesh is ALREADY in millimeters. Do not apply the scale multiplier again. '
+            'Calibration and fit evidence are in dimensions.json. Treat internal details as estimates.\n' +
+            json.dumps(specs, separators=(',', ':')))
 
 
 def check_cancelled(cancelled):

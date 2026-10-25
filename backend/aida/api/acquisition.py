@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -214,6 +214,130 @@ async def create(request: AcquisitionRequest):
     from .server import cad_manager
     job = manager.submit(request, cad_manager)
     return {'job_id': job.id, 'status_url': f'/api/v1/acquisitions/{job.id}'}
+
+
+SCAN_VIEWS = ('front', 'left', 'back', 'right', 'blueprints')
+
+
+def _save_import(directory, mesh_name, mesh_bytes, photos, dimensions):
+    """Blocking: write a completed scan's mesh, photos and fit evidence into a job folder."""
+    import io
+    import trimesh
+    from PIL import Image, UnidentifiedImageError
+    from ..scan import blueprints
+    from ..scan.acquisition import scan_agent_prompt
+    from ..scan.pipeline import ScanResult
+    from ..scan.scaling import export_stl
+    from .cad_sessions import MESH_SUFFIXES
+
+    suffix = Path(mesh_name).suffix.lower()
+    if suffix not in MESH_SUFFIXES:
+        raise ValueError(f'{mesh_name}: the scan mesh must be one of {", ".join(sorted(MESH_SUFFIXES))}.')
+    source = directory / f'imported_mesh{suffix}'
+    source.write_bytes(mesh_bytes)
+    stl = directory / 'metric_model.stl'
+    try:
+        export_stl(source, stl)
+        extents = trimesh.load(str(stl), force='mesh').extents
+    except Exception as exc:
+        raise ValueError(f'Cannot read the scan mesh {mesh_name}: {exc}') from exc
+
+    # Photos named after a view keep it; others fill the remaining turntable views in order.
+    used, queue = set(), []
+    for name, data in photos:
+        stem = Path(name).stem.lower()
+        view = stem if stem in SCAN_VIEWS and stem not in used else None
+        used.add(view)
+        queue.append((view, name, data))
+    free = [view for view in SCAN_VIEWS[:4] if view not in used]
+    for view, name, data in queue:
+        if view is None:
+            if not free:
+                raise ValueError('Name the photos front, left, back, right and blueprints (one of each).')
+            view = free.pop(0)
+        try:
+            with Image.open(io.BytesIO(data)) as image:
+                image.convert('RGB').save(directory / f'{view}.png')
+        except (UnidentifiedImageError, OSError) as exc:
+            raise ValueError(f'{name} is not a readable image.') from exc
+
+    if dimensions is not None:
+        try:
+            specs = json.loads(dimensions)
+        except ValueError as exc:
+            raise ValueError('dimensions.json is not valid JSON.') from exc
+        if not isinstance(specs, dict) or 'bounding_box_mm' not in specs:
+            raise ValueError('dimensions.json must be the dimensions file from a turntable scan.')
+        (directory / 'dimensions.json').write_text(json.dumps(specs, indent=2)+'\n')
+        prompt = scan_agent_prompt(specs)
+    else:
+        specs = {}
+        width, depth, height = (round(float(v), 2) for v in extents)
+        prompt = ('Build a parametric CAD model of this turntable-scanned object using build123d. '
+                  f'Mesh bounding box: {width}mm (W) x {depth}mm (D) x {height}mm (H). '
+                  'The reference mesh is ALREADY in millimeters; do not scale it. Inspect the scan photos '
+                  '(front/left/back/right) and orthographic blueprints before modeling. '
+                  'Treat internal details as estimates.')
+    blueprint = directory / 'blueprints.png'
+    if not blueprint.is_file():
+        try:
+            blueprints.render_mesh_projections(stl, blueprint)
+        except Exception:
+            pass  # the scan photos still show every view
+    (directory / 'agent_prompt.txt').write_text(prompt+'\n')
+    return ScanResult(directory, stl, stl, directory / 'dimensions.json', blueprint, specs, prompt)
+
+
+@router.post('/import')
+async def import_scan(session_id: str = Form(...), mesh: UploadFile = File(...),
+                      photos: list[UploadFile] | None = File(None),
+                      dimensions: UploadFile | None = File(None)):
+    """Attach a completed turntable scan (millimeter mesh, its photos and optional dimensions.json)
+    exactly as a live scan attaches: mm units, scan photos and the scan summary for the agent."""
+    from .server import cad_manager
+    session = cad_manager.live(session_id)
+    if session is None:
+        raise HTTPException(409, 'Open the workspace before importing a scan.')
+    require_live_workspace(session)
+    if session.stage != 'idle':
+        raise HTTPException(409, 'Aida is working. Wait for it to finish, then import the scan.')
+    if any(job.status in ('queued', 'running', 'cancelling') for job in manager.jobs.values()):
+        raise HTTPException(409, 'Another turntable scan is active.')
+    photos = photos or []
+    if len(photos) > len(SCAN_VIEWS):
+        raise HTTPException(400, f'At most {len(SCAN_VIEWS)} scan photos (four views and blueprints).')
+    mesh_name = mesh.filename or 'scan.stl'
+    mesh_bytes = await mesh.read()
+    photo_data = [(photo.filename or 'photo', await photo.read()) for photo in photos]
+    dimensions_bytes = await dimensions.read() if dimensions is not None else None
+
+    identity = uuid.uuid4().hex
+    directory = session.artifacts.root / 'scans' / identity
+    directory.mkdir(parents=True)
+    job = AcquisitionJob(identity, directory, session.id, status='running', stage='importing')
+    manager.jobs[identity] = job
+    try:
+        result = await asyncio.to_thread(_save_import, directory, mesh_name, mesh_bytes,
+                                         photo_data, dimensions_bytes)
+        job.cad_specs = result.cad_specs
+        job.parts = await attach_scan(session, job, result)
+        job.status, job.stage = 'succeeded', 'mesh_attached'
+        if result.blueprint.is_file():
+            session.publish({'type': 'render', 'url': job.to_dict()['files'][result.blueprint.name]})
+    except Exception as exc:
+        job.status = job.stage = 'failed'
+        job.error = str(exc.detail) if isinstance(exc, HTTPException) else str(exc) or type(exc).__name__
+        session.publish({'type': 'notice', 'text': f'Scan import failed: {job.error}'})
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(400 if isinstance(exc, ValueError) else 500, job.error) from exc
+    finally:
+        try:
+            (directory / 'workflow.json').write_text(json.dumps(job.to_dict(), indent=2), encoding='utf-8')
+        except OSError:
+            pass
+        job.done.set()
+    return job.to_dict()
 
 
 @router.get('/{job_id}')

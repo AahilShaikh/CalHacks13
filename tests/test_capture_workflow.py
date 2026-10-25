@@ -456,3 +456,61 @@ def test_workflow_preflight_failure_prevents_turntable_capture(tmp_path,monkeypa
         yield
     with pytest.raises(ComfyError,match='AidaObjectOnlyViews'):
         run_capture_scan(tmp_path,controller=SimpleNamespace(capture_session=rig),client=client)
+
+
+def scan_files(tmp_path, *, dimensions=True, photo_names=('front','left','back','right')):
+    """Files from a completed scan folder, as a user would pick them."""
+    files = [('mesh', ('metric_model.stl', trimesh.creation.box((40,24,60)).export(file_type='stl'), 'model/stl'))]
+    for name in photo_names:
+        ok, png = cv2.imencode('.png', np.full((24,32,3), 90, np.uint8))
+        files.append(('photos', (f'{name}.png', png.tobytes(), 'image/png')))
+    if dimensions:
+        specs = {'bounding_box_mm': {'width_x': 40, 'depth_y': 24, 'height_z': 60},
+                 'registration': {'accepted': True}}
+        files.append(('dimensions', ('dimensions.json', json.dumps(specs).encode(), 'application/json')))
+    return files
+
+
+def test_imported_scan_attaches_like_a_live_scan(client, tmp_path):
+    http, manager, session = client
+    response = http.post('/api/v1/acquisitions/import', data={'session_id': session.id},
+                         files=scan_files(tmp_path))
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data['status'] == 'succeeded' and data['parts'] == ['scanned_object']
+    assert session.workspace.parts['scanned_object'].reference.is_file()
+    assert session.units == session.cad.mesh.units == 'mm'
+    assert session.images == []
+    references = next(e for e in reversed(session.events) if e['type'] == 'references')['items']
+    assert len([r for r in references if r['kind'] == 'photo']) == 5  # four views + rendered blueprints
+    assert any('ALREADY in millimeters' in m and 'dimensions.json' in m for m in session.pending)
+    assert http.get(data['files']['front.png']).content.startswith(b'\x89PNG')
+    assert any(e['type'] == 'render' for e in session.events)
+
+
+def test_imported_scan_without_dimensions_uses_mesh_size(client, tmp_path):
+    http, _, session = client
+    response = http.post('/api/v1/acquisitions/import', data={'session_id': session.id},
+                         files=scan_files(tmp_path, dimensions=False, photo_names=('IMG_1', 'IMG_2')))
+    assert response.status_code == 200, response.text
+    directory = session.artifacts.root / 'scans' / response.json()['job_id']
+    assert (directory / 'front.png').is_file() and (directory / 'left.png').is_file()
+    assert (directory / 'blueprints.png').is_file()
+    assert any('ALREADY in millimeters' in m and '40.0mm' in m for m in session.pending)
+
+
+@pytest.mark.parametrize('problem', ['busy', 'too_many_photos', 'not_a_mesh', 'bad_dimensions'])
+def test_scan_import_rejections_leave_workspace_unchanged(client, tmp_path, problem):
+    http, _, session = client
+    files = scan_files(tmp_path)
+    if problem == 'busy':
+        session.stage = 'thinking'
+    elif problem == 'too_many_photos':
+        files = scan_files(tmp_path, photo_names=('front','left','back','right','blueprints','extra'))
+    elif problem == 'not_a_mesh':
+        files[0] = ('mesh', ('notes.txt', b'hello', 'text/plain'))
+    else:
+        files[-1] = ('dimensions', ('dimensions.json', b'{"nope": 1}', 'application/json'))
+    response = http.post('/api/v1/acquisitions/import', data={'session_id': session.id}, files=files)
+    assert response.status_code in (400, 409), response.text
+    assert set(session.workspace.parts) == {'existing'}

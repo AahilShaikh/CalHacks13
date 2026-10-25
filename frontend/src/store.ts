@@ -146,6 +146,7 @@ type State = {
   renameWorkspace: (name: string) => Promise<void>;
   restoreCommit: (number: number) => Promise<void>;
   addMeshes: (files: File[]) => Promise<void>;
+  importScan: (files: File[]) => Promise<void>;
   selectPart: (part: string | null) => void;
   setUnits: (units: 'mm' | '') => void;
   stop: () => Promise<void>;
@@ -363,6 +364,27 @@ export const useStore = create<State>((set, get) => ({
       set({ error: `${added.map((f) => f.name).join(', ')} not added: ${(err as Error).message}` });
     } finally {
       done();
+    }
+  },
+
+  importScan: async (files) => {
+    const mesh = files.find(isMeshFile);
+    if (!mesh) {
+      set({ error: 'Pick the scan mesh (.stl .obj .ply .glb) along with its photos.' });
+      return;
+    }
+    const photos = files.filter((f) => f.type.startsWith('image/'));
+    const dimensions = files.find((f) => f.name.toLowerCase().endsWith('.json'));
+    set({ meshFiles: [...get().meshFiles, mesh], error: null });
+    if (opening) await opening;
+    const { sessionId } = get();
+    try {
+      if (!sessionId) throw new Error('No workspace is open.');
+      await whileOpen(() => api.importScan(sessionId, mesh, photos, dimensions));
+    } catch (err) {
+      set({ error: `Scan not imported: ${(err as Error).message}` });
+    } finally {
+      set({ meshFiles: get().meshFiles.filter((f) => f !== mesh) });
     }
   },
 

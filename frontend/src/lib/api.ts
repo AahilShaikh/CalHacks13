@@ -91,6 +91,21 @@ export async function uploadMeshes(sessionId: string, meshes: File[], units?: st
   );
 }
 
+/**
+ * Attach a completed turntable scan: its millimeter mesh, view photos and optional dimensions.json.
+ * The server treats it like a live scan (mm units, scan photos, summary for Aida's next turn).
+ */
+export async function importScan(sessionId: string, mesh: File, photos: File[], dimensions?: File) {
+  const form = new FormData();
+  form.append('session_id', sessionId);
+  form.append('mesh', mesh);
+  for (const photo of photos) form.append('photos', photo);
+  if (dimensions) form.append('dimensions', dimensions);
+  return json<{ job_id: string; parts: string[] }>(
+    await fetch('/api/v1/acquisitions/import', { method: 'POST', body: form }),
+  );
+}
+
 /** Reference photos for the agent's next turn. */
 export async function uploadImages(sessionId: string, images: File[]) {
   const form = new FormData();

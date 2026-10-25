@@ -1,4 +1,4 @@
-import { Box, ChevronRight, Plus, RotateCw, Upload } from 'lucide-react';
+import { Box, ChevronRight, FolderInput, Plus, RotateCw, Upload } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { MESH_EXTENSIONS, isMeshFile, referenceRevision, useStore } from '../store';
 import { IconButton, Spinner, cx } from './ui';
@@ -17,7 +17,7 @@ export function References() {
   const images = useStore((s) => s.images);
   const selected = useStore((s) => s.selectedPart);
   const replay = useStore((s) => s.replay);
-  const { addMeshes, addImages, selectPart } = useStore.getState();
+  const { addMeshes, addImages, importScan, selectPart } = useStore.getState();
   const canAdd = !replay;
 
   // The server's list; recordings from before it existed fall back to the scanned parts.
@@ -33,6 +33,10 @@ export function References() {
   const take = (files: File[]) => {
     if (!canAdd) return;
     const meshes = files.filter(isMeshFile);
+    if (isScanFolder(files)) {
+      void importScan(files);
+      return;
+    }
     if (meshes.length) void addMeshes(meshes);
     const photos = files.filter((f) => f.type.startsWith('image/'));
     if (photos.length) addImages(photos);
@@ -43,6 +47,15 @@ export function References() {
     input.multiple = true;
     input.accept = [...MESH_EXTENSIONS, 'image/*'].join(',');
     input.onchange = () => input.files?.length && take([...input.files]);
+    input.click();
+  };
+
+  const browseScan = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = [...MESH_EXTENSIONS, 'image/*', '.json'].join(',');
+    input.onchange = () => input.files?.length && importScan([...input.files]);
     input.click();
   };
 
@@ -111,6 +124,14 @@ export function References() {
             </li>
           ) : null)}
 
+          {canAdd && (
+            <Row
+              icon={<FolderInput size={14} strokeWidth={1.75} className="text-faint" aria-hidden />}
+              title="Import turntable scan"
+              detail="Mesh in mm, view photos, dimensions.json"
+              onClick={browseScan}
+            />
+          )}
           <Row
             icon={<RotateCw size={14} strokeWidth={1.75} className="text-faint" aria-hidden />}
             title="Scan from turntable"
@@ -199,4 +220,13 @@ function Row({ icon, title, detail, selected = false, onClick, disabled = false,
       )}
     </li>
   );
+}
+
+const SCAN_VIEWS = ['front', 'left', 'back', 'right'];
+
+/** One mesh with dimensions.json or turntable view photos: files picked from a scan folder. */
+function isScanFolder(files: File[]) {
+  const stem = (f: File) => f.name.toLowerCase().replace(/\.[^.]+$/, '');
+  return files.filter(isMeshFile).length === 1 && files.some((f) =>
+    f.name.toLowerCase() === 'dimensions.json' || (f.type.startsWith('image/') && SCAN_VIEWS.includes(stem(f))));
 }
