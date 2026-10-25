@@ -135,8 +135,8 @@ async def test_parametric_model_in_live_session(tmp_path):
     artifacts = Artifacts(tmp_path / 'sessions')
     mesh = artifacts.copy_mesh(reference)
     async with open_cad(artifacts, 'mm') as cad:
-        await cad.startup(mesh)
-        model = ParametricModel(cad, artifacts)
+        await cad.startup(mesh, 'plate')
+        model = ParametricModel(cad, artifacts, 'plate', reference=mesh)
         values = {'width': 60, 'depth': 40, 'thickness': 6, 'hole_x': 15, 'hole_y': 5, 'hole_d': 8}
         await model.set_params({name: {'value': value, 'source': 'measured', 'evidence': 'test'}
                                 for name, value in values.items()})
@@ -153,6 +153,69 @@ async def test_parametric_model_in_live_session(tmp_path):
         worse = await model.set_params({'hole_x': 20})
         assert worse['trend'] == 'worse'
         await model.undo()
-        report = json.loads(text_of(await cad.call('measure', {'object_name': 'generated_cad'})))
+        report = json.loads(text_of(await cad.call('measure', {'object_name': 'part_plate'})))
         assert report['volume'] == pytest.approx((60 * 40 - math.pi * 16) * 6, rel=1e-3)
         assert 'within_threshold' in model.report('mm')
+
+
+async def test_workspace_assembly_in_live_session(tmp_path):
+    from build123d import Box, export_stl
+    from aida.model_tools import model_tools
+    from aida.workspace import Workspace, write_workspace
+    reference = tmp_path / 'keycap.stl'
+    export_stl(Box(18, 18, 8), str(reference))
+    artifacts = Artifacts(tmp_path / 'sessions')
+    mesh = artifacts.copy_mesh(reference)
+    write_workspace(artifacts.root, [{'name': 'keycap', 'reference': mesh}])
+    async with open_cad(artifacts, 'mm') as cad:
+        await cad.startup(mesh, 'keycap')
+        snapshots = []
+
+        async def snapshot():
+            snapshots.append(len(snapshots))
+        cad.on_execute = snapshot
+        workspace = Workspace.load(cad, artifacts)
+        _, table = model_tools(cad, artifacts, workspace)
+        tools = {name: handler for name, _, _, handler in table}
+
+        def ok(response):
+            assert not response.get('isError'), response['content'][0]['text']
+            return json.loads(response['content'][0]['text'])
+
+        def assumed(value):
+            return {'value': value, 'source': 'assumed', 'evidence': 'test'}
+
+        ok(await tools['model_set_params']({'params': {
+            'width_u': assumed(1), 'pitch': assumed(19), 'gap': assumed(1), 'height': assumed(8)}}))
+        cap = ok(await tools['model_add_feature']({'name': 'body', 'evidence': 'test',
+                                                   'code': 'part = Box(P.width_u * P.pitch - P.gap, P.pitch - P.gap, P.height)'}))
+        assert cap['deviation']['verdict'] == 'within_threshold'
+        ok(await tools['workspace_add_part']({'name': 'plate', 'description': 'a plate under the keys'}))
+        ok(await tools['model_set_params']({'params': {'length': assumed(80), 'width': assumed(20),
+                                                       'thickness': assumed(1.5)}}))
+        plate = ok(await tools['model_add_feature']({'name': 'plate', 'evidence': 'test',
+                                                     'code': 'part = Box(P.length, P.width, P.thickness)'}))
+        assert plate['trend'] == 'not checked (no reference mesh)'
+        ok(await tools['assembly_set_params']({'params': {'widths': assumed([1, 1, 2]), 'pitch': assumed(19),
+                                                          'cap_z': assumed(6)}}))
+        before = len(snapshots)
+        row = ok(await tools['assembly_add_feature']({'name': 'row', 'evidence': 'test', 'code': (
+            'place("plate", Pos(0, 0, 0), name="plate")\n'
+            'x = -P.pitch * 2\n'
+            'for i, w in enumerate(P.widths):\n'
+            '    place("keycap", Pos(x + w * P.pitch / 2, 0, P.cap_z), name=f"key{i}", width_u=w)\n'
+            '    x += w * P.pitch')}))
+        assert len(snapshots) == before + 1
+        assert row['size']['instances'] == {'plate': 1, 'keycap': 3}
+        assert len(row['size']['variants']) == 3
+        key2 = next(i for i in workspace.assembly.layout['instances'] if i['id'] == 'key2')
+        assert key2['matrix'][0][3] == pytest.approx(19) and key2['matrix'][2][3] == pytest.approx(6)
+        fit = ok(await tools['assembly_check']({'a': 'key0', 'b': 'plate'}))
+        assert fit['overlap_volume'] == pytest.approx(0) and fit['min_distance'] == pytest.approx(1.25)
+        # Editing the keycap rebuilds the assembly in the same session.
+        change = ok(await tools['model_set_params']({'part': 'keycap', 'params': {'height': 9}}))
+        assert change['assembly'] == 'assembly rebuilt: 4 instances'
+        measure = json.loads(text_of(await cad.call('measure', {'object_name': 'assembly'})))
+        assert measure['bbox']['zmax'] == pytest.approx(10.5, abs=1e-3)
+        exported = await cad.call('export', {'filename': 'row.step', 'format': 'step', 'object_name': 'assembly'})
+        assert not failed(exported), text_of(exported)

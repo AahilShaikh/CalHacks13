@@ -319,8 +319,35 @@ def signed_distance_to(vtk, mesh, target):
     return output
 
 
-def render(path, output, spec=None, units=None, overlay=None, heatmap=None):
+def _add_edges(vtk, renderer, poly):
+    """Dark feature edges (sharp creases and open boundaries) so CAD faces and openings read."""
+    edges = vtk.vtkFeatureEdges()
+    edges.SetInputData(poly)
+    edges.SetFeatureAngle(25)
+    edges.BoundaryEdgesOn()
+    edges.FeatureEdgesOn()
+    edges.ManifoldEdgesOff()
+    edges.NonManifoldEdgesOff()
+    mapper = vtk.vtkPolyDataMapper()
+    mapper.SetInputConnection(edges.GetOutputPort())
+    mapper.ScalarVisibilityOff()
+    actor = vtk.vtkActor()
+    actor.SetMapper(mapper)
+    actor.GetProperty().SetColor(.15, .16, .19)
+    actor.GetProperty().LightingOff()
+    actor.GetProperty().SetLineWidth(1.5)
+    renderer.AddActor(actor)
+
+
+# Generated CAD: steel gray with a light orange section cap.
+CAD_COLOR = (.66, .71, .78)
+CAD_CAP = (.95, .62, .4)
+
+
+def render(path, output, spec=None, units=None, overlay=None, heatmap=None, style='scan'):
     """Render ``path`` to ``output`` PNG and return the camera/window metadata.
+
+    ``style='cad'`` draws a generated CAD tessellation: steel gray with its feature edges.
 
     ``overlay`` is a CAD STL drawn opaque green over a translucent reference.
     ``heatmap`` is ``{'cad': stl_path, 'range': limit}``: the reference is coloured by
@@ -357,10 +384,13 @@ def render(path, output, spec=None, units=None, overlay=None, heatmap=None):
             sampled = subdivide.GetOutput()
         reference = signed_distance_to(vtk, sampled, cad)
         lut = _deviation_lut(vtk, heatmap['range'])
-    cut = _add_surface(vtk, renderer, reference, section, (.25, .55, .85),
+    cad_style = style == 'cad' and not overlay and not heatmap
+    cut = _add_surface(vtk, renderer, reference, section, CAD_COLOR if cad_style else (.25, .55, .85),
                        opacity=.3 if overlay else 1.0,
-                       cap_color=None if overlay else (.93, .42, .3),
+                       cap_color=None if overlay else (CAD_CAP if cad_style else (.93, .42, .3)),
                        line_color=(.6, .05, .05) if overlay else (.45, .08, .04), lut=lut)
+    if cad_style and not section:
+        _add_edges(vtk, renderer, reference)
     if section and cut == 0:
         raise SpecError(f"Slice {section['label']} misses the mesh; "
                         f'mesh bounds are {list(mesh_min)} to {list(mesh_max)}')
@@ -507,6 +537,38 @@ def _annotate(output, meta, grid):
     Image.alpha_composite(base.convert('RGBA'), layer).convert('RGB').save(output, format='PNG')
 
 
+SHEET_VIEWS = ('front', 'right', 'top', 'iso')
+
+
+def render_sheet(path, output, units=None, style='scan', views=SHEET_VIEWS):
+    """Four standard views (front, right, top, iso) in one 2x2 image, each labelled, so a
+    model's openings and proportions can be checked in a single look. Returns per-view metadata."""
+    from pathlib import Path
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    output = Path(output)
+    sheet = Image.new('RGB', (WIDTH * 2, HEIGHT * 2), 'white')
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default(size=22)
+    metas = {}
+    for index, view in enumerate(views):
+        tile = output.with_name(f'{output.stem}-{view}.png')
+        metas[view] = render(path, tile, {'direction': view}, units, style=style)
+        x, y = (index % 2) * WIDTH, (index // 2) * HEIGHT
+        with Image.open(tile) as image:
+            sheet.paste(image.convert('RGB'), (x, y))
+        tile.unlink(missing_ok=True)
+        draw.rectangle([x, y, x + WIDTH - 1, y + HEIGHT - 1], outline=(200, 200, 205), width=2)
+        draw.text((x + WIDTH - 16, y + 12), view.upper(), fill=(194, 65, 12), font=font, anchor='ra')
+    sheet.save(output)
+    return {'sheet': list(views), 'layout': 'top-left front, top-right right, bottom-left top, bottom-right iso',
+            'units': units or 'unknown',
+            'views': {v: {k: m[k] for k in ('view', 'visible_width', 'visible_height', 'units_per_pixel')
+                          if k in m} for v, m in metas.items()},
+            'mesh_bounds': next(iter(metas.values()))['mesh_bounds']}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('mesh')
@@ -514,8 +576,14 @@ def main(argv=None):
     parser.add_argument('--spec', default='{}', help='JSON view options (see SPEC_KEYS)')
     parser.add_argument('--units')
     parser.add_argument('--overlay', help='CAD STL drawn over a translucent reference')
+    parser.add_argument('--style', choices=('scan', 'cad'), default='scan')
+    parser.add_argument('--sheet', action='store_true', help='front, right, top and iso views in one image')
     args = parser.parse_args(argv)
-    meta = render(args.mesh, args.output, json.loads(args.spec), args.units, overlay=args.overlay)
+    if args.sheet:
+        meta = render_sheet(args.mesh, args.output, args.units, style=args.style)
+    else:
+        meta = render(args.mesh, args.output, json.loads(args.spec), args.units, overlay=args.overlay,
+                      style=args.style)
     print(json.dumps(meta))
 
 

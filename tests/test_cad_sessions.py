@@ -3,6 +3,7 @@
 The agent runner is substituted with a stub so these tests are hermetic and
 fast; real CAD/agent runs are covered by the integration and live tests.
 """
+import io
 import json
 import time
 
@@ -132,8 +133,10 @@ def test_session_lifecycle_events_and_mesh(client, tmp_path):
     assert 'no-cache' in latest.headers['cache-control']
     assert client.get(f'/api/v1/cad-sessions/{session_id}/mesh.glb?rev=9').status_code == 404
 
-    # Session artifacts are downloadable.
-    assert client.get(f'/api/v1/cad-sessions/{session_id}/files/reference.stl').status_code == 200
+    # One mesh, one part, and session artifacts are downloadable.
+    assert data['parts'] == ['box'] and first_mesh['parts'] == ['box']
+    assert client.get(f'/api/v1/cad-sessions/{session_id}/files/parts/box/reference.stl').status_code == 200
+    assert client.get(f'/api/v1/cad-sessions/{session_id}/files/workspace.json').status_code == 200
     assert client.get(f'/api/v1/cad-sessions/{session_id}/files/..%2Fsecret').status_code == 404
 
 
@@ -169,6 +172,114 @@ def test_images_join_the_agent_prompt(client, tmp_path):
     assert 'view_image' in first_prompt(session)
 
 
+def two_boxes_bytes(speck=False):
+    import trimesh
+    meshes = [trimesh.creation.box((20, 20, 8)),
+              trimesh.creation.box((20, 20, 8)).apply_translation((40, 0, 0))]
+    if speck:
+        meshes.append(trimesh.creation.box((0.5, 0.5, 0.5)).apply_translation((0, 60, 0)))
+    return trimesh.util.concatenate(meshes).export(file_type='stl')
+
+
+def test_several_meshes_become_parts(client, tmp_path):
+    import trimesh
+    response = client.post(
+        '/api/v1/cad-sessions',
+        files=[('mesh', ('Keycap.stl', mesh_bytes(), 'model/stl')),
+               ('mesh', ('plate.stl', mesh_bytes(), 'model/stl'))],
+        data={'prompt': 'Assemble these'})
+    assert response.status_code == 202, response.text
+    assert response.json()['parts'] == ['keycap', 'plate']
+    session = server.cad_manager.get(response.json()['session_id'])
+    workspace = json.loads((session.artifacts.root / 'workspace.json').read_text())
+    assert [p['name'] for p in workspace['parts']] == ['keycap', 'plate']
+    assert workspace['parts'][1]['reference'].replace('\\', '/') == 'parts/plate/reference.stl'
+    assert 'keycap, plate' in first_prompt(session)
+    scene = trimesh.load(str(session.meshes[0]['path']))
+    assert sorted(scene.graph.nodes_geometry) == ['keycap|reference', 'plate|reference']
+
+
+def test_one_mesh_with_separate_pieces_is_split(client, tmp_path):
+    response = client.post('/api/v1/cad-sessions',
+                           files=[('mesh', ('pair.stl', two_boxes_bytes(speck=True), 'model/stl'))],
+                           data={'prompt': 'Two parts'})
+    assert response.status_code == 202, response.text
+    assert response.json()['parts'] == ['pair_1', 'pair_2']
+    session = server.cad_manager.get(response.json()['session_id'])
+    prompt = first_prompt(session)
+    assert 'ignored 1 small fragment' in prompt and '2 separate pieces' in prompt
+    events = read_events(client, session.id, stop_type='mesh')
+    assert any(e['type'] == 'notice' for e in events)
+
+
+def test_workspace_opens_empty_and_takes_meshes_later(client, seen, tmp_path):
+    import trimesh
+    from aida.api.cad_sessions import compose_turn
+
+    created = client.post('/api/v1/cad-sessions', data={'units': 'mm'})
+    assert created.status_code == 202, created.text
+    session_id = created.json()['session_id']
+    assert created.json()['parts'] == [] and created.json()['mesh_url'] is None
+    session = server.cad_manager.get(session_id)
+    assert json.loads((session.artifacts.root / 'workspace.json').read_text())['parts'] == []
+    assert session.meshes == [] and seen == []  # no prompt yet: the agent waits
+
+    added = client.post(f'/api/v1/cad-sessions/{session_id}/meshes',
+                        files=[('mesh', ('Keycap.stl', mesh_bytes(), 'model/stl'))], data={'units': 'mm'})
+    assert added.status_code == 202, added.text
+    assert added.json()['parts'] == ['keycap']
+    again = client.post(f'/api/v1/cad-sessions/{session_id}/meshes',
+                        files=[('mesh', ('keycap.stl', two_boxes_bytes(), 'model/stl'))])
+    assert again.json()['parts'] == ['keycap_1', 'keycap_2']   # split, named around the first
+    parts = json.loads((session.artifacts.root / 'workspace.json').read_text())['parts']
+    assert [p['name'] for p in parts] == ['keycap', 'keycap_1', 'keycap_2']
+    # Each upload publishes a reference revision holding every reference so far.
+    scene = trimesh.load(str(session.meshes[-1]['path']))
+    assert len(scene.graph.nodes_geometry) == 3 and not session.meshes[-1]['generated']
+
+    photo = client.post(f'/api/v1/cad-sessions/{session_id}/images',
+                        files=[('images', ('photo.png', png_bytes(tmp_path), 'image/png'))])
+    assert photo.json()['images'] == ['input-01.png']
+
+    # The agent hears about all of it on its next turn, once.
+    turn = compose_turn(session, 'Make a keyboard')
+    assert turn.endswith('Make a keyboard') and 'keycap_1, keycap_2' in turn
+    assert 'unknown' in turn and 'input-01.png' in turn
+    assert compose_turn(session, 'Next') == 'Next'
+
+    notices = [e['text'] for e in session.events if e['type'] == 'notice']
+    assert 'Added part keycap' in notices and 'Added parts keycap_1, keycap_2' in notices
+
+
+async def test_meshes_join_a_running_workspace(tmp_path):
+    import trimesh
+    from aida.api.cad_sessions import CadSession, finish_ingest, ingest_meshes
+
+    class Mesh:
+        references = {}
+
+    class LiveCad:
+        mesh = Mesh()
+        loaded = []
+
+        async def load_reference(self, path, part):
+            self.loaded.append(part)
+
+    cad = LiveCad()
+    workspace = fake_workspace(cad, tmp_path, ('plate',), built=(), reference=True)
+    session = CadSession(FakeArtifacts(tmp_path), '', 'mm')
+    added = ingest_meshes(session, [('cap.stl', mesh_bytes())], workspace.references())
+    for spec in added['specs']:
+        workspace.add_reference_part(spec['name'], spec['reference'])
+    events = finish_ingest(session, added)
+    assert sorted(workspace.parts) == ['cap', 'plate'] and cad.mesh.references['cap'].is_file()
+    assert workspace.active == 'plate'           # the agent's part stays active
+    mesh = events[-1]
+    assert mesh['type'] == 'mesh' and mesh['parts'] == ['plate', 'cap'] and mesh['revision'] == 0
+    assert sorted(trimesh.load(str(session.meshes[0]['path'])).graph.nodes_geometry) == \
+        ['cap|reference', 'plate|reference']
+
+
 def test_invalid_uploads_rejected(client, tmp_path):
     response = client.post('/api/v1/cad-sessions',
                            files=[('mesh', ('bad.stl', b'not an stl', 'model/stl'))],
@@ -181,9 +292,8 @@ def test_invalid_uploads_rejected(client, tmp_path):
                            data={'prompt': 'x', 'units': 'm'})
     assert response.status_code == 400
 
-    response = client.post('/api/v1/cad-sessions',
-                           files=[('mesh', ('box.stl', mesh_bytes(), 'model/stl'))])
-    assert response.status_code == 422
+    assert client.post('/api/v1/cad-sessions/nope/meshes',
+                       files=[('mesh', ('box.stl', mesh_bytes(), 'model/stl'))]).status_code == 404
 
     assert client.get('/api/v1/cad-sessions/nope').status_code == 404
     assert client.get('/api/v1/cad-sessions/nope/events').status_code == 404
@@ -213,29 +323,71 @@ class FakeArtifacts:
         self.root = Path(root)
 
 
+def fake_workspace(cad, root, parts=('plate',), built=('plate',), reference=False):
+    """A real Workspace whose parts look built, without running any CAD."""
+    import trimesh
+    from aida.workspace import Workspace
+
+    specs = []
+    for name in parts:
+        ref = None
+        if reference:
+            ref = root / f'{name}-reference.stl'
+            trimesh.creation.box((10, 10, 10)).export(str(ref))
+        specs.append({'name': name, 'reference': ref})
+    workspace = Workspace(cad, FakeArtifacts(root), specs)
+    for name in built:
+        workspace.parts[name].state['features'] = [{'id': 'F1', 'name': 'body'}]
+    return workspace
+
+
 async def test_snapshot_hook_meshes_generated_objects_only(tmp_path):
+    import trimesh
     from aida.api.cad_sessions import CadSession
 
     session = CadSession(FakeArtifacts(tmp_path), 'prompt', 'mm')
-    cad = FakeCad(tmp_path, {'reference_mesh': {}, 'generated_cad': {}})
-    await snapshot_hook(cad, session)()
+    cad = FakeCad(tmp_path, {'ref_plate': {}, 'part_plate': {}, 'part_spacer': {}, 'scratch': {}})
+    await snapshot_hook(cad, session, fake_workspace(cad, tmp_path, ('plate', 'spacer'), ('plate', 'spacer')))()
 
-    assert cad.exports == ['generated_cad']        # never re-mesh the reference
+    assert cad.exports == ['part_plate', 'part_spacer']   # never the reference or scratch
     assert len(session.meshes) == 1
     mesh = session.meshes[0]
-    assert mesh['generated'] and mesh['triangles'] == 12
-    assert mesh['path'].is_file()
+    assert mesh['generated'] and mesh['triangles'] == 24 and mesh['parts'] == ['plate', 'spacer']
+    assert sorted(trimesh.load(str(mesh['path'])).graph.nodes_geometry) == ['plate|plate', 'spacer|spacer']
     events = [e['type'] for e in session.events]
     assert events.count('mesh') == 1
     assert 'stage' in events
+
+
+async def test_snapshot_hook_instances_assembly_variants(tmp_path):
+    import trimesh
+    from aida.api.cad_sessions import CadSession
+
+    session = CadSession(FakeArtifacts(tmp_path), 'prompt', 'mm')
+    cad = FakeCad(tmp_path, {'part_keycap': {}, 'variant_0': {}, 'variant_1': {}, 'assembly': {}})
+    workspace = fake_workspace(cad, tmp_path, ('keycap',), ('keycap',))
+    shift = lambda x: [[1, 0, 0, x], [0, 1, 0, 0], [0, 0, 1, 0]]  # noqa: E731
+    workspace.assembly.layout = {
+        'variants': [{'name': 'variant_0', 'part': 'keycap', 'overrides': {}},
+                     {'name': 'variant_1', 'part': 'keycap', 'overrides': {'width_u': 2}}],
+        'instances': [{'id': f'key{i}', 'part': 'keycap', 'variant': 'variant_0', 'matrix': shift(19 * i)}
+                      for i in range(5)] + [{'id': 'wide', 'part': 'keycap', 'variant': 'variant_1',
+                                             'matrix': shift(200)}]}
+    await snapshot_hook(cad, session, workspace)()
+
+    assert cad.exports == ['variant_0', 'variant_1']      # each variant meshed once
+    scene = trimesh.load(str(session.meshes[0]['path']))
+    assert len(scene.geometry) == 2 and len(scene.graph.nodes_geometry) == 6
+    assert scene.graph['keycap|key4'][0][0][3] == 76
+    assert session.meshes[0]['triangles'] == 6 * 12
 
 
 async def test_snapshot_hook_skips_when_no_generated_objects(tmp_path):
     from aida.api.cad_sessions import CadSession
 
     session = CadSession(FakeArtifacts(tmp_path), 'prompt', None)
-    cad = FakeCad(tmp_path, {'reference_mesh': {}})
-    await snapshot_hook(cad, session)()
+    cad = FakeCad(tmp_path, {'ref_plate': {}})
+    await snapshot_hook(cad, session, fake_workspace(cad, tmp_path, built=()))()
 
     assert session.meshes == []
     assert any(e['type'] == 'mesh_skipped' for e in session.events)
@@ -267,7 +419,7 @@ async def test_agent_event_bridge_emits_code_and_render(tmp_path):
     assert Path(session.artifacts.root / 'view-abc.png').is_file()
 
 
-def test_viewer_shows_only_the_model_object_once_it_exists():
+def test_viewer_shows_only_the_model_object_once_it_exists(tmp_path):
     import asyncio
 
     from aida.api.cad_sessions import generated_object_names
@@ -279,11 +431,11 @@ def test_viewer_shows_only_the_model_object_once_it_exists():
         async def session_object_names(self):
             return self.names
 
-    # Before the parametric model exists, everything but the reference is shown.
-    assert asyncio.run(generated_object_names(Names(['reference_mesh', 'scratch']))) == ['scratch']
-    # Once it exists, scratch experiments stay out of the viewer.
-    assert asyncio.run(generated_object_names(
-        Names(['reference_mesh', 'scratch', 'generated_cad']))) == ['generated_cad']
+    cad = Names(['ref_plate', 'reference_mesh', 'scratch', 'variant_0'])
+    # Before any part is built, everything but references and assembly internals is shown.
+    assert asyncio.run(generated_object_names(cad, fake_workspace(cad, tmp_path, built=()))) == ['scratch']
+    # Once a part is built, scratch experiments stay out of the viewer.
+    assert asyncio.run(generated_object_names(cad, fake_workspace(cad, tmp_path))) == ['part_plate']
 
 
 def test_examples_are_listed_and_served(client):
@@ -331,24 +483,25 @@ def test_heatmap_colours_missing_red_and_extra_blue(tmp_path):
 
 
 async def test_snapshot_hook_publishes_heatmap_after_mesh(tmp_path):
-    import trimesh
     from aida.api.cad_sessions import CadSession
 
     session = CadSession(FakeArtifacts(tmp_path), 'prompt', 'mm')
-    trimesh.creation.box((60, 40, 6)).export(str(tmp_path / 'reference.stl'))
-    cad = FakeCad(tmp_path, {'reference_mesh': {}, 'generated_cad': {}})
-    await snapshot_hook(cad, session)()
+    cad = FakeCad(tmp_path, {'ref_plate': {}, 'part_plate': {}, 'part_plate_2': {}})
+    workspace = fake_workspace(cad, tmp_path, ('plate', 'plate_2'), ('plate', 'plate_2'), reference=True)
+    await snapshot_hook(cad, session, workspace)()
 
     types = [e['type'] for e in session.events]
     assert types.index('mesh') < types.index('heatmap')
-    heat = next(e for e in session.events if e['type'] == 'heatmap')
-    assert heat['revision'] == 0 and heat['url'].endswith('/heatmap.glb?rev=0')
-    assert session.meshes[0]['heatmap_path'].is_file()
+    heats = [e for e in session.events if e['type'] == 'heatmap']
+    assert [h['part'] for h in heats] == ['plate', 'plate_2']   # one per part with a reference
+    assert heats[0]['revision'] == 0 and heats[0]['url'].endswith('/heatmap.glb?rev=0&part=plate')
+    assert session.meshes[0]['heatmaps']['plate'].is_file()
+    assert cad.exports == ['part_plate', 'part_plate_2']        # reused for the heatmaps
 
 
 def test_heatmap_route_404_without_heatmap(client, tmp_path):
     session_id = start_session(client, tmp_path)['session_id']
-    assert client.get(f'/api/v1/cad-sessions/{session_id}/heatmap.glb?rev=0').status_code == 404
+    assert client.get(f'/api/v1/cad-sessions/{session_id}/heatmap.glb?rev=0&part=box').status_code == 404
 
 
 def test_real_agent_needs_api_key(tmp_path, monkeypatch):
@@ -400,22 +553,31 @@ def test_downloads(client, tmp_path):
     import trimesh
 
     session_id = start_session(client, tmp_path)['session_id']
+    client.post(f'/api/v1/cad-sessions/{session_id}/close')
+    wait_for_status(client, session_id)
     session = server.cad_manager.get(session_id)
+    del session.meshes[1:]  # the stub runner's placeholder revision
     url = f'/api/v1/cad-sessions/{session_id}/download'
     assert client.get(f'{url}/model.py').status_code == 404
     assert client.get(f'{url}/stl').status_code == 404
     assert client.get(f'{url}/zip').status_code == 404
 
-    (session.artifacts.root / 'model.py').write_text('class P:\n    width = 60\n')
+    (session.artifacts.root / 'workspace_model.py').write_text("DEFAULTS_box = {'width': 60}\n")
     script = client.get(f'{url}/model.py')
-    assert script.status_code == 200 and 'width = 60' in script.text
+    assert script.status_code == 200 and "'width': 60" in script.text
 
-    # A generated revision with its snapshot STL parts.
+    # A generated revision: its GLB scene, every instance placed, becomes one STL.
+    from aida.api.cad_sessions import IDENTITY, write_scene
     revision = len(session.meshes)
-    trimesh.creation.box((10, 10, 10)).export(str(session.artifacts.root / f'mesh-{revision:03d}-0.stl'))
-    session.meshes.append({'revision': revision, 'generated': True, 'path': session.artifacts.root / 'x.glb'})
+    glb = session.artifacts.root / f'mesh-{revision:03d}.glb'
+    moved = [row[:] for row in IDENTITY]
+    moved[0][3] = 30
+    write_scene([('v0', trimesh.creation.box((10, 10, 10)), [('box|a', IDENTITY), ('box|b', moved)])], glb)
+    session.meshes.append({'revision': revision, 'generated': True, 'path': glb})
     stl = client.get(f'{url}/stl')
-    assert stl.status_code == 200 and len(stl.content) > 84
+    assert stl.status_code == 200
+    placed = trimesh.load(io.BytesIO(stl.content), file_type='stl')
+    assert len(placed.faces) == 24 and placed.extents[0] == pytest.approx(40)
 
     # STEP needs the live CAD engine.
     assert client.get(f'{url}/step').status_code == 409
@@ -425,10 +587,14 @@ def test_downloads(client, tmp_path):
 
         async def call(self, name, args):
             assert name == 'export' and args['format'] == 'step'
+            assert args['object_name'] == 'part_box'
             (session.artifacts.root / args['filename']).write_text('ISO-10303-21;')
             return {'content': [{'type': 'text', 'text': 'ok'}]}
 
+    from aida.workspace import Workspace
     session.cad = Cad()
+    session.workspace = Workspace.load(session.cad, session.artifacts)
+    session.workspace.parts['box'].state['features'] = [{'id': 'F1', 'name': 'body'}]
     step = client.get(f'{url}/step')
     assert step.status_code == 200 and step.text.startswith('ISO-10303-21')
 

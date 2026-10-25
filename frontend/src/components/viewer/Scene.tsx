@@ -1,10 +1,11 @@
 import { Bounds, GizmoHelper, GizmoViewport, OrbitControls, useBounds } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { Suspense, useEffect, useRef } from 'react';
-import { activeFea, activeTool, generatedRevisions, referenceRevision, useStore } from '../../store';
+import { activeFea, activeTool, generatedRevisions, heatmapOf, referenceRevision, useStore } from '../../store';
 import { AgentCamera, AgentPlanes } from './AgentFocus';
 import { FeaMarkers } from './FeaMarkers';
-import { GlbModel, StlPreview } from './Models';
+import { GlbModel, MeshPreview } from './Models';
+import { Thumbnailer } from './Thumbnailer';
 
 /** Re-frame the camera when the reference geometry changes (not on every CAD revision). */
 function Refit({ token }: { token: string }) {
@@ -19,8 +20,14 @@ function Models() {
   const revisions = useStore((s) => s.revisions);
   const shownRevision = useStore((s) => s.shownRevision);
   const viewMode = useStore((s) => s.viewMode);
-  const preview = useStore((s) => s.meshPreviewUrl);
+  const previews = useStore((s) => s.meshPreviews);
+  const workspace = useStore((s) => s.workspace);
+  const selectedPart = useStore((s) => s.selectedPart);
+  const selectPart = useStore((s) => s.selectPart);
+  const hidden = useStore((s) => s.hiddenParts);
   const fea = useStore(activeFea);
+  // 'assembly' selects the assembly in the Model tab; in 3D it highlights nothing.
+  const highlighted = selectedPart === 'assembly' ? null : selectedPart;
   // Show the scan as a ghost while a slice plane is up, so the plane reads through it.
   const slicing = useStore((s) => {
     const view = activeTool(s)?.view;
@@ -40,7 +47,7 @@ function Models() {
   const side = viewMode === 'side' && reference && shown;
   const gap = side ? (reference.extents[0] || 1) * 0.65 : 0;
   // Heatmap: the scan coloured by distance to the shown revision, CAD as an outline on top.
-  const heat = viewMode === 'heatmap' ? shown?.heatmap : undefined;
+  const heat = viewMode === 'heatmap' ? heatmapOf(shown, workspace, selectedPart) : undefined;
 
   if (fea && (viewMode === 'fea-stress' || viewMode === 'fea-displacement')) {
     const deformed = viewMode === 'fea-displacement';
@@ -66,25 +73,31 @@ function Models() {
         {reference ? (
           <Suspense fallback={null}>
             {heat ? (
-              <Suspense fallback={<GlbModel url={reference.url} look="ghost" />}>
-                <GlbModel url={heat.url} look="heat" />
+              <Suspense fallback={<GlbModel hidden={hidden} url={reference.url} look="ghost" />}>
+                <GlbModel hidden={hidden} url={heat.url} look="heat" />
               </Suspense>
             ) : (
-              <GlbModel url={reference.url} look={(shown && !side) || slicing ? 'ghost' : 'solid'} x={-gap} />
+              <GlbModel hidden={hidden} url={reference.url} look={(shown && !side) || slicing ? 'ghost' : 'solid'} x={-gap} />
             )}
             <Refit token={`${reference.url}|${side ? 'side' : 'single'}`} />
           </Suspense>
         ) : (
-          preview && (
+          previews.length > 0 && (
             <Suspense fallback={null}>
-              <StlPreview url={preview} />
-              <Refit token={preview} />
+              {previews.map((preview) => (
+                <MeshPreview key={preview.url} {...preview} />
+              ))}
+              <Refit token={previews.map((p) => p.url).join('|')} />
             </Suspense>
           )
         )}
         {shown && (
-          <Suspense fallback={fallback ? <GlbModel url={fallback} look={heat ? 'outline' : 'cad'} x={gap} /> : null}>
-            <GlbModel url={shown.url} look={heat ? 'outline' : 'cad'} x={gap} />
+          <Suspense
+            fallback={
+              fallback ? <GlbModel hidden={hidden} url={fallback} look={heat ? 'outline' : 'cad'} x={gap} selected={highlighted} /> : null
+            }
+          >
+            <GlbModel hidden={hidden} url={shown.url} look={heat ? 'outline' : 'cad'} x={gap} selected={highlighted} onPick={selectPart} />
           </Suspense>
         )}
       </Bounds>
@@ -105,18 +118,25 @@ export function Scene() {
       frameloop="demand"
       dpr={[1, 2]}
       camera={{ position: [1.2, 0.9, 1.4], fov: 40, near: 0.01, far: 100000 }}
-      gl={{ antialias: true }}
+      // preserveDrawingBuffer lets the thumbnailer read the last frame.
+      gl={{ antialias: true, preserveDrawingBuffer: true }}
       className="!absolute inset-0"
+      onPointerMissed={(e) => {
+        // A click on empty space clears the part selection (not the end of an orbit drag).
+        const { selectedPart, selectPart } = useStore.getState();
+        if (selectedPart && selectedPart !== 'assembly' && e.type === 'click') selectPart(null);
+      }}
     >
-      <color attach="background" args={['#080c16']} />
-      <hemisphereLight args={['#c7d6ff', '#0b101d', 0.9]} />
-      <directionalLight position={[5, 9, 7]} intensity={1.8} />
-      <directionalLight position={[-7, 4, -5]} intensity={0.6} color="#9db4ff" />
+      <color attach="background" args={['#eef0f3']} />
+      <hemisphereLight args={['#ffffff', '#b9bec7', 1.6]} />
+      <directionalLight position={[5, 9, 7]} intensity={1.7} />
+      <directionalLight position={[-7, 4, -5]} intensity={0.55} color="#e6ebf5" />
       <Models />
+      <Thumbnailer />
       <OrbitControls makeDefault enableDamping dampingFactor={0.1} />
-      <GizmoHelper alignment="bottom-left" margin={[56, 56]}>
+      <GizmoHelper alignment="top-left" margin={[52, 100]}>
         {/* World axes relabelled to the part's Z-up frame: world Y is part Z, world Z is part -Y. */}
-        <GizmoViewport axisColors={['#f87171', '#3dadff', '#4ade80']} labels={['X', 'Z', '-Y']} labelColor="#0b101d" />
+        <GizmoViewport axisColors={['#dc2626', '#2563eb', '#15803d']} labels={['X', 'Z', '-Y']} labelColor="#ffffff" />
       </GizmoHelper>
     </Canvas>
   );

@@ -3,7 +3,7 @@ import { DEFAULT_FEA, feaNumber as n, oppositeFace, type Face, type FeaSettings 
 import { selectedRevision, useStore } from '../store';
 
 const FACES: Face[] = ['x-', 'x+', 'y-', 'y+', 'z-', 'z+'];
-const INPUT = 'w-full rounded-sm border border-line-strong bg-sunken px-2 py-1.5 font-mono text-[12px] text-ink focus:border-cad focus:outline-none';
+const INPUT = 'w-full rounded-sm border border-line-strong bg-subtle px-2 py-1.5 font-mono text-[12px] text-ink focus:border-accent focus:outline-none';
 const PRESETS = [
   { label: 'Aluminum', youngs_modulus_mpa: 69000, poisson_ratio: 0.33, yield_strength_mpa: 240 },
   { label: 'Steel', youngs_modulus_mpa: 210000, poisson_ratio: 0.3, yield_strength_mpa: 250 },
@@ -31,18 +31,18 @@ export function FeaPanel() {
   return (
     <div role="tabpanel" aria-label="FEA" className="scroll-thin flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pb-2 text-[12px]">
       <div>
-        <h2 className="text-[14px] font-semibold">Structural test <span className="font-mono text-cad">{revision === undefined ? '' : `· rev ${revision}`}</span></h2>
+        <h2 className="text-[14px] font-semibold">Structural test <span className="font-mono text-accent-ink">{revision === undefined ? '' : `· rev ${revision}`}</span></h2>
         <p className="mt-1 leading-relaxed text-muted">Clamp one end and distribute a total force over the opposite end. Test the CAD revision currently shown.</p>
       </div>
       {!ready && <p className="rounded-md bg-warn/10 p-2 text-warn">{replay ? 'FEA is available in live CAD sessions.' : revision === undefined
         ? 'Build a CAD model to enable FEA.' : 'Start a session with known mm units to calculate physical stress.'}</p>}
       <form onSubmit={(e) => { e.preventDefault(); void runFea(settings); }} className="flex flex-col gap-3">
         <fieldset disabled={busy} className="flex flex-col gap-3 disabled:opacity-60">
-          <div className="rounded-md border border-line bg-raised p-3">
+          <div className="rounded-md border border-line bg-surface p-3">
             <div className="mb-2 flex items-center justify-between"><span className="font-semibold">Material</span><span className="text-[10px] text-muted">Assumed presets · editable</span></div>
             <div className="mb-3 flex gap-1.5">
               {PRESETS.map(({ label, ...properties }) => <button key={label} type="button" onClick={() => setSettings((s) => ({ ...s, ...properties }))}
-                className="rounded-sm border border-line-strong px-2 py-1 text-muted hover:border-cad hover:text-cad">{label}</button>)}
+                className="rounded-sm border border-line-strong px-2 py-1 text-muted hover:border-accent hover:text-accent-ink">{label}</button>)}
             </div>
             <div className="grid grid-cols-2 gap-2">
               <NumberField label="Young’s modulus (MPa)" value={settings.youngs_modulus_mpa} min={1} max={1000000} onChange={(v) => update('youngs_modulus_mpa', v)} />
@@ -50,7 +50,7 @@ export function FeaPanel() {
               <NumberField label="Yield strength (MPa)" value={settings.yield_strength_mpa} min={0.000001} max={100000} onChange={(v) => update('yield_strength_mpa', v)} />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2 rounded-md border border-line bg-raised p-3">
+          <div className="grid grid-cols-2 gap-2 rounded-md border border-line bg-surface p-3">
             <label className="col-span-2 flex flex-col gap-1 text-[11px] text-muted">Analysis solver
               <select className={INPUT} value={settings.engine} onChange={(e) => update('engine', e.target.value as FeaSettings['engine'])}>
                 <option value="auto">Automatic · CAD mesh when available</option>
@@ -78,7 +78,7 @@ export function FeaPanel() {
           </div>
         </fieldset>
         <button type="submit" disabled={!ready || busy}
-          className="rounded-md bg-cad px-3 py-2 font-semibold text-base hover:bg-cad/90 disabled:cursor-not-allowed disabled:opacity-40">
+          className="rounded-md bg-accent-ink px-3 py-2 font-semibold text-white hover:bg-accent-ink-hover disabled:cursor-not-allowed disabled:opacity-40">
           {busy ? `${job?.status === 'queued' ? 'Queued' : 'Meshing & solving'} rev ${job?.revision ?? revision}…` : `Run FEA${revision === undefined ? '' : ` on rev ${revision}`}`}
         </button>
       </form>
@@ -87,9 +87,9 @@ export function FeaPanel() {
       {result && <>
         <div ref={resultsRef} className="flex items-center justify-between border-t border-line pt-3">
           <h3 className="font-semibold">Results · rev {result.revision}</h3>
-          <a href={result.report_url} download className="text-cad hover:underline">Download report ↓</a>
+          <a href={result.report_url} download className="text-accent-ink hover:underline">Download report ↓</a>
         </div>
-        <p className="text-[11px] font-medium text-cad">{result.engine === 'ngsolve' ? 'Netgen / NGSolve · CAD mesh' : 'Voxel approximation'} · {result.element_type}</p>
+        <p className="text-[11px] font-medium text-accent-ink">{result.engine === 'ngsolve' ? 'Netgen / NGSolve · CAD mesh' : 'Voxel approximation'} · {result.element_type}</p>
         <p className="text-[11px] text-muted">{n(result.settings.force_n)} N toward {result.settings.load_direction.toUpperCase()} · E {n(result.settings.youngs_modulus_mpa)} MPa · ν {result.settings.poisson_ratio}</p>
         {result.revision !== revision && <p className="rounded-sm bg-warn/10 p-2 text-warn">These results are for rev {result.revision}. The viewer is showing another revision.</p>}
         <div className="grid grid-cols-2 gap-2">
@@ -101,7 +101,7 @@ export function FeaPanel() {
         <div className="flex gap-2">
           {(['fea-stress', 'fea-displacement'] as const).map((mode) => <button key={mode} type="button"
             onClick={() => { const s = useStore.getState(); s.showRevision(result.revision); s.setViewMode(mode); s.setFollow(false); s.setFocus(null); }}
-            className="flex-1 rounded-sm border border-line-strong px-2 py-1.5 text-cad hover:bg-raised">
+            className="flex-1 rounded-sm border border-line-strong px-2 py-1.5 text-accent-ink hover:bg-subtle">
             {mode === 'fea-stress' ? 'View stress' : 'View deformation'}
           </button>)}
         </div>
@@ -125,7 +125,7 @@ function NumberField({ label, value, min, max, onChange }: { label: string; valu
 }
 
 function Metric({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) {
-  return <div className="rounded-md border border-line bg-raised p-2.5">
+  return <div className="rounded-md border border-line bg-surface p-2.5">
     <div className="text-[10px] text-muted">{label}</div><div className={`mt-1 font-mono text-[14px] ${warn ? 'text-warn' : 'text-ink'}`}>{value}</div>
   </div>;
 }

@@ -51,3 +51,20 @@ def test_render_errors(plate_stl, tmp_path):
         render(plate_stl, tmp_path / 'a.png', {'direction': 'top', 'center': [500, 0, 0], 'view_width': 5})
     with pytest.raises(SpecError, match='misses'):
         render(plate_stl, tmp_path / 'b.png', {'slice_axis': 'z', 'slice_at': 50})
+
+
+def test_sheet_shows_four_labelled_views_of_cad(tmp_path):
+    import trimesh
+    from PIL import Image
+
+    from aida.mesh_render import render_sheet
+    stl = tmp_path / 'house.stl'
+    box = trimesh.creation.box((60, 40, 20))
+    box.apply_translation((0, 0, 10))
+    box.export(str(stl))
+    out = tmp_path / 'sheet.png'
+    meta = render_sheet(stl, out, units='mm', style='cad')
+    assert meta['sheet'] == ['front', 'right', 'top', 'iso'] and set(meta['views']) == set(meta['sheet'])
+    with Image.open(out) as image:
+        assert image.size == (1600, 1200)
+    assert not list(tmp_path.glob('sheet-*.png'))  # the single views are cleaned up

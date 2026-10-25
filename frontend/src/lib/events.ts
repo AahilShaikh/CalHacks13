@@ -17,10 +17,13 @@ export type ServerEvent = Stamp &
         generated: boolean;
         triangles: number;
         extents: number[];
+        /** Parts in this revision's scene (nodes are named "<part>|<instance>"). */
+        parts?: string[];
       }
     | { type: 'mesh_skipped'; reason: string }
-    | ({ type: 'heatmap'; revision: number; url: string } & HeatScale)
-    | { type: 'heatmap_skipped'; revision: number; reason: string }
+    | ({ type: 'heatmap'; revision: number; url: string; part?: string } & HeatScale)
+    | { type: 'heatmap_skipped'; revision: number; reason: string; part?: string }
+    | { type: 'notice'; text: string }
     | { type: 'error'; message: string }
     | { type: 'status'; status: SessionStatus; error: string | null }
     | { type: 'stage'; stage: string }
@@ -36,12 +39,21 @@ export type ServerEvent = Stamp &
     | { type: 'interrupted' }
     | { type: 'user_prompt'; text: string }
     | ({ type: 'model_state' } & ModelState)
+    | ({ type: 'workspace_state' } & WorkspaceState)
+    | { type: 'references'; items: ReferenceItem[] }
+    | { type: 'version'; number: number; prompt: string; mesh_revision: number | null }
+    | { type: 'version_restored'; number: number }
   );
+
+/** Something the agent can look at: a part's scan (and the file it came from), or a photo. */
+export type ReferenceItem =
+  | { kind: 'mesh'; part: string; name: string }
+  | { kind: 'photo'; name: string; url: string };
 
 /** Colour scale of a deviation heatmap: saturates at +-range; threshold is the match tolerance. */
 export type HeatScale = { range: number; threshold: number; share_within: number; vertices: number };
 
-/** The parametric model, sent after every model_* tool call (aida/model.py snapshot()). */
+/** One parametric model (a part, or the assembly) as aida/model.py snapshot() sends it. */
 export type ModelState = {
   revision: number;
   params: Record<string, ModelParam>;
@@ -51,14 +63,30 @@ export type ModelState = {
   history: { revision: number; action: string; trend: string; deviation: DeviationBrief | null }[];
   can_undo: boolean;
 };
+export type ParamValue = number | string | ParamValue[];
 export type ModelParam = {
-  value: number | string;
+  value: ParamValue;
   source: 'measured' | 'estimated' | 'assumed';
   evidence: string;
   measured: number | null;
   note: string;
 };
 export type ModelFeature = { id: string; name: string; evidence: string; used_params: string[]; code: string };
+
+/** A part: its own parametric model, with or without a reference mesh. */
+export type PartState = ModelState & { name: string; object: string; description: string; has_reference: boolean };
+export type Variant = { name: string; part: string; overrides: Record<string, ParamValue>; count: number };
+export type AssemblyState = ModelState & {
+  instances: Record<string, number>;
+  instance_count: number;
+  variants: Variant[];
+};
+/** The whole workspace, sent after every model/workspace/assembly tool call (aida/workspace.py). */
+export type WorkspaceState = {
+  active: string | null;
+  parts: PartState[];
+  assembly: AssemblyState;
+};
 export type DeviationBrief = { verdict: string; threshold: number; p95: number; max: number; share_within: number };
 
 export type SessionStatus = 'queued' | 'running' | 'done' | 'failed';
@@ -66,12 +94,12 @@ export type SessionStatus = 'queued' | 'running' | 'done' | 'failed';
 export type Phase = 'inspect' | 'build' | 'verify';
 
 const BUILD = new Set(['execute', 'export']);
-const VERIFY = new Set(['compare_to_mesh', 'validate', 'model_report']);
+const VERIFY = new Set(['compare_to_mesh', 'validate', 'model_report', 'assembly_check', 'view_sheet']);
 
 /** Which step of the inspect -> build -> verify loop a tool belongs to. */
 export function phaseOf(tool: string): Phase {
   if (VERIFY.has(tool)) return 'verify';
-  if (BUILD.has(tool) || tool.startsWith('model_')) return 'build';
+  if (BUILD.has(tool) || /^(model|assembly|workspace)_/.test(tool)) return 'build';
   return 'inspect';
 }
 
@@ -112,6 +140,17 @@ export type Deviation = {
 };
 
 function tryJson(text: string): Record<string, any> | null {
+  // Pretty-printed results span several lines: try everything up to the last closing brace.
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try {
+      const whole = JSON.parse(text.slice(start, end + 1));
+      if (whole && typeof whole === 'object') return whole;
+    } catch {
+      /* several values, or truncated; fall back to single lines */
+    }
+  }
   // Results are often a JSON line followed by "[SEND: path]"; try each JSON-looking line.
   for (const line of text.split('\n')) {
     const trimmed = line.trim();
@@ -275,6 +314,50 @@ export function resultSummary(tool: string, text: string): string {
   const line = text
     .split('\n')
     .map((l) => l.trim())
-    .find((l) => l && !l.startsWith('[SEND:'));
+    .find((l) => l && !l.startsWith('[SEND:') && !/^[[\]{}(),]+$/.test(l));
   return (line ?? '').slice(0, 220);
+}
+
+// ------------------------------------------------------------ readable step names ---
+
+const TOOL_LABEL: Record<string, string> = {
+  execute: 'Run CAD code',
+  render_view: 'Render view',
+  view_image: 'Look at render',
+  view_sheet: 'Check four views',
+  measure: 'Measure',
+  validate: 'Validate solid',
+  export: 'Export',
+  session_state: 'Read CAD state',
+  last_error: 'Read last error',
+  version: 'Check engine version',
+  health_check: 'Check CAD engine',
+  mesh_holes: 'Find holes in scan',
+  view_mesh: 'View scan',
+  slice_mesh: 'Slice scan',
+  slice_series: 'Sweep slices',
+  compare_to_mesh: 'Compare to scan',
+  mesh_frame: 'Check scan alignment',
+  model_set_params: 'Set parameters',
+  model_add_feature: 'Add feature',
+  model_edit_feature: 'Edit feature',
+  model_undo: 'Undo change',
+  model_status: 'Read part',
+  model_report: 'Part report',
+  workspace_add_part: 'Add part',
+  workspace_set_active: 'Switch part',
+  workspace_status: 'Read workspace',
+  assembly_set_params: 'Set assembly parameters',
+  assembly_add_feature: 'Place parts',
+  assembly_edit_feature: 'Edit layout',
+  assembly_undo: 'Undo layout change',
+  assembly_check: 'Check assembly',
+};
+
+/** "slice_mesh" -> "Slice scan"; unknown tools are made readable from their name. */
+export function toolLabel(tool: string): string {
+  const bare = tool.replace(/^mcp__[^_]+__/, '');
+  if (TOOL_LABEL[bare]) return TOOL_LABEL[bare];
+  const words = bare.replaceAll('_', ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }

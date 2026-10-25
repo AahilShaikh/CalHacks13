@@ -87,7 +87,7 @@ def api(tmp_path, monkeypatch):
     manager = CadSessionManager(tmp_path / 'cad')
     monkeypatch.setattr(server, 'cad_manager', manager)
     mesh = trimesh.creation.box([40, 10, 10])
-    session = manager.create(mesh.export(file_type='stl'), 'box.stl', [], 'test', 'mm')
+    session = manager.create([('box.stl', mesh.export(file_type='stl'))], [], 'test', 'mm')
     path = session.artifacts.root / 'mesh-001.glb'
     mesh.export(path)
     session.meshes.append({'revision': 1, 'path': path, 'generated': True})

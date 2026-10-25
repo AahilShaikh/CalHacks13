@@ -1,107 +1,162 @@
-import { useEffect, useState } from 'react';
-import { PHASE_VERB } from '../lib/events';
+import { ChevronRight } from 'lucide-react';
+import { useState } from 'react';
+import { useActivity, useElapsed, type ActivityTone } from '../lib/activity';
+import { linkProps } from '../lib/router';
 import { generatedRevisions, useStore } from '../store';
 import { DownloadMenu } from './DownloadMenu';
+import { RenameField, Spinner, cx } from './ui';
 
-const CHIP = {
-  inspect: 'bg-inspect/16 text-inspect',
-  build: 'bg-build/16 text-build',
-  verify: 'bg-verify/16 text-verify',
-  idle: 'bg-muted/16 text-muted',
-  error: 'bg-error/16 text-error',
-} as const;
-const DOT = {
+const DOT: Record<ActivityTone, string> = {
   inspect: 'bg-inspect',
-  build: 'bg-build',
+  build: 'bg-accent',
   verify: 'bg-verify',
-  idle: 'bg-muted',
+  busy: 'bg-faint',
+  paused: 'bg-line-strong',
+  idle: 'bg-ok',
   error: 'bg-error',
-} as const;
-
-const STAGES: Record<string, string> = {
-  preparing: 'Preparing session',
-  cad_starting: 'Starting CAD engine',
-  agent_running: 'Thinking',
-  exporting_mesh: 'Updating preview',
-  reconnecting: 'Reconnecting',
-  idle: 'Waiting for you',
 };
 
-function useElapsed(start: number | null, end: number | null) {
-  const [now, setNow] = useState(() => Date.now() / 1000);
-  useEffect(() => {
-    if (!start || end) return;
-    const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
-    return () => clearInterval(timer);
-  }, [start, end]);
-  if (!start) return null;
-  const seconds = Math.max(0, Math.round((end ?? now) - start));
-  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+export function Logo({ size = 22 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden>
+      <rect width="32" height="32" rx="8" fill="#18181b" />
+      <path d="M9 23 16 8l7 15M11.6 18h8.8" fill="none" stroke="#f26b1d" strokeWidth="2.6" strokeLinecap="round"
+        strokeLinejoin="round" />
+    </svg>
+  );
 }
 
-/** Figma: TopBar (4:81). What the agent is doing now, plus revision, elapsed time and cost. */
+/** Workspace header: where you are, what the agent is doing, and export. */
 export function TopBar() {
-  const status = useStore((s) => s.status);
-  const stage = useStore((s) => s.stage);
-  const feed = useStore((s) => s.feed);
+  const replay = useStore((s) => s.replay);
+
+  return (
+    <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line bg-surface px-3">
+      <a {...linkProps('/')} className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-subtle" aria-label="All workspaces">
+        <Logo />
+        <span className="text-[14px] font-semibold tracking-[-0.01em]">Aida</span>
+      </a>
+      <ChevronRight size={14} className="text-line-strong" aria-hidden />
+      {replay ? <span className="truncate text-[13px] font-medium">Recorded run</span> : <WorkspaceName />}
+      {replay && (
+        <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 text-[11px] font-medium text-accent-ink">
+          Replay · {replay.speed}×
+        </span>
+      )}
+
+      <div className="flex flex-1 justify-center">
+        <StatusChip />
+      </div>
+
+      <FeaButton />
+      <DownloadMenu />
+    </header>
+  );
+}
+
+/** Opens the structural test in the right panel; pulses while an analysis runs. */
+function FeaButton() {
+  const revisions = useStore((s) => s.revisions);
+  const feaJob = useStore((s) => s.feaJob);
+  const feaStarting = useStore((s) => s.feaStarting);
+  const ready = generatedRevisions(revisions).length > 0;
+  const busy = feaStarting || feaJob?.status === 'queued' || feaJob?.status === 'running';
+  return (
+    <button
+      type="button"
+      disabled={!ready}
+      title={ready ? 'Configure a structural test of the displayed CAD revision' : 'Build a CAD model to enable FEA'}
+      onClick={() => {
+        const state = useStore.getState();
+        state.setPanelTab('fea');
+        state.setStepsOpen(true);
+      }}
+      className="flex h-7 items-center gap-1.5 rounded-md border border-accent/40 bg-accent-soft px-2.5 text-[12px] font-medium text-accent-ink hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {busy && <span className="size-1.5 animate-pulse-dot rounded-full bg-accent" aria-hidden />}
+      {busy ? 'FEA running…' : 'FEA test'}
+    </button>
+  );
+}
+
+/** The workspace's name; click to rename. Unnamed workspaces show their first prompt. */
+function WorkspaceName() {
+  const name = useStore((s) => s.workspaceName);
+  const named = useStore((s) => s.workspaceNamed);
+  const sessionId = useStore((s) => s.sessionId);
+  const rename = useStore((s) => s.renameWorkspace);
+  const [editing, setEditing] = useState(false);
+  if (editing) {
+    return (
+      <RenameField
+        className="w-64 text-[13px]"
+        initial={named ? name : ''}
+        placeholder={name || 'Untitled workspace'}
+        onDone={(text) => {
+          setEditing(false);
+          if (text) void rename(text);
+        }}
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      disabled={!sessionId}
+      onClick={() => setEditing(true)}
+      title="Rename"
+      className="min-w-0 truncate rounded-md px-1.5 py-1 text-[13px] font-medium hover:bg-subtle"
+    >
+      {name || 'Untitled workspace'}
+    </button>
+  );
+}
+
+/** The agent's current step; hover or focus for revision, time and cost. */
+function StatusChip() {
+  const activity = useActivity();
   const revisions = useStore((s) => s.revisions);
   const cost = useStore((s) => s.cost);
   const startedAt = useStore((s) => s.startedAt);
   const endedAt = useStore((s) => s.endedAt);
   const replay = useStore((s) => s.replay);
   const lastEventAt = useStore((s) => s.lastEventAt);
-  const feaJob = useStore((s) => s.feaJob);
-  const feaStarting = useStore((s) => s.feaStarting);
-  const feaBusy = feaStarting || feaJob?.status === 'queued' || feaJob?.status === 'running';
   // A replay's clock is the recorded timeline, not the wall clock.
   const elapsed = useElapsed(startedAt, endedAt ?? (replay ? lastEventAt ?? startedAt : null));
-
-  const running = feed.findLast((i) => i.kind === 'tool' && i.status === 'running');
-  let tone: keyof typeof CHIP = 'idle';
-  let activity = 'Ready';
-  if (status === 'failed') {
-    tone = 'error';
-    activity = 'Session failed';
-  } else if (status === 'done') {
-    activity = 'Session finished';
-  } else if (running?.kind === 'tool') {
-    tone = running.phase;
-    activity = `${PHASE_VERB[running.phase]} · ${running.name}`;
-  } else if (status === 'starting') {
-    activity = 'Uploading mesh';
-  } else if (stage) {
-    activity = STAGES[stage] ?? stage;
-  }
-
   const rev = generatedRevisions(revisions).length;
-  const metrics = startedAt
-    ? [`rev ${rev}`, elapsed, cost > 0 ? `$${cost.toFixed(2)}` : null].filter(Boolean).join(' · ')
-    : 'no session';
-  const live = tone !== 'idle' && tone !== 'error';
+  const details = [
+    ['Revision', rev ? String(rev) : '—'],
+    ['Session time', elapsed ?? '—'],
+    ['Agent cost', cost > 0 ? `$${cost.toFixed(2)}` : '—'],
+  ];
 
   return (
-    <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-line bg-base px-4 py-2">
-      <div className="flex size-6 items-center justify-center rounded-sm bg-cad text-[13px] font-semibold text-base">A</div>
-      <span className="text-[14px] font-semibold">Aida</span>
-      <span className="text-[13px] text-muted">CAD Studio</span>
-      <div className="flex-1" />
-      <div className={`flex items-center gap-2 rounded-lg px-3 py-1 text-[12px] font-medium ${CHIP[tone]}`}>
-        <span className={`size-1.5 rounded-full ${DOT[tone]} ${live ? 'animate-pulse-dot' : ''}`} />
-        {activity}
-      </div>
-      {replay && (
-        <span className="rounded-sm bg-cad/16 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.6px] text-cad">
-          Replay {replay.speed}×
-        </span>
-      )}
-      <span className="font-mono text-[12px] text-muted">{metrics}</span>
-      <button type="button" disabled={!rev} onClick={() => useStore.getState().setTab('fea')}
-        title={rev ? 'Configure a structural test of the displayed CAD revision' : 'Build a CAD model to enable FEA'}
-        className="flex items-center gap-1.5 rounded-sm border border-cad/40 bg-cad/10 px-3 py-1 text-[12px] font-medium text-cad hover:bg-cad/20 disabled:cursor-not-allowed disabled:opacity-40">
-        {feaBusy && <span className="size-1.5 animate-pulse-dot rounded-full bg-cad" />}
-        {feaBusy ? 'FEA running…' : 'FEA test'}
+    <div className="group relative">
+      <button
+        type="button"
+        aria-describedby="status-details"
+        className="flex h-7 items-center gap-2 rounded-full border border-line bg-surface px-3 text-[12px] font-medium text-ink hover:border-line-strong"
+      >
+        {activity.working || activity.tone === 'busy' ? (
+          <Spinner size={12} className={activity.tone === 'busy' ? 'text-faint' : 'text-accent'} />
+        ) : (
+          <span className={cx('size-1.5 rounded-full', DOT[activity.tone])} aria-hidden />
+        )}
+        <span aria-live="polite">{activity.label}</span>
+        {rev > 0 && <span className="font-mono text-[11px] text-faint">r{rev}</span>}
       </button>
-      <DownloadMenu />
-    </header>
+      <div
+        id="status-details"
+        role="tooltip"
+        className="invisible absolute left-1/2 top-full z-40 mt-2 w-48 -translate-x-1/2 rounded-lg border border-line bg-surface p-2 opacity-0 shadow-pop transition-opacity group-focus-within:visible group-focus-within:opacity-100 group-hover:visible group-hover:opacity-100"
+      >
+        {details.map(([label, value]) => (
+          <div key={label} className="flex items-center justify-between px-1 py-1 text-[12px]">
+            <span className="text-muted">{label}</span>
+            <span className="font-mono text-ink">{value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

@@ -18,6 +18,18 @@ class Artifacts:
         self.temp.mkdir()
         self.counter = 0
 
+    @classmethod
+    def open(cls, root: Path) -> 'Artifacts':
+        """An existing session folder (a reopened workspace); nothing is created or cleared."""
+        self = cls.__new__(cls)
+        self.root = Path(root).resolve()
+        if not self.root.is_dir():
+            raise FileNotFoundError(f'No session folder {self.root}')
+        self.temp = self.root / 'server-output'
+        self.temp.mkdir(exist_ok=True)
+        self.counter = len(list(self.root.glob('code-*.py')))
+        return self
+
     def log(self, event: str, value):
         def redact(item):
             if isinstance(item, dict):

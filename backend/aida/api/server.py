@@ -32,8 +32,10 @@ from ..scan.comfy import ComfyClient, ComfyConfig
 from ..scan.pipeline import run_scan
 from .cad_sessions import CadSessionManager, router as cad_sessions_router
 from .fea import router as fea_router
-from .replays import router as replays_router
 from .jobs import JobManager
+from .replays import router as replays_router
+from .versions import router as versions_router
+from .workspaces import router as workspaces_router
 from .turntable import router as turntable_router
 from .camera import router as camera_router
 from .acquisition import router as acquisition_router
@@ -60,6 +62,8 @@ async def lifespan(_app):
         result = await asyncio.to_thread(turntable_service.initialize_zero)
         logging.getLogger(__name__).log(logging.WARNING if result['status'] == 'failed' else logging.INFO,
                                        'Turntable startup zero: %s', result)
+    # Workspaces nobody watches free their CAD engine; they reopen from disk.
+    cad_manager.start_reaper()
     yield
     await cad_manager.shutdown()
 
@@ -165,20 +169,31 @@ def get_scan_file(job_id: str, filename: str):
 
 app.include_router(cad_sessions_router)
 app.include_router(fea_router)
-app.include_router(replays_router)
 app.include_router(turntable_router)
 app.include_router(camera_router)
 app.include_router(acquisition_router)
+app.include_router(replays_router)
+app.include_router(workspaces_router)
+app.include_router(versions_router)
+# The scanner setup page stays reachable when the built studio serves the root.
 @app.get('/setup.html', include_in_schema=False)
 def scanner_setup():
     return FileResponse(WEB_DIR / 'setup.html')
 
 
-# Serve the studio with its FEA controls when built, keeping scanner setup and
-# the original viewer accessible. API routes must precede these static mounts.
-app.mount('/legacy', StaticFiles(directory=WEB_DIR, html=True), name='legacy')
-app.mount('/', StaticFiles(directory=FRONTEND_DIST if (FRONTEND_DIST / 'index.html').is_file()
-                          else WEB_DIR, html=True), name='web')
+# The web UI is mounted last so API routes match first.
+if (FRONTEND_DIST / 'index.html').is_file():
+    # The app's own pages (a workspace, a replay) all load index.html; the app routes them.
+    @app.get('/w/{workspace_id}', include_in_schema=False)
+    @app.get('/replay/{replay_id}', include_in_schema=False)
+    def app_page(workspace_id: str = '', replay_id: str = ''):
+        return FileResponse(FRONTEND_DIST / 'index.html')
+
+    # The original single-file viewer is kept alongside the studio.
+    app.mount('/legacy', StaticFiles(directory=WEB_DIR, html=True), name='legacy-web')
+    app.mount('/', StaticFiles(directory=FRONTEND_DIST, html=True), name='web')
+else:
+    app.mount('/', StaticFiles(directory=WEB_DIR, html=True), name='web')
 
 
 def main():

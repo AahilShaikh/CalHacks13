@@ -1,11 +1,15 @@
-"""A parametric model rebuilt from scratch on every change.
+"""A parametric part rebuilt from scratch on every change.
 
-The model is a list of named parameters (each with its source and evidence)
-and an ordered list of feature code blocks. Every change regenerates one
-build123d script, runs it in the CAD session as ``generated_cad``, and checks
-the result against the reference mesh. Failed builds are rolled back, and every
-successful revision can be undone, so the agent never has to repair a half-built
-session by hand.
+A part is a list of named parameters (each with its source and evidence) and an
+ordered list of feature code blocks. Every change regenerates one build123d
+script, runs it in the CAD session as ``part_<name>``, and, when the part has a
+reference mesh, checks the result against it. Failed builds are rolled back, and
+every successful revision can be undone, so the agent never has to repair a
+half-built session by hand.
+
+The script defines ``build_<name>(**overrides)`` and registers it in the CAD
+session's ``PARTS`` table, so an assembly can build variants of the part with
+some parameters changed (a 2.25u keycap from a 1u keycap).
 """
 import ast
 import copy
@@ -16,7 +20,6 @@ import textwrap
 
 from .cad import failed, text_of
 
-OBJECT = 'generated_cad'
 SOURCES = ('measured', 'estimated', 'assumed')
 INDENT = '    '
 # Literals that are arithmetic, not dimensions (halving a diameter, doubling a depth).
@@ -32,10 +35,27 @@ def _empty_state():
             'deviation': None, 'history': []}
 
 
-def _check_name(name):
+def object_name(part):
+    """The CAD session object a part is shown as."""
+    return f'part_{part}'
+
+
+def _check_name(name, what='Parameter name'):
     if not isinstance(name, str) or not name.isidentifier() or keyword.iskeyword(name) \
             or name.startswith('_'):
-        raise ModelError(f'Parameter name {name!r} must be a Python identifier not starting with _')
+        raise ModelError(f'{what} {name!r} must be a Python identifier not starting with _')
+
+
+def _check_value(name, value):
+    """Numbers, strings, and lists of them (a keyboard row of key widths)."""
+    if isinstance(value, list):
+        for item in value:
+            _check_value(name, item)
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ModelError(f'Parameter {name} must be a number, string or list, not {type(value).__name__}')
+    if isinstance(value, float) and value != value:
+        raise ModelError(f'Parameter {name} is NaN')
 
 
 def _param_entry(name, raw, previous=None):
@@ -53,10 +73,7 @@ def _param_entry(name, raw, previous=None):
         value = raw.get('value', entry.get('value'))
     else:
         value = raw
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        raise ModelError(f'Parameter {name} must be a number or string, not {type(value).__name__}')
-    if isinstance(value, float) and value != value:
-        raise ModelError(f'Parameter {name} is NaN')
+    _check_value(name, value)
     if entry['source'] not in SOURCES:
         raise ModelError(f'Parameter {name}: source must be one of {SOURCES}')
     if entry['measured'] is not None and not isinstance(entry['measured'], (int, float)):
@@ -65,7 +82,7 @@ def _param_entry(name, raw, previous=None):
     return entry
 
 
-def check_feature_code(code, first):
+def check_feature_code(code, first, show_name='the part'):
     """Reject feature code that cannot sit inside build(); return its used P.names."""
     if not isinstance(code, str) or not code.strip():
         raise ModelError('Feature code is empty')
@@ -83,7 +100,7 @@ def check_feature_code(code, first):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             raise ModelError('Feature code must not import; build123d is already imported')
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'show':
-            raise ModelError('Feature code must not call show(); the model shows generated_cad itself')
+            raise ModelError(f'Feature code must not call show(); the model shows {show_name} itself')
         if isinstance(node, ast.Name) and node.id == 'part' and isinstance(node.ctx, ast.Store):
             assigns_part = True
     if first and not assigns_part:
@@ -100,30 +117,51 @@ def check_feature_code(code, first):
     return code.rstrip('\n'), used
 
 
-def generate_script(state):
-    """Return (script, {feature_id: (first_line, last_line)}) for the model state."""
-    lines = ['from build123d import *', '', '', 'class P:', f'{INDENT}"""Model parameters."""']
+def _defaults_lines(state, defaults):
+    lines = [f'{defaults} = {{']
     for name, entry in state['params'].items():
         comment = f"  # {entry['source']}" + (f": {entry['evidence']}" if entry['evidence'] else '')
-        lines.append(f"{INDENT}{name} = {entry['value']!r}{comment}".replace('\n', ' '))
-    if not state['params']:
-        lines.append(f'{INDENT}pass')
-    lines += ['', '', 'def build():', f'{INDENT}part = None']
+        lines.append(f"{INDENT}{name!r}: {entry['value']!r},{comment}".replace('\n', ' '))
+    return lines + ['}']
+
+
+def _feature_lines(state, lines, indent=INDENT):
+    """Append each feature's code to ``lines``; return {feature_id: (first_line, last_line)}."""
     spans = {}
     for feature in state['features']:
-        header = f"{INDENT}# {feature['id']} {feature['name']}"
+        header = f"{indent}# {feature['id']} {feature['name']}"
         if feature['evidence']:
             header += f" | evidence: {feature['evidence']}".replace('\n', ' ')
         lines.append(header)
         start = len(lines) + 1
-        lines += [INDENT + line if line.strip() else '' for line in feature['code'].splitlines()]
+        lines += [indent + line if line.strip() else '' for line in feature['code'].splitlines()]
         spans[feature['id']] = (start, len(lines))
+    return spans
+
+
+PARTS_TABLE = ['try:', f'{INDENT}PARTS', 'except NameError:', f'{INDENT}PARTS = {{}}']
+
+
+def generate_script(state, name='part', description=''):
+    """Return (script, {feature_id: (first_line, last_line)}) for a part's state."""
+    defaults = f'DEFAULTS_{name}'
+    lines = ['from build123d import *', '', '']
+    lines += _defaults_lines(state, defaults)
+    doc = f'{name}: {description}' if description else name
+    lines += ['', '', f'def build_{name}(**overrides):', f'{INDENT}{doc!r}',
+              f'{INDENT}unknown = sorted(set(overrides) - set({defaults}))',
+              f'{INDENT}if unknown:',
+              f"{INDENT * 2}raise ValueError(f'{name} has no parameters {{unknown}}')",
+              f"{INDENT}P = type('P', (), {{**{defaults}, **overrides}})",
+              f'{INDENT}part = None']
+    spans = _feature_lines(state, lines)
     if state['placement']:
         lines.append(f"{INDENT}part = ({state['placement']}) * part")
-    lines += [f'{INDENT}return part', '', '', 'part = build()',
+    lines += [f'{INDENT}return part', '', '', *PARTS_TABLE, f'PARTS[{name!r}] = build_{name}',
+              f'part = build_{name}()',
               "if part is None or not hasattr(part, 'volume'):",
-              f"{INDENT}raise ValueError('build() left no solid in part')",
-              f'show(part, "{OBJECT}")', '']
+              f"{INDENT}raise ValueError('build_{name}() left no solid in part')",
+              f'show(part, "{object_name(name)}")', '']
     return '\n'.join(lines), spans
 
 
@@ -169,20 +207,72 @@ def check_placement(placement):
 
 
 class ParametricModel:
-    def __init__(self, cad, artifacts):
+    """One part. ``reference`` is its mesh (an STL path) or None for a part designed
+    from scratch, which is built but never checked against a mesh."""
+
+    # The first feature must create ``part``; the assembly has no such rule.
+    requires_part = True
+    tool_prefix = 'model'
+    unchecked = 'not checked (no reference mesh)'
+
+    def __init__(self, cad, artifacts, name='part', reference=None, description=''):
+        _check_name(name, 'Part name')
         self.cad = cad
         self.artifacts = artifacts
+        self.name = name
+        self.reference = reference
+        self.description = description
+        self.object = object_name(name)
         self.state = _empty_state()
         self.undo_stack = []
+        self.last_output = ''
+        # Called with no arguments after every saved revision (the workspace
+        # rewrites its combined script then).
+        self.on_saved = None
+
+    @property
+    def folder(self):
+        return self.artifacts.root / 'parts' / self.name
+
+    def script(self):
+        return generate_script(self.state, self.name, self.description)
 
     # ---------------------------------------------------------- persistence
 
     def _save(self, script):
-        (self.artifacts.root / 'model.py').write_text(script, encoding='utf-8')
-        (self.artifacts.root / 'model.json').write_text(json.dumps(self.state, indent=2), encoding='utf-8')
-        history = self.artifacts.root / 'model-history'
-        history.mkdir(exist_ok=True)
+        folder = self.folder
+        history = folder / 'model-history'
+        history.mkdir(parents=True, exist_ok=True)
+        (folder / 'model.py').write_text(script, encoding='utf-8')
+        (folder / 'model.json').write_text(json.dumps(self.state, indent=2), encoding='utf-8')
         (history / f"model-r{self.state['revision']:03}.py").write_text(script, encoding='utf-8')
+        if self.on_saved is not None:
+            self.on_saved()
+
+    def load_saved(self):
+        """Take the state saved in model.json by an earlier session, if any. True when loaded.
+        The undo stack is not saved, so a reopened part starts with nothing to undo."""
+        path = self.folder / 'model.json'
+        if not path.is_file():
+            return False
+        try:
+            state = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(state, dict) or not isinstance(state.get('features'), list):
+            return False
+        self.state = {**_empty_state(), **state}
+        return True
+
+    async def restore(self):
+        """Rebuild a loaded part in the CAD engine (no new revision). None, or why it failed."""
+        if not self.state['features']:
+            return None
+        try:
+            await self._build()
+        except Exception as exc:
+            return f'{self.name} could not be rebuilt: {str(exc)[:400]}'
+        return None
 
     # ---------------------------------------------------------- building
 
@@ -205,14 +295,15 @@ class ParametricModel:
         return None
 
     async def _build(self):
-        script, spans = generate_script(self.state)
+        script, spans = self.script()
         result = await self.cad.call('execute', {'code': script})
+        self.last_output = text_of(result)
         if failed(result):
             culprit = await self._feature_at(spans, result)
             names = {f['id']: f['name'] for f in self.state['features']}
             where = f"in {culprit} ({names[culprit]})" if culprit else 'in the generated script'
             raise ModelError(f'Build failed {where}: {text_of(result).strip()[:1500]}')
-        measure = await self.cad.call('measure', {'object_name': OBJECT})
+        measure = await self.cad.call('measure', {'object_name': self.object})
         try:
             report = json.loads(text_of(measure))
             size = {'volume': report.get('volume'), 'bbox': report.get('bbox')}
@@ -221,7 +312,7 @@ class ParametricModel:
         return script, size
 
     async def _verify(self, samples):
-        stats = await self.cad.mesh.stats(OBJECT, samples)
+        stats = await self.cad.mesh.stats(self.object, samples, reference=self.reference)
         return deviation_summary(stats)
 
     async def _commit(self, action, mutate, verify=True, samples=8000):
@@ -232,13 +323,15 @@ class ParametricModel:
             if self.state['features']:
                 script, size = await self._build()
             else:  # parameters only: nothing to build or check yet
-                script, size, verify = generate_script(self.state)[0], None, False
+                script, size, verify = self.script()[0], None, False
         except Exception:
             self.state = previous
             raise
         self.state['revision'] += 1
         before = previous['deviation']
         deviation, change = None, 'not checked'
+        if self.reference is None:
+            verify, change = False, self.unchecked
         if verify:
             try:
                 deviation = await self._verify(samples)
@@ -252,11 +345,11 @@ class ParametricModel:
         self._save(script)
         self.artifacts.log('model_revision', {'revision': self.state['revision'], 'action': action,
                                               'trend': change})
-        out = {'revision': self.state['revision'], 'action': action, 'size': size,
+        out = {'part': self.name, 'revision': self.state['revision'], 'action': action, 'size': size,
                'deviation': deviation, 'trend': change,
                'features': [f"{f['id']} {f['name']}" for f in self.state['features']]}
         if change == 'worse':
-            out['hint'] = 'Deviation got worse; model_undo reverts this revision.'
+            out['hint'] = f'Deviation got worse; {self.tool_prefix}_undo reverts this revision.'
         return out
 
     # ---------------------------------------------------------- operations
@@ -293,7 +386,8 @@ class ParametricModel:
         if not isinstance(evidence, str) or not evidence.strip():
             raise ModelError('Give evidence: which slice, series, frame or view this feature comes from')
         features = self.state['features']
-        code, used = check_feature_code(code, first=not features or (before is not None and before == features[0]['id']))
+        first = not features or (before is not None and before == features[0]['id'])
+        code, used = check_feature_code(code, first=first and self.requires_part, show_name=self.object)
         missing = sorted(set(used) - set(self.state['params']))
         if missing:
             raise ModelError(f'Feature uses undefined parameters {missing}; add them with model_set_params')
@@ -320,10 +414,12 @@ class ParametricModel:
             if len(ids) == 1:
                 raise ModelError('Cannot remove the only feature')
             if index == 0:
-                check_feature_code(self.state['features'][1]['code'], first=True)
+                check_feature_code(self.state['features'][1]['code'], first=self.requires_part,
+                                   show_name=self.object)
         used = None
         if code is not None:
-            code, used = check_feature_code(code, first=index == 0)
+            code, used = check_feature_code(code, first=index == 0 and self.requires_part,
+                                            show_name=self.object)
             missing = sorted(set(used) - set(self.state['params']))
             if missing:
                 raise ModelError(f'Feature uses undefined parameters {missing}')
@@ -352,7 +448,7 @@ class ParametricModel:
             if self.state['features']:
                 script, size = await self._build()
             else:
-                script, size = generate_script(self.state)[0], None
+                script, size = self.script()[0], None
         except Exception:
             self.undo_stack.append(self.state)
             self.state = current
@@ -361,9 +457,10 @@ class ParametricModel:
             {'revision': self.state['revision'], 'action': f"undo to revision {self.state['revision']}",
              'deviation': self.state['deviation'], 'trend': 'restored'}]
         self._save(script)
-        return {'revision': self.state['revision'], 'size': size, 'deviation': self.state['deviation'],
+        return {'part': self.name, 'revision': self.state['revision'], 'size': size,
+                'deviation': self.state['deviation'],
                 'features': [f"{f['id']} {f['name']}" for f in self.state['features']],
-                'note': 'generated_cad was rebuilt from the restored script.'}
+                'note': f'{self.object} was rebuilt from the restored script.'}
 
     def snapshot(self):
         """Compact state for the UI's model panel: parameters with provenance, features in
@@ -376,6 +473,10 @@ class ParametricModel:
             return {k: deviation.get(k) for k in ('verdict', 'threshold', 'p95', 'max', 'share_within')}
 
         return {
+            'name': self.name,
+            'object': self.object,
+            'description': self.description,
+            'has_reference': self.reference is not None,
             'revision': state['revision'],
             'params': {name: {k: entry.get(k) for k in ('value', 'source', 'evidence', 'measured', 'note')}
                        for name, entry in state['params'].items()},
@@ -389,8 +490,9 @@ class ParametricModel:
         }
 
     def status(self):
-        script, _ = generate_script(self.state)
-        return {'revision': self.state['revision'], 'params': self.state['params'],
+        script, _ = self.script()
+        return {'part': self.name, 'object': self.object, 'has_reference': self.reference is not None,
+                'revision': self.state['revision'], 'params': self.state['params'],
                 'features': [{k: f[k] for k in ('id', 'name', 'evidence', 'used_params')}
                              for f in self.state['features']],
                 'placement': self.state['placement'], 'deviation': self.state['deviation'],
@@ -399,10 +501,10 @@ class ParametricModel:
     # ---------------------------------------------------------- report
 
     def report(self, units=None):
-        """Write report.md beside model.py and return its text."""
+        """Write report.md beside the part's model.py and return its text."""
         unit = units or 'model units'
         state = self.state
-        lines = [f"# Reconstruction report (revision {state['revision']})", '']
+        lines = [f"# {self.name}: report (revision {state['revision']})", '']
         deviation = state['deviation']
         if deviation:
             lines += [f"**Verdict: {deviation['verdict']}** at threshold {deviation['threshold']:.3g} {unit}. "
@@ -417,6 +519,8 @@ class ParametricModel:
                     lines.append(f"- {region['kind'].replace('_', ' ')} near ({center}), "
                                  f"up to {region['max_deviation']:.3g} {unit}")
                 lines.append('')
+        elif self.reference is None:
+            lines += ['Designed without a reference mesh, so there is no deviation check.', '']
         else:
             lines += ['The current revision has not been checked against the mesh.', '']
         lines += ['## Parameters', '', f'| Name | Value ({unit}) | Source | Measured | Evidence |',
@@ -438,7 +542,8 @@ class ParametricModel:
             p95 = f"{d['p95']:.3g}" if d else ''
             within = f"{d['share_within']:.0%}" if d else ''
             lines.append(f"| {entry['revision']} | {entry['action']} | {p95} | {within} | {entry['trend']} |")
-        lines += ['', 'The model script is model.py in this session folder.', '']
+        lines += ['', f'The model script is parts/{self.name}/model.py in this session folder.', '']
         text = '\n'.join(lines)
-        (self.artifacts.root / 'report.md').write_text(text, encoding='utf-8')
+        self.folder.mkdir(parents=True, exist_ok=True)
+        (self.folder / 'report.md').write_text(text, encoding='utf-8')
         return text

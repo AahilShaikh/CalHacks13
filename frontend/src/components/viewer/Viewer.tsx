@@ -1,73 +1,77 @@
+import { Box, Upload } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { fetchExample, listExamples } from '../../lib/api';
 import { activeFea, isMeshFile, useStore } from '../../store';
-import { FollowControl, Legend, RevisionScrubber, ViewModeToggle } from './Controls';
+import { AgentDock } from '../AgentDock';
+import { Button } from '../ui';
+import { FollowControl, Legend, RevisionCard, ViewModeToggle } from './Controls';
 import { Scene } from './Scene';
 
-/** Figma: "Viewer" in Screen / 1 Empty (7:7) and Screen / 2 Running (7:58). */
+/** The 3D viewer fills the centre; controls float over it and the agent dock sits at the bottom. */
 export function Viewer() {
-  const status = useStore((s) => s.status);
-  const stage = useStore((s) => s.stage);
-  const meshFile = useStore((s) => s.meshFile);
+  const meshFiles = useStore((s) => s.meshFiles);
   const revisions = useStore((s) => s.revisions);
-  const setMesh = useStore((s) => s.setMesh);
+  const addMeshes = useStore((s) => s.addMeshes);
+  const replay = useStore((s) => s.replay);
+  const asked = useStore((s) => s.feed.some((i) => i.kind === 'user'));
   const analysisView = useStore((s) => Boolean(activeFea(s)) && s.viewMode.startsWith('fea-'));
   const [dragging, setDragging] = useState(false);
 
-  const hasSession = status !== 'idle';
+  // The workspace is always open; meshes can be added to it at any time.
+  const canDrop = !replay;
+  const empty = revisions.length === 0 && meshFiles.length === 0;
   const hasCad = revisions.some((r) => r.generated);
 
   return (
     <section
-      className="relative min-w-0 flex-1 overflow-hidden bg-sunken"
+      aria-label="3D view"
+      className="relative min-w-0 flex-1 overflow-hidden bg-[#eef0f3]"
       onDragOver={(e) => {
-        if (hasSession) return;
+        if (!canDrop) return;
         e.preventDefault();
         setDragging(true);
       }}
-      onDragLeave={() => setDragging(false)}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false);
+      }}
       onDrop={(e) => {
-        if (hasSession) return;
+        if (!canDrop) return;
         e.preventDefault();
         setDragging(false);
-        const mesh = [...e.dataTransfer.files].find(isMeshFile);
-        if (mesh) setMesh(mesh);
+        const meshes = [...e.dataTransfer.files].filter(isMeshFile);
+        if (meshes.length) void addMeshes(meshes);
         const photos = [...e.dataTransfer.files].filter((f) => f.type.startsWith('image/'));
         if (photos.length) useStore.getState().addImages(photos);
       }}
     >
       <Scene />
 
-      {!hasSession && !meshFile && <DropZone />}
-      {!hasSession && meshFile && (
-        <Hint text={`${meshFile.name} loaded. Describe the part in the panel to start.`} />
-      )}
-      {hasSession && !hasCad && (status === 'starting' || stage === 'cad_starting' || stage === 'preparing') && (
-        <Hint text={status === 'starting' ? 'Uploading mesh…' : 'Starting the CAD engine…'} spinner />
-      )}
+      {empty && !asked && !replay && <EmptyState />}
 
-      <div className="pointer-events-none absolute inset-x-4 top-4 flex flex-wrap items-start justify-between gap-3">
+      <div className="pointer-events-none absolute inset-x-3 top-3 z-10 flex items-start justify-between gap-3">
         <div className="pointer-events-auto">{hasCad && <ViewModeToggle />}</div>
-        <div className="pointer-events-auto flex flex-wrap items-start justify-end gap-2">
-          {hasSession && !analysisView && <FollowControl />}
+        <div className="pointer-events-auto flex flex-col items-end gap-2">
+          {(asked || replay) && !analysisView && <FollowControl />}
+          <RevisionCard />
           {hasCad && <Legend />}
         </div>
       </div>
-      <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center">
-        <div className="pointer-events-auto contents">
-          <RevisionScrubber />
-        </div>
-      </div>
+
+      <AgentDock />
 
       {dragging && (
-        <div className="pointer-events-none absolute inset-3 rounded-lg border-2 border-dashed border-cad/70 bg-cad/5" />
+        <div className="pointer-events-none absolute inset-3 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-accent bg-accent-soft/40">
+          <span className="rounded-full bg-surface px-3 py-1.5 text-[13px] font-medium text-accent-ink shadow-float">
+            Drop to add as references
+          </span>
+        </div>
       )}
     </section>
   );
 }
 
-function DropZone() {
-  const setMesh = useStore((s) => s.setMesh);
+function EmptyState() {
+  const addMeshes = useStore((s) => s.addMeshes);
   const [examples, setExamples] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -79,47 +83,35 @@ function DropZone() {
   const browse = () => {
     const input = document.createElement('input');
     input.type = 'file';
+    input.multiple = true;
     input.accept = '.stl,.obj,.ply,.glb';
-    input.onchange = () => input.files?.[0] && setMesh(input.files[0]);
+    input.onchange = () => input.files?.length && void addMeshes([...input.files]);
     input.click();
   };
 
   return (
-    <div className="absolute inset-0 flex items-center justify-center">
-      <div className="flex h-60 w-[440px] flex-col items-center justify-center gap-3 rounded-lg border-[1.5px] border-dashed border-line-strong bg-raised">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden>
-          <path d="M12 2l9 5v10l-9 5-9-5V7z M3 7l9 5 9-5 M12 12v10" stroke="#6EE7FF" strokeWidth="1.5" strokeLinejoin="round" />
-        </svg>
-        <button type="button" onClick={browse} className="text-[16px] font-semibold hover:text-cad">
-          Drop a mesh to start
-        </button>
-        <p className="text-[12px] text-muted">.stl · .obj · .ply · .glb, or attach photos for context</p>
-        {examples.slice(0, 2).map((name) => (
-          <button
-            key={name}
-            type="button"
-            onClick={() =>
-              fetchExample(name)
-                .then(setMesh)
-                .catch((e) => setError(e.message))
-            }
-            className="rounded-lg bg-cad/16 px-3 py-1 text-[12px] font-medium text-cad hover:bg-cad/25"
-          >
-            Try the example part: {name}
-          </button>
-        ))}
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center pb-28">
+      <div className="pointer-events-auto flex w-[400px] max-w-[calc(100%-32px)] flex-col items-center gap-4 text-center">
+        <div className="flex size-11 items-center justify-center rounded-xl border border-line bg-surface shadow-float">
+          <Box size={20} strokeWidth={1.5} className="text-accent" aria-hidden />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <h2 className="text-[17px] font-semibold tracking-[-0.01em]">Start from a scan, or from a sentence</h2>
+          <p className="text-[13px] leading-[1.5] text-muted">
+            Drop .stl, .obj, .ply or .glb files anywhere here and Aida rebuilds each one as a parametric part.
+            Or describe a part below and Aida designs it.
+          </p>
+        </div>
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button icon={Upload} onClick={browse}>Add scans</Button>
+          {examples.slice(0, 1).map((name) => (
+            <Button key={name} variant="ghost"
+              onClick={() => fetchExample(name).then((file) => void addMeshes([file])).catch((e) => setError(e.message))}>
+              Try an example: {name}
+            </Button>
+          ))}
+        </div>
         {error && <p className="text-[12px] text-error">{error}</p>}
-      </div>
-    </div>
-  );
-}
-
-function Hint({ text, spinner = false }: { text: string; spinner?: boolean }) {
-  return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center">
-      <div className="flex items-center gap-2 rounded-lg border border-line bg-raised/90 px-3 py-1.5 text-[12px] text-muted backdrop-blur">
-        {spinner && <span className="size-2 rounded-full bg-cad animate-pulse-dot" />}
-        {text}
       </div>
     </div>
   );
