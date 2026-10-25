@@ -1,6 +1,6 @@
 {
   "last_node_id": 1001,
-  "last_link_id": 44,
+  "last_link_id": 45,
   "nodes": [
     {
       "id": 3,
@@ -598,7 +598,7 @@
       "id": 238,
       "type": "MeshSmoothNormals",
       "pos": [
-        3200,
+        3700,
         -100
       ],
       "size": [
@@ -612,7 +612,7 @@
         {
           "name": "mesh",
           "type": "MESH",
-          "link": 20
+          "link": 45
         }
       ],
       "outputs": [
@@ -682,7 +682,7 @@
       "id": 285,
       "type": "MeshToFile3D",
       "pos": [
-        3600,
+        4100,
         -100
       ],
       "size": [
@@ -869,7 +869,7 @@
       "id": 372,
       "type": "Save3DAdvanced",
       "pos": [
-        4000,
+        4500,
         -100
       ],
       "size": [
@@ -1427,8 +1427,51 @@
       "outputs": [],
       "properties": {},
       "widgets_values": [
-        "AIDA FAST \u2014 OBJECT ONLY (v2)\n\nUpload FRONT. For 2/3/4 views, select the additional LEFT/BACK/RIGHT photos in their dropdowns. Leave every unused side set to (none). No disconnecting wires, duplicate images, manual boxes, or empty-table reference needed.\n\nThe Aida stage automatically locates the object on the ChArUco print, segments it with SAM 3.1, removes the board, and gives every active view a shared crop scale. Check the OBJECT ONLY preview before inspecting the mesh.\n\nRequires the aida_scan extension shipped with this repository. Restart ComfyUI with --whitelist-custom-nodes aida_scan if custom nodes are disabled. Reopen this v2 workflow; an already-open old BiRefNet workflow does not update automatically."
+        "AIDA FAST \u2014 OBJECT ONLY (v2)\n\nUpload FRONT. For 2/3/4 views, select the additional LEFT/BACK/RIGHT photos in their dropdowns. Leave every unused side set to (none). No disconnecting wires, duplicate images, manual boxes, or empty-table reference needed.\n\nThe Aida stage automatically locates the object on the ChArUco print, segments it with SAM 3.1, removes the board, and gives every active view a shared crop scale. Check the OBJECT ONLY preview before inspecting the mesh.\n\nRequires the aida_scan extension shipped with this repository. Restart ComfyUI with --whitelist-custom-nodes aida_scan if custom nodes are disabled. Reopen this v2 workflow; an already-open old BiRefNet workflow does not update automatically.\n\nCAD upload size: the fast workflow simplifies the full-resolution result to at most 500,000 triangles before normals/export. Geometry-only GLB and STL fit the 64 MiB CAD upload budget. Keep this face cap enabled."
       ]
+    },
+    {
+      "id": 186,
+      "type": "DecimateMesh",
+      "pos": [
+        3180,
+        -100
+      ],
+      "size": [
+        330,
+        140
+      ],
+      "flags": {},
+      "order": 30,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mesh",
+          "type": "MESH",
+          "link": 20
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mesh",
+          "type": "MESH",
+          "links": [
+            45
+          ]
+        }
+      ],
+      "title": "CAD size budget \u2014 500,000 faces",
+      "properties": {
+        "Node name for S&R": "DecimateMesh"
+      },
+      "widgets_values": [
+        500000,
+        "midpoint"
+      ],
+      "widgets_values_named": {
+        "target_face_count": 500000,
+        "placement_mode": "midpoint"
+      }
     }
   ],
   "links": [
@@ -1588,7 +1631,7 @@
       20,
       92,
       0,
-      238,
+      186,
       0,
       "MESH"
     ],
@@ -1783,6 +1826,14 @@
       503,
       0,
       "IMAGE"
+    ],
+    [
+      45,
+      186,
+      0,
+      238,
+      0,
+      "MESH"
     ]
   ],
   "groups": [],

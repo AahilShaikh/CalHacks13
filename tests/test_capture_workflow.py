@@ -33,7 +33,7 @@ def test_capture_budget_and_duplicate_views_do_not_move_again(tmp_path, monkeypa
     rig = CaptureSession(table, table, HardwareSettings.from_env(), calibration, tmp_path, 1, 30)
     first = rig.capture('front')
     assert rig.capture('front') is first
-    assert not table.pulses
+    assert not table.moves
     for view in ('left', 'back', 'right'):
         rig.capture(view)
     assert len(list(tmp_path.glob('*.png'))) == 4

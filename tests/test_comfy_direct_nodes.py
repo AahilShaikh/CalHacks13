@@ -37,3 +37,24 @@ def test_calibrated_capture_passes_focal_length_into_shared_preprocessing():
     graph = wire_workflow(json.loads(WORKFLOWS['fast'].read_text()),{'front':'front.png'},config)
     assert graph['500']['inputs']['camera_focal_px'] == 1257.7
     assert graph['324']['inputs']['fov'] == ['500',10]
+
+
+def test_fast_workflow_geometry_budget_fits_cad_glb_and_stl():
+    from aida.api.cad_sessions import MAX_MESH_BYTES
+    fast = json.loads(WORKFLOWS['fast'].read_text())
+    simplify = fast['186']
+    assert simplify['class_type'] == 'DecimateMesh'
+    assert simplify['inputs']['mesh'] == ['92',0]
+    assert fast['238']['inputs']['mesh'] == ['186',0]
+    assert fast['285']['inputs']['mesh'] == ['238',0]
+    faces = simplify['inputs']['target_face_count']
+    assert faces > 0
+    # Worst case: three distinct vertices per triangle, float32 positions and
+    # normals, plus uint32 triangle indices. Binary STL uses 50 bytes/triangle.
+    assert faces*(3*24+12)+1024*1024 < MAX_MESH_BYTES
+    assert faces*50+84 < MAX_MESH_BYTES
+    ui = json.loads((WORKFLOWS['fast'].parent/'ui/aida_fast.json').read_text())
+    nodes = {n['id']:n for n in ui['nodes']}
+    assert nodes[186]['widgets_values'][0] == faces
+    edge = next(link for link in ui['links'] if link[0]==nodes[238]['inputs'][0]['link'])
+    assert edge[1] == 186 and edge[3] == 238

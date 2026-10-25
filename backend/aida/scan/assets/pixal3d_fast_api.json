@@ -167,7 +167,7 @@
     "inputs": {
       "crease_angle": 60.0,
       "mesh": [
-        "92",
+        "186",
         0
       ]
     },
@@ -366,6 +366,17 @@
         4
       ],
       "filename_prefix": "aida/object_only"
+    }
+  },
+  "186": {
+    "class_type": "DecimateMesh",
+    "inputs": {
+      "mesh": [
+        "92",
+        0
+      ],
+      "target_face_count": 500000,
+      "placement_mode": "midpoint"
     }
   }
 }
