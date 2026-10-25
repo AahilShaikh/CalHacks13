@@ -50,9 +50,13 @@ def reference_items(root: Path, session_id: str) -> list[dict]:
     parts, _ = read_workspace(root)
     items = [{'kind': 'mesh', 'part': p['name'], 'name': files.get(p['name']) or f"{p['name']}.stl"}
              for p in parts if p.get('reference')]
-    for png in sorted(root.glob('input-*.png')):
-        items.append({'kind': 'photo', 'name': photos.get(png.name, png.name),
-                      'url': f'/api/v1/cad-sessions/{session_id}/files/{png.name}'})
+    paths = {p.relative_to(root).as_posix() for p in root.glob('input-*.png')} | set(photos)
+    for relative in sorted(paths):
+        png = (root / relative).resolve()
+        if not png.is_relative_to(root.resolve()) or not png.is_file():
+            continue
+        items.append({'kind': 'photo', 'name': photos.get(relative, png.name),
+                      'url': f'/api/v1/cad-sessions/{session_id}/files/{relative}'})
     return items
 
 

@@ -135,3 +135,19 @@ async def test_turn_cost_is_this_turns_share_of_the_running_total(tmp_path):
     await run_turn(client, 'second', Artifacts(tmp_path), on_event=collect)
     costs = [round(e['cost_usd'], 4) for e in events if e['type'] == 'turn_end']
     assert costs == [0.14, 0.01]
+
+
+def test_main_agent_exposes_scanning_tools_and_instructions(tmp_path):
+    from aida.agent import HOST_TOOLS
+    from aida.api.agent_host import SessionHost
+    from aida.api.cad_sessions import CadSession
+    from aida.workspace import Workspace
+    artifacts = Artifacts(tmp_path)
+    cad = FakeCad()
+    workspace = Workspace.load(cad, artifacts)
+    session = CadSession(artifacts, '', 'mm')
+    opts = options_for(cad, artifacts, workspace=workspace, host=SessionHost(session))
+    assert {f'mcp__aida__{name}' for name in HOST_TOOLS} <= set(opts.allowed_tools)
+    assert 'scan_object' in opts.system_prompt and 'capture_angle' in opts.system_prompt
+    assert 'no separate capture agent' in opts.system_prompt
+    assert int(opts.env['MCP_TOOL_TIMEOUT']) > 180000

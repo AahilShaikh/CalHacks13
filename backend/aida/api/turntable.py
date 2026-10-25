@@ -18,6 +18,7 @@ router = APIRouter(prefix='/api/v1/turntable', tags=['turntable'])
 class RotationRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     angle: float = Field(description='Degrees; normalized modulo 360. Absolute by default.')
+    session_id: str | None = Field(default=None, min_length=1)
     relative: bool = False
     tolerance_degrees: float = Field(default=1.0, gt=0, le=10)
     timeout_s: float = Field(default=30.0, ge=3, le=120)
@@ -106,11 +107,14 @@ def http_error(exc: TurntableError):
 
 
 @router.post('/rotate')
-def rotate(request: RotationRequest, controller: TurntableService = Depends(get_service)):
+async def rotate(request: RotationRequest, controller: TurntableService = Depends(get_service)):
+    from .capture import capture_angle
+    from .cad_sessions import _open_session
+    session = _open_session(request.session_id) if request.session_id else None
     try:
-        return controller.rotate(request.angle, relative=request.relative,
-                                 tolerance=request.tolerance_degrees, timeout_s=request.timeout_s,
-                                 capture=True)
+        result = await capture_angle(session, controller, angle=request.angle, relative=request.relative,
+                                     tolerance=request.tolerance_degrees, timeout_s=request.timeout_s)
+        return {k: v for k, v in result.items() if k != 'image_path'}
     except TurntableError as exc:
         raise http_error(exc) from exc
 

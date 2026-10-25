@@ -19,6 +19,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv('AIDA_TURNTABLE_NEUTRAL_US', '1500')
     monkeypatch.setenv('AIDA_TURNTABLE_STORAGE', str(tmp_path))
     monkeypatch.setattr('aida.hardware.control.time.sleep', lambda _: None)
+    from aida.api.cad_sessions import CadSessionManager
+    from test_cad_sessions import stub_runner_factory
+    monkeypatch.setattr(server, 'cad_manager', CadSessionManager(tmp_path / 'cad', runner=stub_runner_factory([])))
     table = SimulatedTable()
     table.last_frame = np.full((48, 64, 3), 125, dtype=np.uint8)
     table.zeroed = False
@@ -148,3 +151,47 @@ def test_choose_detected_usb_port_without_opening_motor(client, monkeypatch):
     assert not table.pulses
     assert table.stops == 0
     assert http.post('/api/v1/turntable/configuration',json={'port':'/tmp/not-a-port'}).status_code == 409
+
+
+def test_angle_capture_persists_workspace_photo_and_reference(client):
+    from aida.api.workspace_meta import reference_items
+    http, _, _, _ = client
+    session = server.cad_manager.create(units='mm')
+    session.status, session.stage = 'running', 'idle'
+    response = http.post('/api/v1/turntable/rotate', json={'angle': 450, 'session_id': session.id})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data['requested_angle'] == data['target_angle'] == 90
+    assert abs(data['measured_angle'] - 90) <= 1
+    assert 'image_path' not in data
+    assert http.get(data['capture_url']).content.startswith(b'\x89PNG')
+    assert len(session.images) == 0
+    photos = [r for r in reference_items(session.artifacts.root, session.id) if r['kind'] == 'photo']
+    assert len(photos) == 1 and photos[0]['url'] == data['capture_url']
+    assert not (session.artifacts.root / 'commits').exists()
+    assert session.stage == 'idle'
+
+
+async def test_aida_capture_tool_returns_real_image_content(client, monkeypatch):
+    from aida.agent import host_tools
+    from aida.api.agent_host import SessionHost
+    http, _, controller, _ = client
+    monkeypatch.setattr('aida.turntable.service', controller)
+    session = server.cad_manager.create(units='mm')
+    session.status, session.stage = 'running', 'idle'
+    tool = next(t for t in host_tools(SessionHost(session)) if t.name == 'capture_angle')
+    result = await tool.handler({'angle': -270})
+    assert not result.get('is_error'), result
+    assert result['content'][1]['type'] == 'image' and result['content'][1]['mimeType'] == 'image/png'
+    import base64, json
+    assert base64.b64decode(result['content'][1]['data']).startswith(b'\x89PNG')
+    summary = json.loads(result['content'][0]['text'])
+    assert summary['requested_angle'] == 90 and 'image_path' not in summary
+    assert abs(summary['measured_angle'] - 90) <= 1
+
+
+def test_invalid_session_prevents_rotation(client):
+    http, table, _, _ = client
+    response = http.post('/api/v1/turntable/rotate', json={'angle': 90, 'session_id': 'missing'})
+    assert response.status_code == 404
+    assert not table.pulses

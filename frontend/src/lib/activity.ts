@@ -13,6 +13,17 @@ const STAGES: Record<string, string> = {
   exporting_mesh: 'Updating preview',
   reconnecting: 'Reconnecting',
   idle: 'Ready',
+  scan_checking_comfy: 'Checking scanner',
+  scan_capturing_front: 'Photographing front',
+  scan_capturing_left: 'Photographing left',
+  scan_capturing_back: 'Photographing back',
+  scan_capturing_right: 'Photographing right',
+  scan_uploading_images: 'Uploading scan photos',
+  scan_generating_mesh_and_masks: 'Generating scan mesh',
+  scan_fitting_metric_scale: 'Fitting metric dimensions',
+  scan_rendering_blueprints: 'Rendering scan blueprints',
+  scan_attaching_mesh: 'Adding scan to workspace',
+  capturing_angle: 'Photographing object',
 };
 
 export type ActivityTone = Phase | 'idle' | 'busy' | 'paused' | 'error';
@@ -42,7 +53,7 @@ export function useActivity(): Activity {
 
   if (status === 'failed') return { tone: 'error', label: replay ? 'Run failed' : 'Stopped with an error', working: false, running: null };
   if (status === 'done') return { tone: 'paused', label: replay ? 'Replay finished' : 'Paused', working: false, running: null };
-  if (running) return { tone: running.phase, label: toolLabel(running.name), working: true, running };
+  if (running) return { tone: running.phase, label: running.name === 'scan_object' ? STAGES[stage] ?? 'Scanning object' : toolLabel(running.name), working: true, running };
   if (status === 'starting') return { tone: 'busy', label: 'Opening workspace', working: false, running: null };
   if (stage) {
     const busy = stage !== 'idle';

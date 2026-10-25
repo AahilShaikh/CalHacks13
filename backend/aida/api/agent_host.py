@@ -1,4 +1,5 @@
 """Session-bound Aida tools: scanning, photographs, commits, FEA and questions."""
+import asyncio
 import uuid
 
 from ..analysis.settings import FeaSettings
@@ -36,6 +37,30 @@ def clean_questions(questions: list) -> list[dict]:
 class SessionHost:
     def __init__(self, session):
         self.session = session
+
+    async def scan_object(self) -> dict:
+        from .acquisition import manager
+        job = manager.submit_session(self.session)
+        try:
+            await job.done.wait()
+        except asyncio.CancelledError:
+            manager.cancel_for_session(self.session.id)
+            raise
+        if job.status != 'succeeded':
+            raise ValueError(job.error or f'Scan {job.status}')
+        return {**job.to_dict(), 'dimensions_mm': job.cad_specs['bounding_box_mm'],
+                'fit_evidence': job.cad_specs.get('registration'),
+                'blueprint_path': job.directory / 'blueprints.png',
+                'note': 'The reference mesh is already in millimeters. Do not scale it again. '
+                        'Inspect it with workspace_status and the mesh tools, then build editable CAD. '
+                        'Save a coherent completed change with commit_changes.'}
+
+    async def capture_angle(self, angle: float) -> dict:
+        from .capture import capture_angle
+        from .turntable import RotationRequest
+        from ..turntable import service
+        request = RotationRequest(angle=angle)
+        return await capture_angle(self.session, service, angle=request.angle)
 
     async def commit_changes(self, message: str) -> dict:
         from .commits import save_commit

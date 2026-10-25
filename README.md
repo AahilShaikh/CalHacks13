@@ -145,8 +145,11 @@ uv run aida-api                       # http://127.0.0.1:8000
 ```
 
 - `GET /health` — service status and ComfyUI reachability.
-- `POST /api/v1/acquisitions` — agent-controlled capture of up to four views,
-  automatic metric mesh registration and optional CAD-agent startup; returns 202.
+- `POST /api/v1/acquisitions` — captures front, left, back and right, runs Pixal3D,
+  fits metric scale, and adds reference parts to the supplied open `session_id`; returns 202.
+- Main Aida tools: `scan_object()` performs this scan in the current workspace;
+  `capture_angle(angle)` returns a verified photograph at an absolute angle.
+  Neither operation creates a commit automatically.
 - `GET /api/v1/acquisitions/{id}` — workflow status, dimensions, artifacts and CAD viewer link.
 - Turntable zero is established automatically from the mounted board at server startup.
 - `GET /api/v1/turntable/status` — zero readiness, startup errors and empty-reference status.

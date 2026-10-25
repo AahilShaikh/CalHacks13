@@ -247,7 +247,7 @@ def save_image_png(data: bytes, name: str, target: Path):
         raise ValueError(f'Image {name} could not be read: {exc}') from exc
 
 
-def ingest_meshes(session, meshes: list[tuple[str, bytes]], existing=()) -> dict:
+def ingest_meshes(session, meshes: list[tuple[str, bytes]], existing=(), taken=()) -> dict:
     """Blocking: validate uploaded meshes, write each new part's reference, and write a
     scene of every reference (``existing`` (name, path) plus the new ones).
 
@@ -265,7 +265,7 @@ def ingest_meshes(session, meshes: list[tuple[str, bytes]], existing=()) -> dict
         loaded.append((mesh_name, mesh))
     existing = list(existing)
     sources = {}
-    parts, notes = plan_parts(loaded, taken=[name for name, _ in existing], sources=sources)
+    parts, notes = plan_parts(loaded, taken=list(set(taken) | {name for name, _ in existing}), sources=sources)
     specs = [{'name': name, 'reference': write_reference(mesh, session.artifacts, name)} for name, mesh in parts]
     items = [(name, path, [(f'{name}|reference', IDENTITY)]) for name, path in existing]
     items += [(name, mesh, [(f'{name}|reference', IDENTITY)]) for name, mesh in parts]
@@ -700,14 +700,21 @@ class CadSessionManager:
 
     async def close(self, session: CadSession, wait_s: float = 15.0):
         """End a session's run (its CAD engine and agent) and wait for it to finish."""
+        from .acquisition import manager as acquisition_manager
+        acquisition_manager.cancel_for_session(session.id)
         session.closing = True
         session.turns.put_nowait(None)
         task = session.task
         if task is not None and not task.done():
             try:
                 await asyncio.wait_for(asyncio.shield(task), wait_s)
-            except (TimeoutError, asyncio.CancelledError):
+            except TimeoutError:
                 task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            except asyncio.CancelledError:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                raise
             except Exception:
                 pass  # the runner reports its own failures as events
 
@@ -727,6 +734,8 @@ class CadSessionManager:
         for session in sessions:
             if (session.status in ('queued', 'running') and not session.closing and session.viewers == 0
                     and session.stage in ('idle', '') and now - max(session.last_seen, session.updated_at) > idle_s):
+                from .acquisition import manager as acquisition_manager
+                acquisition_manager.cancel_for_session(session.id)
                 session.closing = True
                 session.turns.put_nowait(None)
                 closed.append(session.id)
@@ -957,6 +966,8 @@ async def run_cad_session(session: CadSession):
         session.set_status('failed', error=message)
         session.publish({'type': 'error', 'message': message})
     finally:
+        from .acquisition import manager as acquisition_manager
+        acquisition_manager.cancel_for_session(session.id)
         session.cad = session.client = None
 
 
@@ -1217,6 +1228,8 @@ async def interrupt_cad_turn(session_id: str):
     session = _session_or_404(session_id)
     if session.client is None:
         raise HTTPException(status_code=409, detail='The agent is not running')
+    from .acquisition import manager as acquisition_manager
+    acquisition_manager.cancel_for_session(session.id)
     await session.client.interrupt()
     session.publish({'type': 'interrupted'})
     return {'interrupted': True, 'session_id': session.id}
@@ -1283,6 +1296,8 @@ def _scene_to_stl(glb: Path, target: Path):
 @router.post('/api/v1/cad-sessions/{session_id}/close', status_code=202)
 async def close_cad_session(session_id: str):
     session = _session_or_404(session_id)
+    from .acquisition import manager as acquisition_manager
+    acquisition_manager.cancel_for_session(session.id)
     session.closing = True
     session.turns.put_nowait(None)
     return {'closing': True, 'session_id': session.id}

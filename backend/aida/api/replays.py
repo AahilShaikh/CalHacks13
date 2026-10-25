@@ -17,7 +17,7 @@ router = APIRouter()
 
 REPLAY_LOG = 'ui-events.jsonl'
 _FOLDER = re.compile(r'^[\w.-]+$')
-_SESSION_FILES = re.compile(r'/api/v1/cad-sessions/[0-9a-f]+/files/')
+_SESSION_FILES = re.compile(r'/api/v1/cad-sessions/[\w.-]+/files/')
 
 
 def _storage() -> Path:
@@ -51,6 +51,9 @@ def _rewrite(event: dict, replay_id: str) -> dict:
     if kind == 'heatmap':
         part = f"-{event['part']}" if event.get('part') else ''  # one heatmap per part since workspaces
         return {**event, 'url': f"{files}heatmap-{event['revision']:03d}{part}.glb"}
+    if kind == 'references':
+        return {**event, 'items': [{**item, **({'url': _SESSION_FILES.sub(files, item['url'])}
+                 if item.get('url') else {})} for item in event['items']]}
     if kind == 'render':
         return {**event, 'url': _SESSION_FILES.sub(files, event['url'])}
     return event
@@ -83,10 +86,10 @@ def replay_events(replay_id: str):
     return [_rewrite(e, replay_id) for e in _read_events(folder)]
 
 
-@router.get('/api/v1/replays/{replay_id}/files/{name}')
+@router.get('/api/v1/replays/{replay_id}/files/{name:path}')
 def replay_file(replay_id: str, name: str):
     folder = _folder(replay_id)
     path = (folder / name).resolve()
-    if path.parent != folder or not path.is_file():
+    if not path.is_relative_to(folder) or not path.is_file():
         raise HTTPException(status_code=404, detail=f'No file {name!r}')
     return FileResponse(path, headers={'Cache-Control': 'public, max-age=31536000, immutable'})

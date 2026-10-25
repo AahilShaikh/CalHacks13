@@ -37,9 +37,9 @@ or `AIDA_TURNTABLE_CAMERA` environment overrides take precedence; remove an old
 built-in-camera index override before using the USB selector. Index numbers are
 not stable and must not be assumed to be 0 or 1.
 The existing Claude authentication environment also works where supported by
-the Agent SDK. Agent capture and CAD calls can incur API costs. The first
-hardware validation can use `four_views` with `start_cad:false`, avoiding both
-Claude stages while still running local ComfyUI and metric registration.
+the Agent SDK. Only the main Aida conversation incurs Claude API costs.
+The acquisition workflow itself runs fixed captures, local ComfyUI and metric
+registration without another model call.
 
 Firmware is `firmware/turntable/turntable.ino`, Mega pin 9, startup neutral
 1450 µs. Upload it, confirm stopped neutral, and close Serial Monitor before API
@@ -95,14 +95,14 @@ automatic object isolation and optional image inputs. Both servers remain local.
 10. Place a small opaque, matte object at the center. Leave at least **eight
    visible ChArUco corners spanning 60 mm in both board directions** around it
    in every view. Keep hands out of the scene during capture.
-11. For the first check, choose **Four views (no capture-agent call)** and uncheck
-    **Start CAD agent after fitting**, then click **Start scan**. Confirm that the
-    job reaches `metric_mesh_ready` and inspect photos, masks, dimensions and
-    `metric_model.stl`. Failure messages identify missing corners or a bad scale fit.
-12. Once that works, choose **Agent chooses 2–4 views**, check **Start CAD agent
-    after fitting**, enter the modeling request, and click **Start scan**. Open
-    the live CAD viewer when its link appears. Both agent stages need configured
-    Claude authentication.
+11. Open an Aida workspace in millimeters. Ask Aida to scan the object, or paste
+    the workspace ID from `/w/<id>` into the setup page and click **Start scan**
+    while Aida is idle. The scanner always captures all four cardinal views.
+12. Confirm the job reaches `mesh_attached`. Inspect the saved photos, masks,
+    dimensions and `metric_model.stl`, then ask Aida to build editable CAD.
+    Additional details can be photographed with Aida's `capture_angle(angle)` tool.
+    Only the main Aida conversation needs Claude authentication; scanning itself
+    no longer starts a capture agent or another CAD conversation.
 
 ### Clear tape on the board
 
@@ -135,26 +135,33 @@ old zero reference. Do not reuse a zero reference from another camera.
 ```bash
 curl --fail-with-body -X POST http://127.0.0.1:8000/api/v1/acquisitions \
   -H 'Content-Type: application/json' \
-  -d '{"prompt":"Reconstruct this object as editable CAD.","policy":"agent","workflow":"full","start_cad":true}'
+  -d '{"session_id":"YOUR_OPEN_WORKSPACE_ID","workflow":"full"}'
 ```
 
 The response is 202 with a `job_id` and `status_url`. Individual moves remain
 synchronous internally; the complete scan runs in the background because mesh
 inference may take minutes.
 
-The capture agent has only two tools:
+Aida's main CAD agent exposes two tools:
 
-- `capture_view`: front, left, back or right. Each unique view is saved once,
-  after the table has stopped and repeated angle checks pass. Tool calls are
-  serialized even if the model requests them in parallel.
-- `reconstruct`: requires front plus at least one side. Generates the mesh and
-  tries metric registration. If the fit is ambiguous, the agent may request
-  another unused cardinal view and try again, up to **four object views** total.
+- `scan_object()` captures front, left, back and right, reconstructs with Pixal3D,
+  and fits metric scale using the calibrated board poses. It adds new reference
+  parts to the current workspace and returns dimensions, fit evidence, artifact
+  URLs and the blueprint image. Existing parts are preserved.
+- `capture_angle(angle)` rotates to an absolute angle modulo 360, verifies the
+  position and returns the actual photograph as image content. The photo is saved
+  in the workspace's References. It does not regenerate the mesh.
 
-The camera and serial port remain reserved across agent calls, avoiding board
-resets between photos and preventing unrelated moves from changing the object
-scan. A hardware/camera/Comfy failure disables further agent motion. Shutdown
-attempts a confirmed STOP even on failure; firmware locally bounds every burst.
+There is no separate capture agent. The camera and serial port remain reserved
+through the four captures and are released before GPU inference. Hardware failures
+stop the sequence; there are no automatic retries of an entire failed scan.
+Shutdown attempts a confirmed STOP even on failure; firmware locally bounds every burst.
+
+Open a workspace first. The HTTP acquisition endpoint accepts its `session_id`
+while it is idle; when Aida is working, ask it to scan through its own tool instead.
+Calibration, ready zero, and ComfyUI must be available. A workspace with existing
+parts must already use millimeters. Scans do not automatically build parametric CAD
+or create commits; Aida continues modeling and uses `commit_changes` explicitly.
 
 For ChArUco photos, Aida detects the printed corners and projects the known
 board pattern into the photo. Pattern disagreement locates a loose object box;
@@ -223,30 +230,29 @@ guessed metric mesh to CAD.
 ## Results and CAD handoff
 
 Poll `GET /api/v1/acquisitions/{job_id}`. It returns status, stage, error, file
-URLs, dimensions and (after successful handoff) `cad_session_id` and `viewer_url`.
+URLs, dimensions, created part names, the existing `session_id`, and `viewer_url`.
 
-Files under `artifacts/acquisitions/{job_id}/` include:
+Files under `artifacts/cad/{session_id}/scans/{job_id}/` include:
 
-- `front.png` and any additional views, with `*_pose.json` angle/board evidence;
+- `front.png`, `left.png`, `back.png`, `right.png`, with `*_pose.json` angle/board evidence;
 - `empty_table.png`, `empty_table.json`, `camera.json`;
 - `object_prompts.json`, `*_foreground.png`, `*_object.png`, and ComfyUI `*_mask.png`;
 - `motion.jsonl`, containing each verified angle, drive pulse, retry and result;
 - `unscaled_model.glb`, `metric_model.glb`, `metric_model.stl`;
-- `dimensions.json`, `blueprints.png`, `agent_prompt.txt`, capture-agent log.
+- `dimensions.json`, `blueprints.png`, `agent_prompt.txt`, `workflow.json`.
 
 `dimensions.json` records the applied millimeters-per-raw-unit multiplier,
 raw-to-board and raw-to-CAD transforms, per-view fit errors and uncertainty.
 The metric mesh is centered at its base footprint with Z=0 at the ground.
 
-CAD receives that **already-scaled mesh with `units=mm`**, the original reference
-photos and blueprints, the full dimensions/calibration evidence in its prompt,
-and copies of the metadata files. Its prompt explicitly forbids applying the
-scale multiplier a second time. `succeeded`/`cad_started` means capture, metric
-registration and CAD handoff succeeded; follow the linked CAD session for its
-own completion, errors and generated geometry.
+The current workspace receives the **already-scaled mesh with `units=mm`**.
+Original photos, blueprints, calibration, and fit evidence remain in its artifact
+directory. `succeeded`/`mesh_attached` means the scan was added successfully, not
+that editable CAD is finished. The main Aida tool returns part names and explicitly
+warns against applying the scale multiplier again.
 
 `POST /api/v1/acquisitions/{job_id}/cancel` requests cancellation after the
-current operation. It prevents subsequent motion and CAD handoff; it is not an
+current operation. It prevents subsequent motion and workspace attachment; it is not an
 emergency stop and does not globally interrupt somebody else's ComfyUI queue.
 An in-flight inference can continue until it completes or times out.
 
@@ -265,7 +271,7 @@ An in-flight inference can continue until it completes or times out.
 | POST | `/api/v1/turntable/reference` | Capture an explicitly empty table without resetting zero |
 | POST | `/api/v1/turntable/zero` | Optional manual zero override |
 | GET/POST | `/api/v1/turntable/configuration` | List detected USB ports / save selected Arduino port |
-| POST | `/api/v1/acquisitions` | Start bounded capture → metric mesh → optional CAD |
+| POST | `/api/v1/acquisitions` | Four-view capture → metric mesh → existing workspace |
 | GET | `/api/v1/acquisitions/{id}` | Poll workflow and artifact URLs |
 
 The existing uploaded-image `/api/v1/scans` route keeps its manual-anchor

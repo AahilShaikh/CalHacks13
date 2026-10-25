@@ -346,7 +346,7 @@ For USB-webcam capture without an object dimension/caliper anchor, use
 [automatic scanner setup](AUTOMATIC_SCAN.md).
 
 This workflow calibrates the actual webcam,
-acquires two to four views through the bounded capture agent, isolates the
+captures all four cardinal views without a separate agent, isolates the
 object, and fits the generated mesh's uniform scale and pose against calibrated
 outer silhouettes. It records fit errors, estimated scale uncertainty and the
 applied transforms. The CAD agent receives an already metric mesh and is told
