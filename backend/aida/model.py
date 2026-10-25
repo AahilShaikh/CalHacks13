@@ -82,6 +82,17 @@ def _param_entry(name, raw, previous=None):
     return entry
 
 
+def _outside_functions(tree):
+    """Nodes of the feature's own body, not inside helper functions it defines (whose return is fine)."""
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        yield node
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                stack.append(child)
+
+
 def check_feature_code(code, first, show_name='the part'):
     """Reject feature code that cannot sit inside build(); return its used P.names."""
     if not isinstance(code, str) or not code.strip():
@@ -92,9 +103,11 @@ def check_feature_code(code, first, show_name='the part'):
     except SyntaxError as exc:
         raise ModelError(f'Feature code has a syntax error on its line {exc.lineno}: {exc.msg}') from None
     assigns_part = False
-    for node in ast.walk(tree):
+    for node in _outside_functions(tree):
         if isinstance(node, (ast.Return, ast.Global, ast.Nonlocal)):
-            raise ModelError('Feature code must not use return, global or nonlocal')
+            raise ModelError('Feature code must not use return, global or nonlocal outside a helper '
+                             'function; assign part instead')
+    for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == 'build':
             raise ModelError('Feature code must not define build()')
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -145,7 +158,7 @@ PARTS_TABLE = ['try:', f'{INDENT}PARTS', 'except NameError:', f'{INDENT}PARTS = 
 def generate_script(state, name='part', description=''):
     """Return (script, {feature_id: (first_line, last_line)}) for a part's state."""
     defaults = f'DEFAULTS_{name}'
-    lines = ['from build123d import *', '', '']
+    lines = ['from build123d import *', 'import math', '', '']
     lines += _defaults_lines(state, defaults)
     doc = f'{name}: {description}' if description else name
     lines += ['', '', f'def build_{name}(**overrides):', f'{INDENT}{doc!r}',

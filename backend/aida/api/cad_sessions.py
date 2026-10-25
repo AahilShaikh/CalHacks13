@@ -347,6 +347,9 @@ def meshes_from(events: list[dict], folder: Path) -> list[dict]:
             revision = event['revision']
             entry = {k: v for k, v in event.items() if k not in ('type', 'seq', 'at', 'url')}
             entry['path'] = folder / f'mesh-{revision:03d}.glb'
+            step = folder / f'cad-{revision:03d}.step'
+            if step.is_file() and step.stat().st_size:
+                entry['step_path'] = step  # FEA meshes the exact CAD of a reopened revision
             by_revision[revision] = entry
         elif event.get('type') == 'heatmap' and event.get('revision') in by_revision:
             part = event.get('part') or 'part'
@@ -904,8 +907,10 @@ async def run_cad_session(session: CadSession):
                     session.publish({'type': 'workspace_state', **workspace.snapshot()})
                 cad.on_execute = snapshot_hook(cad, session, workspace)
                 session.cad, session.workspace = cad, workspace
+            from .agent_host import SessionHost
+
             options = options_for(cad, session.artifacts, session.units, on_event=bridge,
-                                  workspace=workspace)
+                                  workspace=workspace, host=SessionHost(session))
             client = await connect_agent(session, options, workspace)
             try:
                 session.client = client

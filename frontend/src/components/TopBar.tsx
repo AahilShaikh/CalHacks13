@@ -4,6 +4,7 @@ import { useActivity, useElapsed, type ActivityTone } from '../lib/activity';
 import { linkProps } from '../lib/router';
 import { generatedRevisions, useStore } from '../store';
 import { DownloadMenu } from './DownloadMenu';
+import { RevisionScrubber } from './viewer/Controls';
 import { RenameField, Spinner, cx } from './ui';
 
 const DOT: Record<ActivityTone, string> = {
@@ -44,8 +45,9 @@ export function TopBar() {
         </span>
       )}
 
-      <div className="flex flex-1 justify-center">
+      <div className="flex flex-1 items-center justify-center gap-3">
         <StatusChip />
+        <RevisionScrubber />
       </div>
 
       <FeaButton />
@@ -143,7 +145,6 @@ function StatusChip() {
           <span className={cx('size-1.5 rounded-full', DOT[activity.tone])} aria-hidden />
         )}
         <span aria-live="polite">{activity.label}</span>
-        {rev > 0 && <span className="font-mono text-[11px] text-faint">r{rev}</span>}
       </button>
       <div
         id="status-details"

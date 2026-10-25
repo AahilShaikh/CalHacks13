@@ -19,17 +19,13 @@ dependencies = [
     "python-multipart>=0.0.32",
     "pyserial>=3.5,<4",
     "scipy>=1.14,<2",
+    "ngsolve>=6.2.2406,<7",
 ]
 
 [project.scripts]
 aida = "aida.cli:main"
 aida-api = "aida.api.server:main"
 aida-fea-mcp = "aida.analysis.mcp:main"
-
-[project.optional-dependencies]
-fea = [
-    "ngsolve>=6.2.2406,<7",
-]
 
 [build-system]
 requires = ["hatchling"]

@@ -27,7 +27,7 @@ COMBINED_SCRIPT = 'workspace_model.py'
 
 def generate_assembly_script(state):
     """Return (script, spans) for the assembly: run after the part scripts, which fill PARTS."""
-    lines = ['from build123d import *', 'import json', '', '']
+    lines = ['from build123d import *', 'import json', 'import math', '', '']
     lines += _defaults_lines(state, 'DEFAULTS_assembly')
     lines += ['', '', 'def build_assembly():',
               f"{INDENT}P = type('P', (), dict(DEFAULTS_assembly))",

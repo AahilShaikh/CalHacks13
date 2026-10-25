@@ -34,7 +34,7 @@ function groupFeed(feed: FeedItem[]): Group[] {
       groups.push({ key: item.id, prompt: item.text, steps: [], version: null });
       continue;
     }
-    if (item.kind === 'agent') continue;
+    if (item.kind === 'agent' || item.kind === 'question') continue; // shown in the agent dock
     if (!groups.length) groups.push({ key: 0, prompt: null, steps: [], version: null });
     const group = groups[groups.length - 1];
     if (item.kind === 'version') group.version = item;

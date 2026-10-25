@@ -32,13 +32,14 @@ const edgeMaterials = {
 };
 
 export type Look = keyof typeof materials;
+export const heatMaterial = materials.heat;
 const NONE: readonly string[] = [];
 
 /**
  * The API writes 8-bit sRGB vertex colours, but glTF COLOR_0 is linear, so three.js would
  * show them washed out. Convert once per (cached, shared) geometry.
  */
-function toLinearColours(geometry: THREE.BufferGeometry) {
+export function toLinearColours(geometry: THREE.BufferGeometry) {
   const colours = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
   if (!colours || geometry.userData.linearColours) return;
   const c = new THREE.Color();

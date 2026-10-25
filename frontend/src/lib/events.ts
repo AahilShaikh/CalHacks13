@@ -1,6 +1,8 @@
 // Events streamed by the API (aida/api/cad_sessions.py) over SSE.
 // Every event carries `seq` (monotonic per session) and `at` (unix seconds).
 
+import type { FeaJob } from './fea';
+
 export type Stamp = { seq: number; at: number };
 
 export type ServerEvent = Stamp &
@@ -43,7 +45,20 @@ export type ServerEvent = Stamp &
     | { type: 'references'; items: ReferenceItem[] }
     | { type: 'version'; number: number; prompt: string; mesh_revision: number | null }
     | { type: 'version_restored'; number: number }
+    | ({ type: 'fea_started' | 'fea_done' | 'fea_failed' } & FeaJob)
+    | { type: 'fea_stage'; analysis_id: string; stage: string }
+    | { type: 'question'; id: string; questions: Question[] }
   );
+
+/** One thing Aida asked with ask_user (aida/api/agent_host.py clean_questions). */
+export type Question = {
+  id: string;
+  prompt: string;
+  kind: 'choice' | 'number' | 'text';
+  options: { label: string; detail: string }[];
+  unit: string;
+  allow_other: boolean;
+};
 
 /** Something the agent can look at: a part's scan (and the file it came from), or a photo. */
 export type ReferenceItem =
@@ -94,7 +109,7 @@ export type SessionStatus = 'queued' | 'running' | 'done' | 'failed';
 export type Phase = 'inspect' | 'build' | 'verify';
 
 const BUILD = new Set(['execute', 'export']);
-const VERIFY = new Set(['compare_to_mesh', 'validate', 'model_report', 'assembly_check', 'view_sheet']);
+const VERIFY = new Set(['compare_to_mesh', 'validate', 'model_report', 'assembly_check', 'view_sheet', 'run_fea', 'fea_faces']);
 
 /** Which step of the inspect -> build -> verify loop a tool belongs to. */
 export function phaseOf(tool: string): Phase {
@@ -306,6 +321,10 @@ export function resultSummary(tool: string, text: string): string {
     const count = (text.match(/"between"/g) ?? []).length;
     return `${count} transition${count === 1 ? '' : 's'} found`;
   }
+  if (tool === 'run_fea' && data && typeof data.peak_von_mises_mpa === 'number') {
+    const safety = typeof data.safety_factor_vs_yield === 'number' ? ` · safety ${round(data.safety_factor_vs_yield)}×` : '';
+    return `rev ${data.revision} · peak ${round(data.peak_von_mises_mpa)} MPa${safety}`;
+  }
   if (data && typeof data.action === 'string') {
     const parts = [data.revision !== undefined ? `rev ${data.revision}` : null, data.action.replaceAll('_', ' ')];
     if (Array.isArray(data.features)) parts.push(`${data.features.length} features`);
@@ -352,6 +371,9 @@ const TOOL_LABEL: Record<string, string> = {
   assembly_edit_feature: 'Edit layout',
   assembly_undo: 'Undo layout change',
   assembly_check: 'Check assembly',
+  run_fea: 'Run FEA',
+  fea_faces: 'List faces for FEA',
+  ask_user: 'Ask you',
 };
 
 /** "slice_mesh" -> "Slice scan"; unknown tools are made readable from their name. */
