@@ -1,6 +1,7 @@
 """Claude integration; CAD and artifact services stay runtime-independent."""
 import dataclasses
 import inspect
+import json
 import os
 
 from claude_agent_sdk import (
@@ -39,8 +40,164 @@ async def _emit(on_event, event):
         await result
 
 
-def make_tools(cad, artifacts, on_event=None, workspace=None):
-    tools = []
+FEA_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'youngs_modulus_mpa': {'type': 'number', 'minimum': 1, 'maximum': 1_000_000,
+                               'description': "Young's modulus of the material, MPa."},
+        'poisson_ratio': {'type': 'number', 'minimum': 0, 'maximum': 0.45},
+        'yield_strength_mpa': {'type': 'number', 'exclusiveMinimum': 0, 'maximum': 100_000},
+        'force_n': {'type': 'number', 'exclusiveMinimum': 0, 'maximum': 1_000_000,
+                    'description': 'Total force in N, spread evenly over the load faces.'},
+        'support_faces': {'type': 'array', 'items': {'type': 'integer', 'minimum': 0}, 'minItems': 1,
+                          'description': 'Face numbers (from fea_faces) held rigidly: where the part is '
+                                         'screwed, glued, clamped or rests on what carries it.'},
+        'load_faces': {'type': 'array', 'items': {'type': 'integer', 'minimum': 0}, 'minItems': 1,
+                       'description': 'Face numbers (from fea_faces) the force is spread over: where '
+                                      'the weight sits or the push is applied.'},
+        'fixed_face': {'type': 'string', 'enum': ['x-', 'x+', 'y-', 'y+', 'z-', 'z+'],
+                       'description': 'Only without support_faces/load_faces: clamp this bounding-box '
+                                      'end and load the opposite end. Fits straight beams only.'},
+        'load_direction': {'type': 'string', 'enum': ['x-', 'x+', 'y-', 'y+', 'z-', 'z+'],
+                           'description': 'Direction the force pushes, e.g. z- is downward.'},
+        'resolution': {'type': 'integer', 'enum': [10, 16, 22],
+                       'description': 'Mesh divisions along the longest axis (default 16). Keep it '
+                                      'the same across runs you compare.'},
+        'check_mesh': {'type': 'boolean',
+                       'description': 'Re-solve on a finer mesh and report how much the answer moved '
+                                      '(default true; a few seconds more).'},
+    },
+    'required': ['youngs_modulus_mpa', 'poisson_ratio', 'yield_strength_mpa', 'force_n', 'load_direction'],
+}
+
+ASK_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'questions': {
+            'type': 'array', 'minItems': 1, 'maxItems': 4,
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'id': {'type': 'string', 'description': 'Short key, e.g. material or load.'},
+                    'prompt': {'type': 'string', 'description': 'The question, one sentence.'},
+                    'kind': {'type': 'string', 'enum': ['choice', 'number', 'text']},
+                    'options': {
+                        'type': 'array', 'maxItems': 8,
+                        'description': 'For choice: the answers to offer, best guess first.',
+                        'items': {'type': 'object', 'properties': {
+                            'label': {'type': 'string'},
+                            'detail': {'type': 'string', 'description': 'e.g. E 3500 MPa, yield 50 MPa'},
+                        }, 'required': ['label']},
+                    },
+                    'unit': {'type': 'string', 'description': 'For number: the unit, e.g. N.'},
+                    'allow_other': {'type': 'boolean', 'description': 'For choice: offer a typed answer too.'},
+                },
+                'required': ['id', 'prompt', 'kind'],
+            },
+        },
+    },
+    'required': ['questions'],
+}
+
+HOST_TOOLS = {'run_fea', 'fea_faces', 'ask_user'}
+
+
+def fea_summary(job: dict) -> dict:
+    """What the agent needs from a finished run to judge the design and pick the next change."""
+    result = job['result']
+    settings = result['settings']
+    return {
+        'viewer_revision': job.get('viewer_revision', result['revision']),
+        'material': {k: settings[k] for k in ('youngs_modulus_mpa', 'poisson_ratio', 'yield_strength_mpa')},
+        'held_faces': result.get('support_faces'),
+        'loaded_faces': result.get('load_faces'),
+        'load': {k: settings[k] for k in ('force_n', 'load_direction', 'resolution')},
+        'peak_von_mises_mpa': round(result['max_von_mises_mpa'], 4),
+        'peak_location_mm': result.get('peak_location_mm'),
+        'peak_is_at_a_support_edge': result.get('peak_at_support'),
+        'peak_away_from_supports_mpa': _round(result.get('peak_away_from_supports_mpa'), 4),
+        'peak_away_location_mm': result.get('peak_away_location_mm'),
+        'safety_factor_vs_yield': _round(result['yield_ratio'], 3),
+        'safety_factor_away_from_supports': _round(result.get('yield_ratio_away_from_supports'), 3),
+        'max_displacement_mm': round(result['max_displacement_mm'], 5),
+        'mesh_check': result.get('mesh_check'),
+        'elements': result['elements'],
+        'mesh_size_mm': round(result['mesh_size_mm'], 3),
+        'warnings': result['warnings'],
+        'shown_to_user': 'The stress plot is now in the viewer and the run is listed in the FEA panel.',
+        'setup_picture': 'Attached: green faces are held, orange faces carry the force, the arrow is its '
+                         'direction. Check it matches how the part is really held and loaded.',
+    }
+
+
+def _round(value, digits):
+    return None if value is None else round(value, digits)
+
+
+def _png(path) -> list[dict]:
+    from pathlib import Path
+    import base64
+
+    path = Path(path)
+    if not path.is_file():
+        return []
+    return [{'type': 'image', 'mimeType': 'image/png', 'data': base64.b64encode(path.read_bytes()).decode()}]
+
+
+def host_tools(host, on_event=None):
+    """Tools that need the live web session: FEA jobs and questions in the UI."""
+
+    @tool('fea_faces', 'List the latest CAD revision\'s faces for FEA: number, flat or curved, outward '
+          'normal, area, centre and bounds, with a picture of the part from two sides with every face '
+          'numbered. Use it to pick support_faces and load_faces for run_fea.', {})
+    async def fea_faces(args):
+        try:
+            listing = await host.list_faces()
+            text = json.dumps({'faces': listing['faces'], 'bounds_mm': listing['bounds_mm']}, indent=1)
+            await _emit(on_event, {'type': 'tool_result', 'name': 'fea_faces', 'ok': True,
+                                   'text': f"{len(listing['faces'])} faces"})
+            return {'content': [{'type': 'text', 'text': text}, *_png(listing['image'])]}
+        except Exception as exc:
+            await _emit(on_event, {'type': 'tool_result', 'name': 'fea_faces', 'ok': False, 'text': str(exc)[:4000]})
+            return {'is_error': True, 'content': [{'type': 'text', 'text': str(exc)}]}
+
+    @tool('run_fea', 'Static structural test (linear elastic FEA, Netgen/NGSolve, N/mm/MPa) of the '
+          'latest generated CAD solid: support_faces are held rigidly, the total force is spread over '
+          'load_faces. Takes a few seconds and shows live in the viewer. Returns stress (overall and '
+          'away from supports, with locations), safety factors, max displacement, a mesh check and a '
+          'picture of the setup.', FEA_SCHEMA)
+    async def run_fea(args):
+        try:
+            job = await host.run_fea({'check_mesh': True, **args})
+            if job['status'] != 'succeeded':
+                raise ValueError(job.get('error') or 'FEA failed')
+            text = json.dumps(fea_summary(job), indent=1)
+            await _emit(on_event, {'type': 'tool_result', 'name': 'run_fea', 'ok': True, 'text': text})
+            return {'content': [{'type': 'text', 'text': text}, *_png(job['directory'] / 'setup.png')]}
+        except Exception as exc:
+            await _emit(on_event, {'type': 'tool_result', 'name': 'run_fea', 'ok': False,
+                                   'text': str(exc)[:4000]})
+            return {'is_error': True, 'content': [{'type': 'text', 'text': str(exc)}]}
+
+    @tool('ask_user', 'Ask the user 1-4 short questions in a card above their prompt box, with '
+          'clickable choices. Use it when a decision needs information only they have (material, '
+          'load, target). After calling it, end your turn: the answers arrive as their next message.',
+          ASK_SCHEMA)
+    async def ask_user(args):
+        questions = args.get('questions') or []
+        if not isinstance(questions, list) or not 1 <= len(questions) <= 4:
+            return {'is_error': True, 'content': [{'type': 'text', 'text': 'Ask 1 to 4 questions.'}]}
+        await host.ask_user(questions)
+        await _emit(on_event, {'type': 'tool_result', 'name': 'ask_user', 'ok': True, 'text': ''})
+        return {'content': [{'type': 'text', 'text': 'The questions are shown to the user. End your turn '
+                             'now with a one-line note of what you need; do not call more tools. Their '
+                             'answers arrive as the next message.'}]}
+
+    return [fea_faces, run_fea, ask_user]
+
+
+def make_tools(cad, artifacts, on_event=None, workspace=None, host=None):
+    tools = host_tools(host, on_event) if host is not None else []
     for name in sorted(EXPOSED):
         definition = cad.schemas[name]
 
@@ -136,13 +293,53 @@ def workspace_brief(workspace):
     return '\n'.join(lines)
 
 
-def options_for(cad, artifacts, units=None, max_turns=None, on_event=None, workspace=None):
+HOST_PROMPT = """
+Asking the user:
+- When you need a fact only the user knows (material, load, mounting, target), call ask_user
+  with clickable choices (best guess first) instead of assuming, then end your turn. Ask once,
+  for everything you need, rather than one question per turn. Do not ask what you can measure.
+
+Structural testing (FEA), when the user asks whether a part is strong or stiff enough:
+- An FEA answer is only as good as its setup: where the part is held and where the force goes.
+  First write down, in one or two sentences, how the part is used: what holds it (screws, a wall,
+  a rod it hangs on, a table it rests on) and where the load comes from (an object's weight, a
+  hand pushing). Then call fea_faces and pick support_faces (the faces touching what holds it)
+  and load_faces (the faces the load acts on). Do not reach for fixed_face's bounding-box ends
+  unless the part really is a straight beam held at one end.
+- run_fea returns a picture of the setup. Look at it before trusting any number: green must be
+  where the part is held in real life, orange where the load acts, and the arrow must point the
+  way the load pushes. If it does not match, fix the faces and run again.
+- Cross-check every result with a hand estimate (beam bending M*c/I, axial F/A, or similar) and
+  say whether they agree. If they differ by more than about 2x, find out why before reporting.
+- Read the result's checks: if the peak is at a support edge, judge the part by the peak away
+  from supports unless that edge is a real weak point (say which you used). If the mesh check
+  moved the answer by more than 10%, rerun at a finer resolution or report it as rough.
+- You need the material (Young's modulus, Poisson's ratio, yield strength) and the load. If the
+  user did not give them, ask_user first. Typical values: PLA E 3500 MPa, v 0.35, yield 50 MPa;
+  PETG 2100, 0.38, 50; ABS 2200, 0.35, 40; aluminum 6061-T6 69000, 0.33, 276; mild steel
+  210000, 0.30, 250. Printed parts are weaker across layers; say so when relevant.
+- Iterating: agree a target (default: safety factor 2 against yield, unless the user gives one
+  or a deflection limit). If a run misses it, change a parameter that controls the stressed
+  region (thickness, width, fillet radius) with model_set_params, then run_fea again with the
+  same material, load and resolution. Face numbers can change when the shape changes: call
+  fea_faces again after each rebuild and check the setup picture. At most 5 runs per request. End with a short table of
+  revision, the change, peak stress, safety factor and max displacement. Number revisions by
+  run_fea's viewer_revision: those are the numbers the user sees in the viewer and Runs table.
+- It is a linear elastic screening analysis: no plasticity, buckling, contact or fatigue, and
+  stress at the clamped edge and sharp inner corners is a local peak that grows with mesh
+  refinement. Say this once in the summary, briefly.
+"""
+
+
+def options_for(cad, artifacts, units=None, max_turns=None, on_event=None, workspace=None, host=None):
+    """``host`` (the web session) adds run_fea and ask_user; the CLI has neither."""
     from .workspace import Workspace
 
     workspace = workspace or Workspace.load(cad, artifacts)
     server = create_sdk_mcp_server(name='aida', version='0.1.0',
-                                   tools=make_tools(cad, artifacts, on_event, workspace))
-    names = [f'mcp__aida__{name}' for name in sorted(EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image', 'view_sheet'})]
+                                   tools=make_tools(cad, artifacts, on_event, workspace, host))
+    exposed = EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image', 'view_sheet'}
+    names = [f'mcp__aida__{name}' for name in sorted(exposed | (HOST_TOOLS if host else set()))]
     prompt = f'''You are Aida, a CAD assistant. Use your CAD tools to inspect meshes and build CAD.
 Input units: {units or "unknown; do not claim physical dimensions"}. Never rescale implicitly.
 
@@ -174,7 +371,10 @@ Building a part, always through its parametric model:
   hard-code numbers. If you round a measured value to a nominal one, keep the raw number in
   measured.
 - Add features one at a time with model_add_feature: code runs inside build_<part>(), reads
-  P.name and updates part. Order them like a machinist would: base body from the dominant
+  P.name and updates part. Feature code rules: no import (build123d and math are already
+  imported); no return at the top level (assign part); no numbers other than 0, 0.5, 1 and 2
+  (every other value is a parameter, including factors like a cutter's oversize). Helper
+  functions with return are fine. Order them like a machinist would: base body from the dominant
   section, then cuts, holes, then fillets and chamfers. Each change rebuilds the part from its
   whole script; a part with a reference mesh is checked against it and the trend says better,
   worse, same or mixed. If a change makes it worse, model_undo it and rethink. Use
@@ -218,7 +418,7 @@ Checking what you built:
   render the view that shows it; say what remains unverified only if no view can show it.
 - After render_view returns a PNG path or [SEND: path] without the image, call view_image.
   Do not claim to have seen an image before you have it.
-Use from build123d import * when necessary. Validate before exporting and export only when
+{HOST_PROMPT if host else ''}Use from build123d import * when necessary. Validate before exporting and export only when
 requested; export the assembly object for the whole design. Save exports inside
 {artifacts.root}; use relative filenames such as keyboard.step.
 Tool errors are actionable feedback; correct ordinary code errors, but stop and tell the user

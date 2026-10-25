@@ -1,6 +1,7 @@
 import { AlertCircle, ArrowUp, ImageIcon, MessagesSquare, Square, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useActivity } from '../lib/activity';
+import type { Question } from '../lib/events';
 import { isMeshFile, useStore, type FeedItem } from '../store';
 import { Markdown } from './Markdown';
 import { ReplayControls } from './Replay';
@@ -15,6 +16,7 @@ export function AgentDock() {
         <Hints />
         <ErrorCard />
         <ReplyCard />
+        {!replay && <QuestionCard />}
         {replay ? <ReplayControls /> : <PromptPill />}
       </div>
     </div>
@@ -27,10 +29,14 @@ function Hints() {
   const status = useStore((s) => s.status);
   const asked = useStore((s) => s.feed.some((i) => i.kind === 'user'));
   const hasCad = useStore((s) => s.revisions.some((r) => r.generated));
+  const hasParts = useStore((s) => (s.workspace?.parts.length ?? 0) > 0);
+  const working = useActivity().working;
   const engineStarting = status === 'starting' || stage === 'cad_starting' || stage === 'preparing';
   let text: string | null = null;
   if (meshFiles.length) text = `Adding ${meshFiles.map((f) => f.name).join(', ')}…`;
   else if (asked && !hasCad && engineStarting) text = 'Starting the CAD engine…';
+  // A part exists in the explorer from its first parameters; it has a shape only after its first feature builds.
+  else if (!hasCad && hasParts && working) text = 'No shape yet: Aida is building the first feature…';
   if (!text) return null;
   return (
     <div className="flex justify-center">
@@ -55,7 +61,110 @@ function ErrorCard() {
   );
 }
 
-type Message = Extract<FeedItem, { kind: 'agent' | 'user' }>;
+type Message = Extract<FeedItem, { kind: 'agent' | 'user' | 'question' }>;
+
+/** One answer as the agent will read it: "PLA (E 3500 MPa, yield 50 MPa)", "50 N". */
+function answerText(q: Question, value: string, other: boolean) {
+  if (q.kind === 'number') return value && q.unit ? `${value} ${q.unit}` : value;
+  if (q.kind === 'choice' && !other) {
+    const option = q.options.find((o) => o.label === value);
+    return option?.detail ? `${option.label} (${option.detail})` : value;
+  }
+  return value.trim();
+}
+
+/** Aida's questions with clickable answers; sending them is the user's next message. */
+function QuestionCard() {
+  const question = useStore((s) => s.question);
+  const submit = useStore((s) => s.submit);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [others, setOthers] = useState<Record<string, boolean>>({});
+  const [sending, setSending] = useState(false);
+  // A new set of questions starts blank.
+  useEffect(() => {
+    setValues({});
+    setOthers({});
+    setSending(false);
+  }, [question?.id]);
+  if (!question) return null;
+  const answered = (q: Question) => (values[q.id] ?? '').trim().length > 0;
+  const complete = question.questions.every(answered);
+  const send = async () => {
+    if (!complete || sending) return;
+    setSending(true);
+    const lines = question.questions.map((q) => `${q.id}: ${answerText(q, values[q.id], Boolean(others[q.id]))}`);
+    await submit(lines.join('\n'));
+    setSending(false);
+  };
+  const set = (id: string, value: string, other = false) => {
+    setValues((v) => ({ ...v, [id]: value }));
+    setOthers((o) => ({ ...o, [id]: other }));
+  };
+
+  return (
+    <FloatCard className="flex flex-col">
+      <div className="flex items-center gap-2 pl-3.5 pr-3.5 pt-2.5">
+        <AidaMark />
+        <span className="text-[12px] font-semibold">Aida needs {question.questions.length === 1 ? 'one detail' : 'a few details'}</span>
+        <span className="flex-1" />
+        <span className="text-[11px] text-faint">or type your own answer below</span>
+      </div>
+      <form
+        className="flex flex-col gap-3 px-3.5 pb-3 pt-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send();
+        }}
+      >
+        {question.questions.map((q) => (
+          <fieldset key={q.id} className="flex flex-col gap-1.5">
+            <legend className="mb-1.5 text-[13px] leading-[1.45] text-ink">{q.prompt}</legend>
+            {q.kind === 'choice' ? (
+              <div role="radiogroup" aria-label={q.prompt} className="flex flex-wrap gap-1.5">
+                {q.options.map((o) => {
+                  const picked = values[q.id] === o.label && !others[q.id];
+                  return (
+                    <button key={o.label} type="button" role="radio" aria-checked={picked}
+                      onClick={() => set(q.id, o.label)}
+                      className={cx('flex flex-col items-start rounded-lg border px-2.5 py-1.5 text-left text-[12px] leading-tight',
+                        picked ? 'border-accent bg-accent-soft text-accent-ink' : 'border-line-strong text-ink hover:border-accent/60 hover:bg-subtle')}>
+                      <span className="font-medium">{o.label}</span>
+                      {o.detail && <span className="mt-0.5 text-[10.5px] text-muted">{o.detail}</span>}
+                    </button>
+                  );
+                })}
+                {q.allow_other && (
+                  others[q.id] ? (
+                    <input autoFocus value={values[q.id] ?? ''} onChange={(e) => set(q.id, e.target.value, true)}
+                      aria-label={`${q.prompt} (your answer)`} placeholder="Your answer"
+                      className="min-w-40 flex-1 rounded-lg border border-accent bg-surface px-2.5 py-1.5 text-[12px] text-ink outline-none" />
+                  ) : (
+                    <button type="button" role="radio" aria-checked={false} onClick={() => set(q.id, '', true)}
+                      className="rounded-lg border border-dashed border-line-strong px-2.5 py-1.5 text-[12px] text-muted hover:border-accent/60 hover:text-ink">
+                      Other…
+                    </button>
+                  )
+                )}
+              </div>
+            ) : (
+              <label className="flex items-center gap-2">
+                <input type={q.kind === 'number' ? 'number' : 'text'} step="any" value={values[q.id] ?? ''}
+                  onChange={(e) => set(q.id, e.target.value)} aria-label={q.prompt}
+                  className={cx('rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 text-[13px] text-ink outline-none focus:border-accent',
+                    q.kind === 'number' ? 'w-32 font-mono' : 'flex-1')} />
+                {q.unit && <span className="text-[12px] text-muted">{q.unit}</span>}
+              </label>
+            )}
+          </fieldset>
+        ))}
+        <button type="submit" disabled={!complete || sending}
+          className="self-end rounded-full bg-accent-ink px-3.5 py-1.5 text-[12px] font-semibold text-white hover:bg-accent-ink-hover disabled:cursor-not-allowed disabled:bg-line-strong">
+          {sending ? 'Sending…' : 'Send answers'}
+        </button>
+      </form>
+    </FloatCard>
+  );
+}
 
 /** The agent's latest message since your last prompt. Older messages are one click away. */
 function ReplyCard() {
@@ -63,7 +172,10 @@ function ReplyCard() {
   const dismissed = useStore((s) => s.replyDismissedId);
   const dismissReply = useStore((s) => s.dismissReply);
   const [history, setHistory] = useState(false);
-  const messages = useMemo(() => feed.filter((i): i is Message => i.kind === 'agent' || i.kind === 'user'), [feed]);
+  const messages = useMemo(
+    () => feed.filter((i): i is Message => i.kind === 'agent' || i.kind === 'user' || i.kind === 'question'),
+    [feed],
+  );
   const latest = messages.at(-1);
   const reply = latest?.kind === 'agent' && latest.id !== dismissed ? latest : null;
 
@@ -148,7 +260,19 @@ function History({ messages, onClose }: { messages: Message[]; onClose: () => vo
       </div>
       <div ref={ref} className="scroll-thin flex max-h-[45vh] flex-col gap-3 overflow-y-auto p-3.5 text-[13px] leading-[1.55]">
         {messages.map((m) =>
-          m.kind === 'user' ? (
+          m.kind === 'question' ? (
+            <div key={m.id} className="flex gap-2">
+              <AidaMark className="mt-1" />
+              <ul className="min-w-0 flex-1 list-none rounded-lg border border-line px-3 py-2">
+                {m.questions.map((q) => (
+                  <li key={q.id} className="text-ink">{q.prompt}
+                    {q.options.length > 0 && <span className="text-muted"> · {q.options.map((o) => o.label).join(' / ')}</span>}
+                  </li>
+                ))}
+                {!m.answer && <li className="mt-1 text-[12px] text-faint">Waiting for your answer</li>}
+              </ul>
+            </div>
+          ) : m.kind === 'user' ? (
             <div key={m.id} className="self-end rounded-lg bg-subtle px-3 py-2 whitespace-pre-wrap">{m.text}</div>
           ) : (
             <div key={m.id} className="flex gap-2">

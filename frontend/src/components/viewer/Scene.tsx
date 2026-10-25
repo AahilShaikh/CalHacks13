@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber';
 import { Suspense, useEffect, useRef } from 'react';
 import { activeFea, activeTool, generatedRevisions, heatmapOf, referenceRevision, useStore } from '../../store';
 import { AgentCamera, AgentPlanes } from './AgentFocus';
+import { FeaDeformation } from './FeaDeformation';
 import { FeaMarkers } from './FeaMarkers';
 import { GlbModel, MeshPreview } from './Models';
 import { Thumbnailer } from './Thumbnailer';
@@ -26,6 +27,7 @@ function Models() {
   const selectPart = useStore((s) => s.selectPart);
   const hidden = useStore((s) => s.hiddenParts);
   const fea = useStore(activeFea);
+  const feaAnimate = useStore((s) => s.feaAnimate);
   // 'assembly' selects the assembly in the Model tab; in 3D it highlights nothing.
   const highlighted = selectedPart === 'assembly' ? null : selectedPart;
   // Show the scan as a ghost while a slice plane is up, so the plane reads through it.
@@ -51,13 +53,15 @@ function Models() {
 
   if (fea && (viewMode === 'fea-stress' || viewMode === 'fea-displacement')) {
     const deformed = viewMode === 'fea-displacement';
-    const url = deformed ? fea.displacement_url : fea.stress_url;
     return <group rotation={[-Math.PI / 2, 0, 0]}>
       <Bounds fit clip observe margin={1.7} maxDuration={0.6}>
         <Suspense fallback={shown ? <GlbModel url={shown.url} look="cad" /> : null}>
-          <GlbModel url={url} look="heat" />
+          {deformed
+            ? <FeaDeformation originalUrl={fea.stress_url} deformedUrl={fea.displacement_url} playing={feaAnimate} />
+            : <GlbModel url={fea.stress_url} look="heat" />}
           {deformed && shown && <GlbModel url={shown.url} look="outline" />}
-          <Refit token={url} />
+          {/* Frame the original shape; the swinging one would make the camera chase it. */}
+          <Refit token={fea.stress_url} />
         </Suspense>
       </Bounds>
       <FeaMarkers result={fea} />
@@ -98,6 +102,8 @@ function Models() {
             }
           >
             <GlbModel hidden={hidden} url={shown.url} look={heat ? 'outline' : 'cad'} x={gap} selected={highlighted} onPick={selectPart} />
+            {/* Without a scan to frame, frame the CAD once it first appears (not on every revision). */}
+            {!reference && previews.length === 0 && <Refit token={generated[0]?.url ?? ''} />}
           </Suspense>
         )}
       </Bounds>

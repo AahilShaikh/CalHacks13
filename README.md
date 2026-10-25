@@ -229,96 +229,89 @@ lists the sample meshes in `examples/` for the empty state's "Try the example pa
 
 ### Structural testing (FEA)
 
-After generating CAD in a session with **mm** units, click **FEA test** in the top
-bar or open the **FEA** tab. Choose assumed material properties (editable Young's
-modulus, Poisson's ratio and yield strength), a fixed bounding end, a total force
-and its direction, and the mesh resolution. **Run FEA** tests the CAD revision
-currently displayed, including a revision selected with the scrubber. The force
-is distributed uniformly over the opposite bounding end. A green marker identifies
-the fixed end and an orange arrow shows the force direction in the part's XYZ frame.
+Ask Aida whether a part is strong enough ("will this bracket hold 200 N?"). If it does not
+know the material or the load, it asks in a card above the prompt box with clickable answers
+(`ask_user`). It then runs `run_fea` on the latest CAD revision. The FEA tab opens and shows
+the run's stages live, then the viewer switches to the stress plot. If the part misses the
+target (by default a safety factor of 2 against yield), Aida changes a parameter such as a
+thickness or fillet, rebuilds, and tests again with the same material, load and resolution,
+up to five runs. Every run is listed in the FEA tab's **Runs** table. Click a row to see
+that revision's stress.
 
-Install the optional OpenCascade mesher and FEA library with:
+You can also run a test yourself: after generating CAD in a session with **mm** units,
+click **FEA test** in the top bar or open the **FEA** tab. Pick a material preset or edit
+Young's modulus, Poisson's ratio and yield strength. Then choose a fixed bounding end, a
+total force and its direction, and the mesh resolution. **Run FEA** tests the CAD revision
+currently displayed, including one selected with the scrubber. The force is spread
+uniformly over the opposite bounding end. A green marker shows the fixed end and an orange
+arrow the force direction, in the part's XYZ frame.
 
-```sh
-uv sync --extra fea
-uv run --extra fea aida-api
-```
+The solver is [Netgen / NGSolve](https://ngsolve.org/), installed with the other
+dependencies by `uv sync`. Netgen's
+[OpenCascade interface](https://ngsolve.org/ngsolve/docs/i-tutorials/unit-4.4-occ/occ.html)
+imports the revision's STEP snapshot and generates a tetrahedral mesh that follows the CAD.
+NGSolve solves [3D linear elasticity](https://ngsolve.org/ngsolve/docs/i-tutorials/wta/elasticity3D.html)
+with second-order (quadratic) elements and a sparse Cholesky factorization. On a slender
+cantilever this is within about 1% of beam theory, even at the coarsest resolution. Both
+end faces must be flat and lie at the two bounds of the support axis. Every successful
+single-object CAD preview saves `cad-NNN.step` under the execute lock, so an older revision
+can still be tested after the CAD has changed or the workspace was reopened. Multiple
+solids and assembly contact are not supported.
 
-**Automatic** selects [Netgen / NGSolve](https://ngsolve.org/) when the library
-and the selected revision's STEP snapshot are available. Netgen's
-[OpenCascade Python interface](https://ngsolve.org/ngsolve/docs/i-tutorials/unit-4.4-occ/occ.html)
-imports STEP and generates a CAD-conforming tetrahedral volume mesh. NGSolve
-solves [3D linear elasticity](https://ngsolve.org/ngsolve/docs/i-tutorials/wta/elasticity3D.html)
-with first-order VectorH1 elements and a sparse Cholesky factorization. End faces
-must be planar and lie at the two bounds along the selected support axis. Every
-successful single-object CAD preview also saves `cad-NNN.step` under the execute
-lock, so an older revision can be tested after the CAD session has changed or ended.
-Multiple solids and assembly contact are not supported.
+**Stress** shows von Mises stress in MPa, with a mark where the yield strength sits on the
+scale. **Deformation** animates the part between its original and deformed shape
+(magnification labeled), with the original CAD outline. The panel reports peak stress,
+maximum displacement, safety factor (yield / peak), mesh size, volume difference and
+equilibrium residual. It also offers a downloadable JSON report with the settings and
+support reactions. Display colours average stresses at nodes, while reported peaks are
+sampled at element corners and centroids without averaging.
 
-**Voxel** uses the existing NumPy/SciPy/VTK dependencies. It samples the closed CAD
-surface onto a solid grid and solves with eight-node hexahedra, 2×2×2 Gauss
-integration and preconditioned conjugate gradients. Automatic uses this fallback
-when NGSolve or a STEP snapshot is unavailable and records the reason in the
-report. Explicitly selecting the CAD solver reports missing prerequisites; a
-failed CAD solve does not silently switch methods.
+This is a structural screening tool. Stress at the clamped edge and at sharp inner corners
+is a local peak that grows with refinement, so compare runs at the same resolution.
+Material presets are typical values; printed parts are weaker across layers. Contact,
+plasticity, buckling, fatigue and print anisotropy are not modeled. Jobs run in isolated
+processes with a two-minute limit, at most one active run per session and two API workers
+globally. Meshes above 100,000 elements, 30,000 nodes or 600,000 unknowns are rejected
+before solving. Each result belongs to one CAD revision; newer revisions do not inherit
+its stress overlay.
 
-**Stress** displays von Mises stress in MPa; **Deformation** displays displacement
-in mm with labeled magnification and the original CAD outline. Results identify
-the actual solver and element type. The panel reports peak element stress,
-maximum displacement, entered yield strength / peak stress, mesh size, volume
-difference, equilibrium residual, and a downloadable JSON report with settings
-and support reactions. Display colours average adjacent element stresses at nodes;
-reported peaks remain unaveraged. Divisions set the target mesh size along the
-longest axis. They are not an exact element count for Netgen.
+Runs are reported to the UI as session events (`fea_started`, `fea_stage`, `fea_done` /
+`fea_failed`), so they also replay when a workspace is reopened. Aida's questions are a
+`question` event, and the answer is the user's next message.
 
-Both methods are structural screening tools. First-order tetrahedra can be too
-stiff in bending; a voxel grid can erase small holes, fillets and thin features.
-Compare resolutions to assess convergence. Material presets are illustrative
-assumptions. Contact, plasticity, buckling, fatigue and print anisotropy are outside
-these solvers. Jobs run in isolated processes with a two-minute limit, at most one
-active run per session and two API workers globally. NGSolve rejects meshes above
-100,000 elements or 30,000 nodes before assembly. Each result belongs to an immutable
-CAD revision; newer revisions do not inherit its stress overlay. FEA needs no
-agent/API credits.
+- `GET /api/v1/fea/capabilities`: whether NGSolve is installed.
+- `POST /api/v1/cad-sessions/{id}/fea`: JSON `revision` plus optional
+  `youngs_modulus_mpa`, `poisson_ratio`, `yield_strength_mpa`, `force_n`,
+  `fixed_face` (`x-`, `x+`, `y-`, `y+`, `z-`, `z+`), `load_direction` (same choices)
+  and `resolution` (`10`, `16`, `22`). Returns 202, or 409 if the revision has no STEP.
+- `GET /api/v1/cad-sessions/{id}/fea/{analysis_id}`: job status, stage and result.
+- `GET /api/v1/cad-sessions/{id}/fea/{analysis_id}/files/{filename}`: immutable
+  `stress.glb`, `displacement.glb` or `report.json` after a successful solve.
 
-- `GET /api/v1/fea/capabilities` — installed solvers and the optional install command.
-- `POST /api/v1/cad-sessions/{id}/fea` — JSON `revision` plus optional
-  `engine` (`auto`, `ngsolve`, `voxel`), `youngs_modulus_mpa`, `poisson_ratio`,
-  `yield_strength_mpa`, `force_n`, `fixed_face` (`x-`, `x+`, `y-`, `y+`, `z-`, `z+`),
-  `load_direction` (same choices), and `resolution` (`10`, `16`, `22`); returns 202.
-- `GET /api/v1/cad-sessions/{id}/fea/{analysis_id}` — job status and result.
-- `GET /api/v1/cad-sessions/{id}/fea/{analysis_id}/files/{filename}` — immutable
-  `stress.glb`, `displacement.glb`, or `report.json` after a successful solve.
+The implementation lives in `backend/aida/analysis/`: settings, the NGSolve solver, result
+export, the worker (`python -m aida.analysis`) and the MCP adapter. The HTTP router
+(`api/fea.py`), Aida's tools (`agent.py`, `api/agent_host.py`) and the React panel share it.
 
-The modular implementation lives in `backend/aida/analysis/`: shared settings,
-backend selection, NGSolve adapter, result export, bounded subprocess worker and
-MCP adapter. `backend/aida/fea.py` retains the voxel backend and CLI. The HTTP
-router and React panel consume the common interface.
-
-For agent integrations, the optional stdio MCP server exposes `fea_capabilities`
-and `run_fea` over the same worker. It accepts workspace-relative STEP or closed
-mesh files, writes each run to a unique output directory and returns local GLB
-and JSON paths. Configure an MCP client as follows, replacing the workspace path:
+For other agents, a stdio MCP server exposes `fea_capabilities` and `run_fea` over the same
+worker. It accepts workspace-relative STEP files, writes each run to its own output
+directory and returns local GLB and JSON paths. Configure an MCP client like this, replacing
+the paths:
 
 ```json
 {
   "mcpServers": {
     "aida-fea": {
       "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/CalHacks13", "--extra", "fea", "aida-fea-mcp"],
+      "args": ["run", "--directory", "/absolute/path/to/CalHacks13", "aida-fea-mcp"],
       "env": {"AIDA_FEA_ROOT": "/absolute/path/to/CalHacks13/artifacts"}
     }
   }
 }
 ```
 
-`run_fea` takes `cad_file` and an optional `settings` object with the same solver,
-material and load fields as the API. Input paths must resolve inside
-`AIDA_FEA_ROOT` (default: current directory); all geometry is interpreted in mm.
-The adapter can be connected separately to an agent; the UI calls the HTTP API.
-[openPASO](https://github.com/open-PASO/openPASO) is an existing broader MCP option
-supporting NGSolve and other simulation codes. This integration uses a small local
-adapter to keep UI runs deterministic and reuse the same analysis implementation.
+`run_fea` takes `cad_file` and an optional `settings` object with the same material and
+load fields as the API. Input paths must resolve inside `AIDA_FEA_ROOT` (default: the
+current directory); all geometry is in mm.
 
 ## Legacy web viewer (live CAD sessions)
 

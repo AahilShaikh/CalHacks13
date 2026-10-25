@@ -2,7 +2,7 @@ import { ChevronDown, Crosshair, Pause, Play } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toolLabel, type Deviation } from '../../lib/events';
 import { FEA_GRADIENT, feaNumber, type FeaResult } from '../../lib/fea';
-import { activeFea, generatedRevisions, heatmapOf, useStore, type ViewMode } from '../../store';
+import { activeFea, generatedRevisions, heatmapOf, revisionNumber, useStore, type ViewMode } from '../../store';
 import { Badge, FloatCard, cx, type Tone } from '../ui';
 
 const MODES: { id: ViewMode; label: string }[] = [
@@ -109,13 +109,36 @@ export function Legend() {
 }
 
 function FeaLegend({ result, deformed }: { result: FeaResult; deformed: boolean }) {
+  const animate = useStore((s) => s.feaAnimate);
+  const revisions = useStore((s) => s.revisions);
+  const setAnimate = useStore((s) => s.setFeaAnimate);
+  // Where yield sits on the stress scale (the scale's top is the peak stress).
+  const yieldAt = result.settings.yield_strength_mpa / result.max_von_mises_mpa;
   return <FloatCard className="flex w-64 flex-col gap-1.5 px-3 py-2 text-[11px] text-muted">
-    <div className="flex justify-between font-medium text-ink"><span>{deformed ? 'Displacement · mm' : 'von Mises · MPa'}</span><span>rev {result.revision}</span></div>
-    <div className="h-2 rounded-full" style={{ background: FEA_GRADIENT }} />
+    <div className="flex items-center justify-between font-medium text-ink">
+      <span>{deformed ? 'Displacement · mm' : 'von Mises stress · MPa'}</span>
+      {deformed ? (
+        <button type="button" onClick={() => setAnimate(!animate)} aria-label={animate ? 'Pause animation' : 'Play animation'}
+          className="flex items-center gap-1 rounded px-1 text-[10.5px] font-normal text-accent-ink hover:bg-subtle">
+          {animate ? <Pause size={11} aria-hidden /> : <Play size={11} aria-hidden />}{animate ? 'Pause' : 'Play'}
+        </button>
+      ) : <span>rev {revisionNumber(revisions, result.revision)}</span>}
+    </div>
+    <div className="relative h-2 rounded-full" style={{ background: FEA_GRADIENT }}>
+      {!deformed && yieldAt <= 1 && (
+        <span className="absolute -top-0.5 h-3 w-0.5 rounded bg-ink" style={{ left: `calc(${yieldAt * 100}% - 1px)` }}
+          title={`Yield ${feaNumber(result.settings.yield_strength_mpa)} MPa`} />
+      )}
+    </div>
     <div className="flex justify-between font-mono text-[10px]"><span>0</span><span>{feaNumber(deformed ? result.max_displacement_mm : result.max_von_mises_mpa)}</span></div>
-    {deformed && <span>Deformation magnified {feaNumber(result.deformation_scale)}× · cyan outline: original CAD</span>}
+    {!deformed && (
+      <span className={cx('text-[10.5px]', result.yield_ratio !== null && result.yield_ratio < 1 ? 'text-error' : result.yield_ratio !== null && result.yield_ratio < 2 ? 'text-warn' : 'text-ok')}>
+        {yieldAt <= 1 ? 'Above the black mark the material yields' : `Peak is ${feaNumber(result.yield_ratio ?? 0)}× below yield (${feaNumber(result.settings.yield_strength_mpa)} MPa)`}
+      </span>
+    )}
+    {deformed && <span>Deformation magnified {feaNumber(result.deformation_scale)}× · outline: original CAD</span>}
     <div className="flex items-center gap-1.5 text-[10px]"><span className="size-1.5 rounded-full bg-ok" />Fixed end<span className="ml-2 text-accent-ink">↗</span>{feaNumber(result.settings.force_n)} N · {result.settings.load_direction.toUpperCase()}</div>
-    <span className="text-[10px]">{result.engine === 'ngsolve' ? 'CAD mesh' : 'Voxel mesh'} · {result.elements.toLocaleString()} elements</span>
+    <span className="text-[10px]">CAD mesh · {result.elements.toLocaleString()} quadratic elements</span>
   </FloatCard>;
 }
 
@@ -151,28 +174,25 @@ function verdictOf(d: Deviation): { tone: Tone; label: string } {
 }
 
 /** Accuracy against the scan and the revision timeline, in one card. */
+/** Accuracy against the scan, for workspaces that have one. Revisions are stepped in the top bar. */
 export function RevisionCard() {
   const deviations = useStore((s) => s.deviations);
-  const generated = generatedRevisions(useStore((s) => s.revisions));
   const [open, setOpen] = useState(true);
   const last = deviations.at(-1);
-  if (!generated.length && !last) return null;
+  if (!last) return null;
 
   return (
     <FloatCard className="flex w-[264px] flex-col">
       <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
         className="flex items-center gap-2 px-3 py-2 text-left">
-        <span className="text-[12px] font-semibold">{last ? 'Accuracy' : 'Revisions'}</span>
+        <span className="text-[12px] font-semibold">Accuracy</span>
         <span className="flex-1" />
-        {last && <Badge tone={verdictOf(last).tone} dot>{verdictOf(last).label}</Badge>}
+        <Badge tone={verdictOf(last).tone} dot>{verdictOf(last).label}</Badge>
         <ChevronDown size={14} className={cx('shrink-0 text-faint transition-transform', !open && '-rotate-90')} aria-hidden />
       </button>
       {open && (
         <div className="flex flex-col gap-2 border-t border-line px-3 pb-2.5 pt-2">
-          {last ? <Sparkline deviations={deviations} /> : (
-            <p className="text-[12px] leading-[1.45] text-faint">Designed without a scan, so there is nothing to compare against.</p>
-          )}
-          <Scrubber />
+          <Sparkline deviations={deviations} />
         </div>
       )}
     </FloatCard>
@@ -224,8 +244,8 @@ function Sparkline({ deviations }: { deviations: Deviation[] }) {
   );
 }
 
-/** Step through every generated CAD revision; play replays the build. */
-function Scrubber() {
+/** Step through every generated CAD revision; play replays the build. Lives in the top bar. */
+export function RevisionScrubber() {
   const revisions = useStore((s) => s.revisions);
   const shownRevision = useStore((s) => s.shownRevision);
   const showRevision = useStore((s) => s.showRevision);
@@ -251,11 +271,11 @@ function Scrubber() {
   }, [playing, showRevision]);
 
   if (count < 2) {
-    return count === 1 ? <span className="font-mono text-[11px] text-faint">revision 1</span> : null;
+    return count === 1 ? <span className="font-mono text-[11px] text-muted">rev 1</span> : null;
   }
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2" role="group" aria-label="CAD revisions">
       <button
         type="button"
         aria-label={playing ? 'Pause' : 'Play the build from the first revision'}
@@ -280,9 +300,9 @@ function Scrubber() {
           const i = Number(e.target.value);
           showRevision(i === count - 1 ? null : generated[i].revision);
         }}
-        className="h-1 min-w-0 flex-1 cursor-pointer accent-accent-ink"
+        className="h-1 w-28 cursor-pointer accent-accent-ink"
       />
-      <span className="shrink-0 font-mono text-[11px] text-muted">{index + 1}/{count}</span>
+      <span className="shrink-0 font-mono text-[11px] text-muted">rev {index + 1}/{count}</span>
     </div>
   );
 }

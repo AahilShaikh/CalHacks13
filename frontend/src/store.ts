@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import * as api from './lib/api';
-import type { FeaJob, FeaSettings } from './lib/fea';
+import { feaBusy, type FeaJob, type FeaSettings } from './lib/fea';
 import { duration } from './lib/format';
 import {
   argSummary,
@@ -14,6 +14,7 @@ import {
   type Deviation,
   type ModelState,
   type PartState,
+  type Question,
   type ReferenceItem,
   type Phase,
   type ServerEvent,
@@ -44,7 +45,12 @@ export type FeedItem =
   | { kind: 'note'; id: number; text: string; tone: 'muted' | 'error' | 'ok' }
   /** The design as it stood after a prompt: restorable, shown in the viewer at meshRevision. */
   | { kind: 'version'; id: number; number: number; meshRevision: number | null }
+  /** Questions Aida asked (ask_user); ``answer`` is the user's next message. */
+  | { kind: 'question'; id: number; qid: string; questions: Question[]; answer?: string }
   | ToolItem;
+
+/** Questions waiting for the user's answer, shown above the prompt. */
+export type PendingQuestion = { id: string; questions: Question[] };
 
 export type Revision = {
   revision: number;
@@ -73,10 +79,18 @@ type State = {
   // Session.
   sessionId: string | null;
   sessionUnits: 'mm' | null;
+  /** The latest FEA run (running or finished). */
   feaJob: FeaJob | null;
+  /** Every finished run this session, oldest first: the design loop's history. */
+  feaRuns: FeaJob[];
   feaStarting: boolean;
   feaError: string | null;
+  /** The deformation view oscillates between the original and deformed shape. */
+  feaAnimate: boolean;
   runFea: (settings: FeaSettings) => Promise<void>;
+  setFeaAnimate: (animate: boolean) => void;
+  /** Aida's unanswered questions; cleared by the user's next message. */
+  question: PendingQuestion | null;
   status: AppStatus;
   stage: string;
   error: string | null;
@@ -186,7 +200,8 @@ const freshSession = {
   changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true, replyDismissedId: null,
   hiddenParts: [], references: [], currentVersion: null,
   stage: '', startedAt: null, endedAt: null, lastEventAt: null,
-  sessionUnits: null, feaJob: null, feaStarting: false, feaError: null, viewMode: 'overlay',
+  sessionUnits: null, feaJob: null, feaRuns: [], feaStarting: false, feaError: null, viewMode: 'overlay',
+  question: null,
 } satisfies Partial<State>;
 
 const UNTITLED = 'Untitled workspace';
@@ -204,8 +219,11 @@ export const useStore = create<State>((set, get) => ({
   sessionId: null,
   sessionUnits: null,
   feaJob: null,
+  feaRuns: [],
   feaStarting: false,
   feaError: null,
+  feaAnimate: true,
+  question: null,
   status: 'idle',
   stage: '',
   error: null,
@@ -238,39 +256,18 @@ export const useStore = create<State>((set, get) => ({
   runFea: async (settings) => {
     const s = get();
     const revision = selectedRevision(s)?.revision;
-    if (!s.sessionId || s.replay || revision === undefined || s.feaStarting
-      || s.feaJob?.status === 'running' || s.feaJob?.status === 'queued') return;
+    if (!s.sessionId || s.replay || revision === undefined || s.feaStarting || feaBusy(s.feaJob)) return;
     const sessionId = s.sessionId;
     set({ feaStarting: true, feaError: null });
-    let job: FeaJob;
     try {
-      job = await api.createFea(sessionId, revision, settings);
+      // Progress and the result arrive as session events (fea_started, fea_stage, fea_done).
+      await api.createFea(sessionId, revision, settings);
+      if (get().sessionId === sessionId) set({ feaStarting: false });
     } catch (err) {
       if (get().sessionId === sessionId) set({ feaStarting: false, feaError: (err as Error).message });
-      return;
-    }
-    if (get().sessionId !== sessionId) return;
-    set({ feaJob: job, feaStarting: false,
-      ...(get().viewMode.startsWith('fea-') ? { viewMode: 'overlay' } : {}) });
-    while (get().sessionId === sessionId && get().feaJob?.analysis_id === job.analysis_id) {
-      try {
-        job = await api.getFea(sessionId, job.analysis_id);
-        if (get().sessionId !== sessionId || get().feaJob?.analysis_id !== job.analysis_id) return;
-        set({ feaJob: job, feaError: job.error });
-        if (job.status === 'succeeded') {
-          if (selectedRevision(get())?.revision === revision) {
-            set({ viewMode: 'fea-stress', followAgent: false, focusId: null });
-          }
-          return;
-        }
-        if (job.status === 'failed') return;
-      } catch (err) {
-        if (get().sessionId !== sessionId) return;
-        set({ feaError: `Reconnecting to FEA: ${(err as Error).message}` });
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   },
+  setFeaAnimate: (feaAnimate) => set({ feaAnimate }),
 
   openWorkspace: async (id) => {
     if (opening && openingId === id) return opening;
@@ -408,8 +405,11 @@ export const useStore = create<State>((set, get) => ({
   apply: (events) =>
     set((s) => {
       let { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error, endedAt,
-        references, workspaceName, currentVersion } = s;
+        references, workspaceName, currentVersion, feaJob, feaRuns, feaError, question, panelTab, stepsOpen } = s;
       feed = [...feed];
+      // FEA run to show as stress once applied; only for fresh events, not a reopened history.
+      let showFea: number | null = null;
+      const fresh = (at: number) => Boolean(s.replay) || Date.now() / 1000 - at < 60;
       const updateLastTool = (name: string | null, change: (t: ToolItem) => ToolItem) => {
         for (let i = feed.length - 1; i >= 0; i--) {
           const item = feed[i];
@@ -523,7 +523,41 @@ export const useStore = create<State>((set, get) => ({
           case 'session_done':
             feed.push(note('Workspace paused', 'muted'));
             break;
+          case 'fea_started': {
+            const { type: _t, seq: _s, at: _a, ...job } = e;
+            feaJob = job;
+            feaError = null;
+            if (fresh(e.at)) {
+              panelTab = 'fea';
+              stepsOpen = true;
+            }
+            break;
+          }
+          case 'fea_stage':
+            if (feaJob?.analysis_id === e.analysis_id) feaJob = { ...feaJob, status: 'running', stage: e.stage };
+            break;
+          case 'fea_done':
+          case 'fea_failed': {
+            const { type: _t, seq: _s, at: _a, ...job } = e;
+            feaJob = job;
+            feaError = job.error;
+            if (e.type === 'fea_done') {
+              feaRuns = [...feaRuns.filter((r) => r.analysis_id !== job.analysis_id), job];
+              if (fresh(e.at)) showFea = job.revision;
+            }
+            break;
+          }
+          case 'question':
+            feed.push({ kind: 'question', id: nextId++, qid: e.id, questions: e.questions });
+            question = { id: e.id, questions: e.questions };
+            break;
           case 'user_prompt':
+            if (question) {
+              const asked = feed.findLastIndex((i) => i.kind === 'question' && i.qid === question!.id);
+              const item = feed[asked];
+              if (item?.kind === 'question') feed[asked] = { ...item, answer: e.text };
+              question = null;
+            }
             feed.push({ kind: 'user', id: nextId++, text: e.text });
             // An unnamed workspace goes by its first prompt (as on the home screen).
             if (!s.replay && !s.workspaceNamed && (!workspaceName || workspaceName === UNTITLED)) {
@@ -536,9 +570,15 @@ export const useStore = create<State>((set, get) => ({
         }
       }
       const lastEventAt = events.length ? events[events.length - 1].at : s.lastEventAt;
-      const viewMode = s.viewMode.startsWith('fea-') && !activeFea({ ...s, revisions }) ? 'overlay' : s.viewMode;
+      const after = { ...s, revisions, feaRuns };
+      let viewMode = s.viewMode.startsWith('fea-') && !activeFea(after) ? 'overlay' : s.viewMode;
+      // A run that just finished on the revision in view: show its stress.
+      if (showFea !== null && selectedRevision(after)?.revision === showFea && !viewMode.startsWith('fea-')) {
+        viewMode = 'fea-stress';
+      }
       return { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error,
-        endedAt, lastEventAt, references, workspaceName, currentVersion, viewMode };
+        endedAt, lastEventAt, references, workspaceName, currentVersion, viewMode, feaJob, feaRuns, feaError, question,
+        panelTab, stepsOpen };
     }),
 
   showRevision: (shownRevision) => set((s) => ({ shownRevision,
@@ -712,15 +752,21 @@ export function activeTool(s: Pick<State, 'feed' | 'focusId' | 'followAgent'>): 
 }
 
 export const generatedRevisions = (revisions: Revision[]) => revisions.filter((r) => r.generated);
-export const referenceRevision = (revisions: Revision[]) => revisions.find((r) => !r.generated) ?? null;
+/** The number people see for a CAD revision: its place among generated revisions, from 1. */
+export function revisionNumber(revisions: Revision[], revision: number | undefined) {
+  if (revision === undefined) return undefined;
+  const index = generatedRevisions(revisions).findIndex((r) => r.revision === revision);
+  return index < 0 ? revision : index + 1;
+}
+export const referenceRevision =(revisions: Revision[]) => revisions.find((r) => !r.generated) ?? null;
 
 export function selectedRevision(s: Pick<State, 'revisions' | 'shownRevision'>) {
   const generated = generatedRevisions(s.revisions);
   return s.shownRevision === null ? generated.at(-1) : generated.find((r) => r.revision === s.shownRevision);
 }
 
-/** Results are visible only on the exact CAD revision that was tested. */
-export function activeFea(s: Pick<State, 'feaJob' | 'revisions' | 'shownRevision'>) {
-  const result = s.feaJob?.result;
-  return result && result.revision === selectedRevision(s)?.revision ? result : null;
+/** The latest result for the CAD revision in view: results show only on the exact revision tested. */
+export function activeFea(s: Pick<State, 'feaRuns' | 'revisions' | 'shownRevision'>) {
+  const revision = selectedRevision(s)?.revision;
+  return s.feaRuns.findLast((run) => run.result?.revision === revision)?.result ?? null;
 }

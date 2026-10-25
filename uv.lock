@@ -12,6 +12,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "matplotlib" },
     { name = "mcp" },
+    { name = "ngsolve" },
     { name = "opencv-contrib-python" },
     { name = "pillow" },
     { name = "pyserial" },
@@ -22,11 +23,6 @@ dependencies = [
     { name = "trimesh" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "vtk" },
-]
-
-[package.optional-dependencies]
-fea = [
-    { name = "ngsolve" },
 ]
 
 [package.dev-dependencies]
@@ -43,7 +39,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.162.0" },
     { name = "matplotlib", specifier = ">=3.11.2" },
     { name = "mcp", specifier = ">=2,<3" },
-    { name = "ngsolve", marker = "extra == 'fea'", specifier = ">=6.2.2406,<7" },
+    { name = "ngsolve", specifier = ">=6.2.2406,<7" },
     { name = "opencv-contrib-python", specifier = ">=5.0.0.93" },
     { name = "pillow" },
     { name = "pyserial", specifier = ">=3.5,<4" },
@@ -55,7 +51,6 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
     { name = "vtk", specifier = ">=9.3,<10" },
 ]
-provides-extras = ["fea"]
 
 [package.metadata.requires-dev]
 dev = [
