@@ -8,11 +8,12 @@ import {
   Hammer,
   PanelRightClose,
   PanelRightOpen,
+  RotateCcw,
   X,
   type LucideIcon,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { duration } from '../lib/activity';
+import { duration, useActivity } from '../lib/activity';
 import { toolLabel, type Phase } from '../lib/events';
 import { useStore, type FeedItem, type ToolItem } from '../store';
 import { IconButton, Spinner, cx } from './ui';
@@ -21,19 +22,22 @@ const PHASE_ICON: Record<Phase, LucideIcon> = { inspect: Eye, build: Hammer, ver
 const PHASE_NAME: Record<Phase, string> = { inspect: 'Inspect', build: 'Build', verify: 'Verify' };
 
 type Note = Extract<FeedItem, { kind: 'note' }>;
-type Group = { key: number; prompt: string | null; steps: (ToolItem | Note)[] };
+type Version = Extract<FeedItem, { kind: 'version' }>;
+type Group = { key: number; prompt: string | null; steps: (ToolItem | Note)[]; version: Version | null };
 
 /** Split the feed at each prompt the user sent; agent text goes to the reply card instead. */
 function groupFeed(feed: FeedItem[]): Group[] {
   const groups: Group[] = [];
   for (const item of feed) {
     if (item.kind === 'user') {
-      groups.push({ key: item.id, prompt: item.text, steps: [] });
+      groups.push({ key: item.id, prompt: item.text, steps: [], version: null });
       continue;
     }
     if (item.kind === 'agent') continue;
-    if (!groups.length) groups.push({ key: 0, prompt: null, steps: [] });
-    groups[groups.length - 1].steps.push(item);
+    if (!groups.length) groups.push({ key: 0, prompt: null, steps: [], version: null });
+    const group = groups[groups.length - 1];
+    if (item.kind === 'version') group.version = item;
+    else group.steps.push(item);
   }
   return groups;
 }
@@ -100,12 +104,15 @@ function EmptySteps() {
 function StepList({ groups, feed }: { groups: Group[]; feed: FeedItem[] }) {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  // Groups the user opened or closed; the rest follow the default (only the latest is open).
+  const [choices, setChoices] = useState<Record<number, boolean>>({});
   // Follow new steps only while the user is already at the bottom.
   useEffect(() => {
     const el = ref.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [feed]);
 
+  const last = groups.length - 1;
   return (
     <div
       ref={ref}
@@ -115,21 +122,117 @@ function StepList({ groups, feed }: { groups: Group[]; feed: FeedItem[] }) {
       }}
       className="scroll-thin flex min-h-0 flex-1 flex-col overflow-y-auto pb-4"
     >
-      {groups.map((group) => (
-        <section key={group.key} className="flex flex-col border-b border-line/70 py-2 last:border-b-0">
-          {group.prompt !== null && (
-            <p className="mx-3 mb-1 line-clamp-3 rounded-md bg-subtle px-2.5 py-1.5 text-[12px] leading-[1.45] text-ink"
-              title={group.prompt}>
-              {group.prompt}
-            </p>
-          )}
-          <ol className="flex flex-col">
-            {group.steps.map((step) =>
-              step.kind === 'tool' ? <ToolRow key={step.id} item={step} /> : <NoteRow key={step.id} note={step} />,
+      {groups.map((group, index) => {
+        const running = group.steps.some((step) => step.kind === 'tool' && step.status === 'running');
+        const open = group.prompt === null || (choices[group.key] ?? (index === last || running));
+        return (
+          <section key={group.key} className="flex flex-col border-b border-line/70 py-1.5 last:border-b-0">
+            {group.prompt !== null && (
+              <GroupHeader group={group} open={open} running={running}
+                onToggle={() => setChoices((c) => ({ ...c, [group.key]: !open }))} />
             )}
-          </ol>
-        </section>
-      ))}
+            {open && (
+              <ol className="flex flex-col">
+                {group.steps.map((step) =>
+                  step.kind === 'tool' ? <ToolRow key={step.id} item={step} /> : <NoteRow key={step.id} note={step} />,
+                )}
+              </ol>
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A prompt you sent: click to show or hide its steps. Its version can be viewed or restored. */
+function GroupHeader({ group, open, running, onToggle }: {
+  group: Group;
+  open: boolean;
+  running: boolean;
+  onToggle: () => void;
+}) {
+  const tools = group.steps.filter((step) => step.kind === 'tool').length;
+  const outcome = group.steps.findLast((step): step is Note => step.kind === 'note' && step.tone !== 'muted');
+  const failed = outcome?.tone === 'error';
+  return (
+    <div className="flex flex-col gap-1 px-3 pb-1">
+      <button type="button" onClick={onToggle} aria-expanded={open}
+        className="group flex w-full items-start gap-1.5 rounded-md bg-subtle px-2 py-1.5 text-left hover:bg-line/60">
+        <ChevronRight size={13} aria-hidden
+          className={cx('mt-[3px] shrink-0 text-faint transition-transform', open && 'rotate-90')} />
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className={cx('text-[12px] leading-[1.45] text-ink', open ? 'line-clamp-3' : 'line-clamp-1')}
+            title={group.prompt ?? undefined}>
+            {group.prompt}
+          </span>
+          <span className="flex items-center gap-1.5 text-[11px] text-faint">
+            {running && <Spinner size={11} className="text-accent" />}
+            <span>{tools} step{tools === 1 ? '' : 's'}</span>
+            {outcome && !running && (
+              <span className={cx('truncate', failed && 'text-error')}>· {outcome.text}</span>
+            )}
+          </span>
+        </span>
+      </button>
+      {group.version && <VersionRow version={group.version} />}
+    </div>
+  );
+}
+
+/** The design as this prompt left it: view it in 3D, or go back to it. */
+function VersionRow({ version }: { version: Version }) {
+  const current = useStore((s) => s.currentVersion === version.number);
+  const shown = useStore((s) => version.meshRevision !== null && s.shownRevision === version.meshRevision);
+  const latestShown = useStore((s) => s.shownRevision === null);
+  const showRevision = useStore((s) => s.showRevision);
+  const restore = useStore((s) => s.restoreVersion);
+  const { working } = useActivity();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!confirming) return;
+    const timer = setTimeout(() => setConfirming(false), 4000);
+    return () => clearTimeout(timer);
+  }, [confirming]);
+
+  return (
+    <div className="flex items-center gap-1.5 pl-[22px] text-[11px]">
+      <span className={cx('rounded-sm px-1.5 py-px font-mono font-medium',
+        current ? 'bg-accent-soft text-accent-ink' : 'bg-subtle text-muted')}>
+        v{version.number}
+      </span>
+      {current && <span className="text-faint">current</span>}
+      <span className="flex-1" />
+      {version.meshRevision !== null && (
+        <button type="button" aria-pressed={shown}
+          onClick={() => showRevision(shown || (current && latestShown) ? null : version.meshRevision)}
+          className={cx('rounded-sm px-1.5 py-0.5 hover:bg-subtle', shown ? 'font-medium text-accent-ink' : 'text-muted hover:text-ink')}>
+          {shown ? 'Viewing' : 'View'}
+        </button>
+      )}
+      {!current && (
+        <button
+          type="button"
+          disabled={working || busy}
+          title={working ? 'Wait for Aida to finish, or stop it' : 'Put the design back to this version (later versions are kept)'}
+          onClick={async () => {
+            if (!confirming) {
+              setConfirming(true);
+              return;
+            }
+            setConfirming(false);
+            setBusy(true);
+            await restore(version.number);
+            setBusy(false);
+          }}
+          className={cx('flex items-center gap-1 rounded-sm px-1.5 py-0.5 disabled:cursor-not-allowed disabled:opacity-40',
+            confirming ? 'bg-accent-ink font-medium text-white' : 'text-muted hover:bg-subtle hover:text-ink')}
+        >
+          {busy ? <Spinner size={11} /> : <RotateCcw size={11} strokeWidth={2} aria-hidden />}
+          {confirming ? `Restore v${version.number}?` : 'Restore'}
+        </button>
+      )}
     </div>
   );
 }

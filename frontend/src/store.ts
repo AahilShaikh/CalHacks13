@@ -41,6 +41,8 @@ export type FeedItem =
   | { kind: 'agent'; id: number; text: string }
   | { kind: 'user'; id: number; text: string }
   | { kind: 'note'; id: number; text: string; tone: 'muted' | 'error' | 'ok' }
+  /** The design as it stood after a prompt: restorable, shown in the viewer at meshRevision. */
+  | { kind: 'version'; id: number; number: number; meshRevision: number | null }
   | ToolItem;
 
 export type Revision = {
@@ -95,6 +97,8 @@ type State = {
   hiddenParts: string[];
   /** Scans and photos the agent can use, as the server last reported them. */
   references: ReferenceItem[];
+  /** The version the design is at now: the latest saved, or the one restored. */
+  currentVersion: number | null;
   /** A tool card the user clicked to see in 3D; null follows the agent (if followAgent). */
   focusId: number | null;
   followAgent: boolean;
@@ -112,6 +116,7 @@ type State = {
   /** Stop following the open workspace (it keeps running on the server until idle). */
   leaveWorkspace: () => void;
   renameWorkspace: (name: string) => Promise<void>;
+  restoreVersion: (number: number) => Promise<void>;
   addMeshes: (files: File[]) => Promise<void>;
   selectPart: (part: string | null) => void;
   setUnits: (units: 'mm' | '') => void;
@@ -168,7 +173,7 @@ const REPLAY_MAX_GAP_S = 3;
 const freshSession = {
   error: null, feed: [], revisions: [], deviations: [], features: [], cost: 0, workspace: null, selectedPart: null,
   changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true, replyDismissedId: null,
-  hiddenParts: [], references: [],
+  hiddenParts: [], references: [], currentVersion: null,
   stage: '', startedAt: null, endedAt: null, lastEventAt: null,
 } satisfies Partial<State>;
 
@@ -205,6 +210,7 @@ export const useStore = create<State>((set, get) => ({
   replyDismissedId: null,
   hiddenParts: [],
   references: [],
+  currentVersion: null,
   focusId: null,
   followAgent: true,
   replay: null,
@@ -246,6 +252,17 @@ export const useStore = create<State>((set, get) => ({
       }
     })();
     return opening;
+  },
+  restoreVersion: async (number) => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+    set({ error: null });
+    try {
+      await whileOpen(() => api.restoreVersion(sessionId, number));
+      set({ shownRevision: null }); // follow the restored shape
+    } catch (err) {
+      set({ error: `Could not restore version ${number}: ${(err as Error).message}` });
+    }
   },
   leaveWorkspace: () => {
     clearTimeout(replayTimer);
@@ -337,7 +354,7 @@ export const useStore = create<State>((set, get) => ({
   apply: (events) =>
     set((s) => {
       let { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error, endedAt,
-        references, workspaceName } = s;
+        references, workspaceName, currentVersion } = s;
       feed = [...feed];
       const updateLastTool = (name: string | null, change: (t: ToolItem) => ToolItem) => {
         for (let i = feed.length - 1; i >= 0; i--) {
@@ -423,6 +440,14 @@ export const useStore = create<State>((set, get) => ({
           case 'references':
             references = e.items;
             break;
+          case 'version':
+            feed.push({ kind: 'version', id: nextId++, number: e.number, meshRevision: e.mesh_revision });
+            currentVersion = e.number;
+            break;
+          case 'version_restored':
+            feed.push(note(`Restored version ${e.number}`, 'ok'));
+            currentVersion = e.number;
+            break;
           case 'heatmap_skipped':
           case 'mesh_skipped':
             break; // expected while the agent experiments; not worth a feed entry
@@ -458,7 +483,7 @@ export const useStore = create<State>((set, get) => ({
       }
       const lastEventAt = events.length ? events[events.length - 1].at : s.lastEventAt;
       return { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error,
-        endedAt, lastEventAt, references, workspaceName };
+        endedAt, lastEventAt, references, workspaceName, currentVersion };
     }),
 
   showRevision: (revision) => set({ shownRevision: revision }),

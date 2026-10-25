@@ -54,6 +54,12 @@ export async function openWorkspace(id: string) {
   return json<{ session_id: string; reopened: boolean }>(
     await fetch(`/api/v1/workspaces/${encodeURIComponent(id)}/open`, { method: 'POST' }));
 }
+/** Put the open workspace back to a saved version (one is saved per prompt that changed it). */
+export async function restoreVersion(id: string, number: number) {
+  return json<{ restored: number; notes: string[] }>(await fetch(
+    `/api/v1/workspaces/${encodeURIComponent(id)}/versions/${number}/restore`, { method: 'POST' }));
+}
+
 export async function putThumbnail(id: string, png: Blob) {
   const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(id)}/thumbnail.png`, {
     method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: png,

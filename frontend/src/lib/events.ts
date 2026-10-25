@@ -41,6 +41,8 @@ export type ServerEvent = Stamp &
     | ({ type: 'model_state' } & ModelState)
     | ({ type: 'workspace_state' } & WorkspaceState)
     | { type: 'references'; items: ReferenceItem[] }
+    | { type: 'version'; number: number; prompt: string; mesh_revision: number | null }
+    | { type: 'version_restored'; number: number }
   );
 
 /** Something the agent can look at: a part's scan (and the file it came from), or a photo. */
