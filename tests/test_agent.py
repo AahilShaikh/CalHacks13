@@ -41,13 +41,13 @@ def test_runtime_restricted(tmp_path):
     assert opts.permission_mode == 'dontAsk'
     assert opts.max_turns == 100
     assert set(opts.mcp_servers) == {'aida'}
-    assert set(opts.allowed_tools) == {f'mcp__aida__{n}' for n in EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image'}}
+    assert set(opts.allowed_tools) == {f'mcp__aida__{n}' for n in EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image', 'view_sheet'}}
 
 
 async def test_dynamic_handlers_keep_correct_tool_names(tmp_path):
     tools = make_tools(FakeCad(), Artifacts(tmp_path))
     for item in tools:
-        if item.name != 'view_image' and item.name not in MODEL_TOOLS:
+        if item.name not in ('view_image', 'view_sheet') and item.name not in MODEL_TOOLS:
             result = await item.handler({})
             assert result['content'][0]['text'] == item.name
 

@@ -76,6 +76,24 @@ def make_tools(cad, artifacts, on_event=None, workspace=None):
 
     tools.append(view_image)
 
+    @tool('view_sheet', 'Front, right, top and iso views in one labelled image (mm grid, scale bar). '
+          'Default: the whole generated model (the assembly once it places parts). Pass objects to '
+          "show specific CAD objects, or 'ref_<part>' for a scan. Use it to check a build: count "
+          'openings and compare proportions in every view.', {'objects': str})
+    async def view_sheet(args):
+        try:
+            result = await cad.view_sheet(args)
+            payload = {**result, 'is_error': result.get('isError', False)}
+            await _emit(on_event, {'type': 'tool_result', 'name': 'view_sheet', 'ok': True,
+                                   'text': text_of(result)[:4000]})
+            return payload
+        except Exception as exc:
+            await _emit(on_event, {'type': 'tool_result', 'name': 'view_sheet',
+                                   'ok': False, 'text': str(exc)[:4000]})
+            return {'is_error': True, 'content': [{'type': 'text', 'text': str(exc)}]}
+
+    tools.append(view_sheet)
+
     mesh = cad.mesh
     for name, schema, method in (('view_mesh', VIEW_SCHEMA, mesh.view),
                                  ('slice_mesh', SLICE_SCHEMA, mesh.slice),
@@ -124,7 +142,7 @@ def options_for(cad, artifacts, units=None, max_turns=None, on_event=None, works
     workspace = workspace or Workspace.load(cad, artifacts)
     server = create_sdk_mcp_server(name='aida', version='0.1.0',
                                    tools=make_tools(cad, artifacts, on_event, workspace))
-    names = [f'mcp__aida__{name}' for name in sorted(EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image'})]
+    names = [f'mcp__aida__{name}' for name in sorted(EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image', 'view_sheet'})]
     prompt = f'''You are Aida, a CAD assistant. Use your CAD tools to inspect meshes and build CAD.
 Input units: {units or "unknown; do not claim physical dimensions"}. Never rescale implicitly.
 
@@ -147,7 +165,8 @@ Inspecting a reference mesh:
   snippet in the right plane. Take dimensions from these numbers, not from reading images.
   Slice between transitions, never exactly on a flat face.
 - mesh_holes finds drilled holes (axis, diameter, depth, through) on a ref_<name> object.
-- render_view renders generated CAD; render a reference mesh with view_mesh instead.
+- render_view renders generated CAD (default: the whole model) with the same grid and scale bar
+  as view_mesh; render a reference mesh with view_mesh instead.
 
 Building a part, always through its parametric model:
 - Record every dimension, angle and count with model_set_params first, with source (measured /
@@ -190,7 +209,14 @@ Designing new parts and assemblies:
   2, 2.25, 2.75 and 6.25u; MX switch plate cutouts 14 x 14 mm in a 1.5 mm plate; a 60% layout
   has 5 rows of 15u total width.
 
-- After render_view returns a PNG path or [SEND: path], call view_image to inspect it.
+Checking what you built:
+- After building or changing a part or the assembly, call view_sheet: front, right, top and iso
+  in one image. Count every opening, check each one is where its parameters say, and compare
+  proportions in each view. If something is hidden (a back wall, an inside face), render it with
+  render_view from that side, or slice it with clip_plane.
+- Never report a feature as checked from a single partial view. If you could not see something,
+  render the view that shows it; say what remains unverified only if no view can show it.
+- After render_view returns a PNG path or [SEND: path] without the image, call view_image.
   Do not claim to have seen an image before you have it.
 Use from build123d import * when necessary. Validate before exporting and export only when
 requested; export the assembly object for the whole design. Save exports inside

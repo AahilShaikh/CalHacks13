@@ -92,7 +92,7 @@ export type SessionStatus = 'queued' | 'running' | 'done' | 'failed';
 export type Phase = 'inspect' | 'build' | 'verify';
 
 const BUILD = new Set(['execute', 'export']);
-const VERIFY = new Set(['compare_to_mesh', 'validate', 'model_report', 'assembly_check']);
+const VERIFY = new Set(['compare_to_mesh', 'validate', 'model_report', 'assembly_check', 'view_sheet']);
 
 /** Which step of the inspect -> build -> verify loop a tool belongs to. */
 export function phaseOf(tool: string): Phase {
@@ -322,6 +322,7 @@ const TOOL_LABEL: Record<string, string> = {
   execute: 'Run CAD code',
   render_view: 'Render view',
   view_image: 'Look at render',
+  view_sheet: 'Check four views',
   measure: 'Measure',
   validate: 'Validate solid',
   export: 'Export',

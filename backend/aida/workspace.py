@@ -218,6 +218,8 @@ class Workspace:
         if mesh is not None and hasattr(mesh, 'references'):
             mesh.references = {name: p.reference for name, p in self.parts.items() if p.reference}
             mesh.active_part = lambda: self.active
+        if hasattr(cad, 'default_objects'):
+            cad.default_objects = self.objects  # render_view without objects shows the model
 
     @classmethod
     def load(cls, cad, artifacts):

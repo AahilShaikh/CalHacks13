@@ -53,7 +53,7 @@ REOPEN_NOTE = ('This workspace was reopened in a new session; your earlier conve
                'available. Its parts were rebuilt from their saved models: call workspace_status '
                'and model_status before changing them.')
 # Tools whose results name a PNG the feed should show.
-IMAGE_TOOLS = {'render_view', 'view_mesh', 'slice_mesh', 'compare_to_mesh'}
+IMAGE_TOOLS = {'render_view', 'view_mesh', 'slice_mesh', 'compare_to_mesh', 'view_sheet'}
 
 router = APIRouter()
 
