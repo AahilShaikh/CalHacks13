@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef } from 'react';
 import { activeTool, generatedRevisions, heatmapOf, referenceRevision, useStore } from '../../store';
 import { AgentCamera, AgentPlanes } from './AgentFocus';
 import { GlbModel, MeshPreview } from './Models';
+import { Thumbnailer } from './Thumbnailer';
 
 /** Re-frame the camera when the reference geometry changes (not on every CAD revision). */
 function Refit({ token }: { token: string }) {
@@ -22,6 +23,7 @@ function Models() {
   const workspace = useStore((s) => s.workspace);
   const selectedPart = useStore((s) => s.selectedPart);
   const selectPart = useStore((s) => s.selectPart);
+  const hidden = useStore((s) => s.hiddenParts);
   // 'assembly' selects the assembly in the Model tab; in 3D it highlights nothing.
   const highlighted = selectedPart === 'assembly' ? null : selectedPart;
   // Show the scan as a ghost while a slice plane is up, so the plane reads through it.
@@ -54,11 +56,11 @@ function Models() {
         {reference ? (
           <Suspense fallback={null}>
             {heat ? (
-              <Suspense fallback={<GlbModel url={reference.url} look="ghost" />}>
-                <GlbModel url={heat.url} look="heat" />
+              <Suspense fallback={<GlbModel hidden={hidden} url={reference.url} look="ghost" />}>
+                <GlbModel hidden={hidden} url={heat.url} look="heat" />
               </Suspense>
             ) : (
-              <GlbModel url={reference.url} look={(shown && !side) || slicing ? 'ghost' : 'solid'} x={-gap} />
+              <GlbModel hidden={hidden} url={reference.url} look={(shown && !side) || slicing ? 'ghost' : 'solid'} x={-gap} />
             )}
             <Refit token={`${reference.url}|${side ? 'side' : 'single'}`} />
           </Suspense>
@@ -75,10 +77,10 @@ function Models() {
         {shown && (
           <Suspense
             fallback={
-              fallback ? <GlbModel url={fallback} look={heat ? 'outline' : 'cad'} x={gap} selected={highlighted} /> : null
+              fallback ? <GlbModel hidden={hidden} url={fallback} look={heat ? 'outline' : 'cad'} x={gap} selected={highlighted} /> : null
             }
           >
-            <GlbModel url={shown.url} look={heat ? 'outline' : 'cad'} x={gap} selected={highlighted} onPick={selectPart} />
+            <GlbModel hidden={hidden} url={shown.url} look={heat ? 'outline' : 'cad'} x={gap} selected={highlighted} onPick={selectPart} />
           </Suspense>
         )}
       </Bounds>
@@ -99,7 +101,8 @@ export function Scene() {
       frameloop="demand"
       dpr={[1, 2]}
       camera={{ position: [1.2, 0.9, 1.4], fov: 40, near: 0.01, far: 100000 }}
-      gl={{ antialias: true }}
+      // preserveDrawingBuffer lets the thumbnailer read the last frame.
+      gl={{ antialias: true, preserveDrawingBuffer: true }}
       className="!absolute inset-0"
       onPointerMissed={(e) => {
         // A click on empty space clears the part selection (not the end of an orbit drag).
@@ -107,15 +110,16 @@ export function Scene() {
         if (selectedPart && selectedPart !== 'assembly' && e.type === 'click') selectPart(null);
       }}
     >
-      <color attach="background" args={['#080c16']} />
-      <hemisphereLight args={['#c7d6ff', '#0b101d', 0.9]} />
-      <directionalLight position={[5, 9, 7]} intensity={1.8} />
-      <directionalLight position={[-7, 4, -5]} intensity={0.6} color="#9db4ff" />
+      <color attach="background" args={['#eef0f3']} />
+      <hemisphereLight args={['#ffffff', '#b9bec7', 1.6]} />
+      <directionalLight position={[5, 9, 7]} intensity={1.7} />
+      <directionalLight position={[-7, 4, -5]} intensity={0.55} color="#e6ebf5" />
       <Models />
+      <Thumbnailer />
       <OrbitControls makeDefault enableDamping dampingFactor={0.1} />
-      <GizmoHelper alignment="bottom-left" margin={[56, 56]}>
+      <GizmoHelper alignment="top-left" margin={[52, 100]}>
         {/* World axes relabelled to the part's Z-up frame: world Y is part Z, world Z is part -Y. */}
-        <GizmoViewport axisColors={['#f87171', '#3dadff', '#4ade80']} labels={['X', 'Z', '-Y']} labelColor="#0b101d" />
+        <GizmoViewport axisColors={['#dc2626', '#2563eb', '#15803d']} labels={['X', 'Z', '-Y']} labelColor="#ffffff" />
       </GizmoHelper>
     </Canvas>
   );

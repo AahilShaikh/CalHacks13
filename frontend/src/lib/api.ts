@@ -2,15 +2,76 @@ import type { ServerEvent } from './events';
 
 async function json<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.detail || `Request failed (${response.status})`);
+  if (!response.ok) throw new ApiError(body.detail || `Request failed (${response.status})`, response.status);
   return body as T;
 }
 
-/** Open a workspace session: the CAD engine and agent start now, with nothing uploaded yet. */
-export async function createSession(units?: string) {
+/**
+ * Create a workspace and start its session (CAD engine and agent). Everything is optional:
+ * scans and photos become references, and a prompt starts the agent's first turn.
+ */
+export async function createSession(start: { units?: string; prompt?: string; name?: string; meshes?: File[];
+  images?: File[] } = {}) {
   const form = new FormData();
-  if (units) form.append('units', units);
+  if (start.units) form.append('units', start.units);
+  if (start.prompt) form.append('prompt', start.prompt);
+  if (start.name) form.append('name', start.name);
+  for (const mesh of start.meshes ?? []) form.append('mesh', mesh);
+  for (const image of start.images ?? []) form.append('images', image);
   return json<{ session_id: string; parts: string[] }>(await fetch('/api/v1/cad-sessions', { method: 'POST', body: form }));
+}
+
+export type WorkspaceSummary = {
+  id: string;
+  name: string;
+  /** False when the name was made up from the first prompt. */
+  named: boolean;
+  prompt: string;
+  parts: string[];
+  revisions: number;
+  created_at: number;
+  updated_at: number;
+  thumbnail: string | null;
+  status: 'open' | 'closed';
+};
+
+export async function listWorkspaces() {
+  return json<WorkspaceSummary[]>(await fetch('/api/v1/workspaces'));
+}
+export async function getWorkspace(id: string) {
+  return json<WorkspaceSummary>(await fetch(`/api/v1/workspaces/${encodeURIComponent(id)}`));
+}
+export async function renameWorkspace(id: string, name: string) {
+  return json<WorkspaceSummary>(await fetch(`/api/v1/workspaces/${encodeURIComponent(id)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+  }));
+}
+export async function deleteWorkspace(id: string) {
+  return json(await fetch(`/api/v1/workspaces/${encodeURIComponent(id)}`, { method: 'DELETE' }));
+}
+/** Open a saved workspace: the running session, or a new one rebuilt from disk. */
+export async function openWorkspace(id: string) {
+  return json<{ session_id: string; reopened: boolean }>(
+    await fetch(`/api/v1/workspaces/${encodeURIComponent(id)}/open`, { method: 'POST' }));
+}
+/** Put the open workspace back to a saved version (one is saved per prompt that changed it). */
+export async function restoreVersion(id: string, number: number) {
+  return json<{ restored: number; notes: string[] }>(await fetch(
+    `/api/v1/workspaces/${encodeURIComponent(id)}/versions/${number}/restore`, { method: 'POST' }));
+}
+
+export async function putThumbnail(id: string, png: Blob) {
+  const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(id)}/thumbnail.png`, {
+    method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: png,
+  });
+  if (!response.ok) throw new Error(`Thumbnail not saved (${response.status})`);
+}
+
+/** Errors carry the HTTP status so callers can tell "closed" (409) apart. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
 }
 
 /** Add meshes to a running workspace; each becomes a part. */

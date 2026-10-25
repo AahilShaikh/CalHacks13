@@ -59,6 +59,9 @@ class CadBridge:
         self.artifacts = artifacts
         self.timeout = timeout
         self.mesh = MeshTools(artifacts, units, timeout, tessellate=self.tessellate)
+        # What render_view shows when no objects are named: set by the workspace to its
+        # generated CAD (the assembly once it places parts, else the built parts).
+        self.default_objects = None
         self.lock = asyncio.Lock()
         self.broken = False
         self.schemas = {}
@@ -97,7 +100,7 @@ class CadBridge:
                 self.artifacts.save_code(args['code'])
             if name == 'render_view':
                 args['format'] = 'png'
-                args['objects'] = args.get('objects') or REFERENCE_ALIAS
+                args['objects'] = args.get('objects') or self._default_objects()
                 args['save_to'] = str(self.artifacts.output_path(f'view-{uuid4().hex[:8]}.png'))
             if name == 'export':
                 validation = await self._call('validate', {'object_name': args.get('object_name', '')})
@@ -116,8 +119,16 @@ class CadBridge:
                             raise ValueError('The reference mesh cannot be overwritten')
                         args[field] = str(target)
                         break
-            if name == 'render_view' and any(is_reference(o.strip()) for o in str(args['objects']).split(',')):
+            names = [o.strip() for o in str(args.get('objects', '')).split(',') if o.strip()]
+            if name == 'render_view' and any(is_reference(o) for o in names):
                 result = await self._render_reference(args)
+            elif name == 'render_view':
+                try:
+                    # Our renderer: Z up, mm grid, scale bar and edges, like the scan views.
+                    result = await self._render_cad(names, args)
+                except Exception as exc:
+                    self.artifacts.log('render_cad_fallback', {'objects': names, 'error': str(exc)})
+                    result = await self._call(name, args)
             else:
                 result = await self._call(name, args)
             if name == 'render_view' and not failed(result):
@@ -138,6 +149,11 @@ class CadBridge:
 
     async def tessellate(self, object_name):
         """Write a named CAD object to a temporary STL for comparison; return its path."""
+        async with self.lock:
+            return await self._tessellate(object_name)
+
+    async def _tessellate(self, object_name):
+        """tessellate() for callers that already hold the lock."""
         if is_reference(object_name):
             raise ValueError('Compare a generated CAD object, not a reference mesh itself')
         target = self.artifacts.temp / f'compare-{uuid4().hex[:8]}.stl'
@@ -148,9 +164,8 @@ class CadBridge:
         args = {field: str(target), 'object_name': object_name}
         if 'format' in fields:
             args['format'] = 'stl'
-        async with self.lock:
-            # Not the gated export(): a comparison needs the shape even when it is not yet valid.
-            result = await self._call('export', args)
+        # Not the gated export(): a comparison needs the shape even when it is not yet valid.
+        result = await self._call('export', args)
         if failed(result) or not target.is_file() or target.stat().st_size <= 84:
             target.unlink(missing_ok=True)
             raise ValueError(f'Could not tessellate {object_name}: {text_of(result)[:1500]}')
@@ -186,6 +201,54 @@ class CadBridge:
             return list(json.loads(text_of(result)).get('objects', {}))
         except Exception:
             return []
+
+    def _default_objects(self):
+        names = self.default_objects() if self.default_objects is not None else []
+        return ','.join(names) if names else REFERENCE_ALIAS
+
+    async def _cad_stl(self, names):
+        """One STL of the named generated objects (lock held)."""
+        stls = [await self._tessellate(n) for n in names]
+        if len(stls) == 1:
+            return stls[0]
+        import trimesh
+        merged = trimesh.util.concatenate([trimesh.load(str(p), force='mesh') for p in stls])
+        target = self.artifacts.temp / f'render-{uuid4().hex[:8]}.stl'
+        merged.export(str(target))
+        return target
+
+    def _view_spec(self, args):
+        spec = {'direction': args.get('direction') or 'iso',
+                'azimuth': args.get('azimuth', 0), 'elevation': args.get('elevation', 0)}
+        if args.get('clip_plane'):
+            spec['slice_axis'] = args['clip_plane']
+            if args.get('clip_at') is not None:
+                spec['slice_at'] = args['clip_at']
+        return spec
+
+    async def _render_cad(self, names, args):
+        if not names:
+            raise ValueError('Nothing to render')
+        stl = await self._cad_stl(names)
+        self.artifacts.log('tool_call', {'name': 'render_cad', 'arguments': args})
+        result = await self.mesh.render_file(stl, self._view_spec(args), args['save_to'], style='cad')
+        self.artifacts.log('tool_result', {'name': 'render_cad', **result})
+        return result
+
+    async def view_sheet(self, args):
+        """Front, right, top and iso views of generated CAD (default: the whole model) or of a
+        scan (objects 'reference_mesh' or 'ref_<part>') in one labelled image."""
+        async with self.lock:
+            objects = (args or {}).get('objects') or self._default_objects()
+            names = [o.strip() for o in str(objects).split(',') if o.strip()]
+            save_to = self.artifacts.output_path(f'sheet-{uuid4().hex[:8]}.png')
+            if any(is_reference(n) for n in names):
+                if len(names) != 1:
+                    raise ValueError('Show one scan at a time, without generated CAD')
+                part = None if names[0] == REFERENCE_ALIAS else names[0][len('ref_'):]
+                return await self.mesh.render_file(self.mesh.mesh_for(part), {}, save_to, sheet=True)
+            stl = await self._cad_stl(names)
+            return await self.mesh.render_file(stl, {}, save_to, style='cad', sheet=True)
 
     async def _render_reference(self, args):
         target = args['objects'].strip()

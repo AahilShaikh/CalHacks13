@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as api from './lib/api';
+import { duration } from './lib/format';
 import {
   argSummary,
   deviationFrom,
@@ -12,6 +13,7 @@ import {
   type Deviation,
   type ModelState,
   type PartState,
+  type ReferenceItem,
   type Phase,
   type ServerEvent,
   type SessionStatus,
@@ -39,6 +41,8 @@ export type FeedItem =
   | { kind: 'agent'; id: number; text: string }
   | { kind: 'user'; id: number; text: string }
   | { kind: 'note'; id: number; text: string; tone: 'muted' | 'error' | 'ok' }
+  /** The design as it stood after a prompt: restorable, shown in the viewer at meshRevision. */
+  | { kind: 'version'; id: number; number: number; meshRevision: number | null }
   | ToolItem;
 
 export type Revision = {
@@ -54,7 +58,6 @@ export type Revision = {
 };
 
 export type ViewMode = 'overlay' | 'side' | 'heatmap';
-export type Tab = 'activity' | 'model';
 export type AppStatus = 'idle' | 'starting' | SessionStatus;
 
 type State = {
@@ -86,7 +89,16 @@ type State = {
   // View.
   shownRevision: number | null; // null follows the latest generated revision
   viewMode: ViewMode;
-  tab: Tab;
+  /** The steps panel on the right is expanded (false: a thin rail). */
+  stepsOpen: boolean;
+  /** The agent message the user closed in the reply card; newer messages show again. */
+  replyDismissedId: number | null;
+  /** Parts the user hid in the 3D view (eye toggle in the explorer). */
+  hiddenParts: string[];
+  /** Scans and photos the agent can use, as the server last reported them. */
+  references: ReferenceItem[];
+  /** The version the design is at now: the latest saved, or the one restored. */
+  currentVersion: number | null;
   /** A tool card the user clicked to see in 3D; null follows the agent (if followAgent). */
   focusId: number | null;
   followAgent: boolean;
@@ -95,7 +107,16 @@ type State = {
   /** Time (unix s) of the latest applied event; the replay's clock. */
   lastEventAt: number | null;
 
-  openWorkspace: () => Promise<void>;
+  /** The workspace's name, and whether the user named it (otherwise it comes from the first prompt). */
+  workspaceName: string;
+  workspaceNamed: boolean;
+
+  /** Open a saved (or running) workspace by id and follow its events. */
+  openWorkspace: (id: string) => Promise<void>;
+  /** Stop following the open workspace (it keeps running on the server until idle). */
+  leaveWorkspace: () => void;
+  renameWorkspace: (name: string) => Promise<void>;
+  restoreVersion: (number: number) => Promise<void>;
   addMeshes: (files: File[]) => Promise<void>;
   selectPart: (part: string | null) => void;
   setUnits: (units: 'mm' | '') => void;
@@ -106,7 +127,10 @@ type State = {
   apply: (events: ServerEvent[]) => void;
   showRevision: (revision: number | null) => void;
   setViewMode: (mode: ViewMode) => void;
-  setTab: (tab: Tab) => void;
+  setStepsOpen: (open: boolean) => void;
+  toggleHidden: (part: string) => void;
+  dismissReply: (id: number) => void;
+  clearError: () => void;
   setFocus: (id: number | null) => void;
   setFollow: (follow: boolean) => void;
   startReplay: (id: string) => Promise<void>;
@@ -120,6 +144,25 @@ export type ReplayState = { id: string; index: number; total: number; playing: b
 let unsubscribe: (() => void) | null = null;
 // The workspace being opened, so uploads and prompts made meanwhile wait for it.
 let opening: Promise<void> | null = null;
+let openingId: string | null = null;
+
+/**
+ * Run a request against the open workspace. A paused workspace (closed while idle, or its
+ * session ended) is reopened first, and a request refused because it closed meanwhile is
+ * retried once after reopening.
+ */
+async function whileOpen<T>(request: () => Promise<T>): Promise<T> {
+  const { sessionId, status, openWorkspace } = useStore.getState();
+  if (!sessionId) throw new Error('No workspace is open.');
+  if (status === 'done' || status === 'failed') await openWorkspace(sessionId);
+  try {
+    return await request();
+  } catch (err) {
+    if (!(err instanceof api.ApiError) || err.status !== 409) throw err;
+    await openWorkspace(sessionId);
+    return request();
+  }
+}
 let nextId = 1;
 let replayEvents: ServerEvent[] = [];
 let replayTimer = 0;
@@ -129,9 +172,12 @@ const REPLAY_MAX_GAP_S = 3;
 /** Session fields reset when a live session or a replay starts. */
 const freshSession = {
   error: null, feed: [], revisions: [], deviations: [], features: [], cost: 0, workspace: null, selectedPart: null,
-  changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true,
+  changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true, replyDismissedId: null,
+  hiddenParts: [], references: [], currentVersion: null,
   stage: '', startedAt: null, endedAt: null, lastEventAt: null,
 } satisfies Partial<State>;
+
+const UNTITLED = 'Untitled workspace';
 
 export const MESH_EXTENSIONS = ['.stl', '.obj', '.ply', '.glb'];
 export type MeshPreview = { url: string; kind: 'stl' | 'obj' | 'ply' | 'glb' };
@@ -160,35 +206,83 @@ export const useStore = create<State>((set, get) => ({
   pendingCode: null,
   shownRevision: null,
   viewMode: 'overlay',
-  tab: 'activity',
+  stepsOpen: typeof window === 'undefined' || window.innerWidth >= 1200,
+  replyDismissedId: null,
+  hiddenParts: [],
+  references: [],
+  currentVersion: null,
   focusId: null,
   followAgent: true,
   replay: null,
   lastEventAt: null,
+  workspaceName: '',
+  workspaceNamed: false,
 
-  openWorkspace: async () => {
-    if (opening) return opening;
+  openWorkspace: async (id) => {
+    if (opening && openingId === id) return opening;
+    openingId = id;
     opening = (async () => {
-      set({ ...freshSession, status: 'starting', sessionId: null, meshFiles: [] });
+      clearTimeout(replayTimer);
+      unsubscribe?.();
+      unsubscribe = null;
+      set({ ...freshSession, status: 'starting', sessionId: id, meshFiles: [], replay: null });
       setPreviews([]);
       try {
-        const { session_id } = await api.createSession(get().units || undefined);
-        unsubscribe?.();
-        set({ sessionId: session_id, status: 'queued', startedAt: Date.now() / 1000 });
+        // Rebuilds the workspace from disk if it is not running; its history streams back in.
+        await api.openWorkspace(id);
+        if (get().sessionId !== id) return; // the user moved on meanwhile
+        set({ status: 'queued', startedAt: Date.now() / 1000 });
         unsubscribe = api.subscribe(
-          session_id,
+          id,
           (events) => get().apply(events),
           () => {
             if (get().status === 'running') set({ stage: 'reconnecting' });
           },
         );
+        api.getWorkspace(id)
+          .then((w) => get().sessionId === id && set({ workspaceName: w.name, workspaceNamed: w.named }))
+          .catch(() => {});
       } catch (err) {
-        set({ status: 'failed', error: `Could not open the workspace: ${(err as Error).message}` });
+        const missing = err instanceof api.ApiError && err.status === 404;
+        set({ status: 'failed', error: missing ? 'This workspace no longer exists.'
+          : `Could not open the workspace: ${(err as Error).message}` });
       } finally {
         opening = null;
+        openingId = null;
       }
     })();
     return opening;
+  },
+  restoreVersion: async (number) => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+    set({ error: null });
+    try {
+      await whileOpen(() => api.restoreVersion(sessionId, number));
+      set({ shownRevision: null }); // follow the restored shape
+    } catch (err) {
+      set({ error: `Could not restore version ${number}: ${(err as Error).message}` });
+    }
+  },
+  leaveWorkspace: () => {
+    clearTimeout(replayTimer);
+    unsubscribe?.();
+    unsubscribe = null;
+    setPreviews([]);
+    set({ ...freshSession, sessionId: null, status: 'idle', replay: null, meshFiles: [], images: [],
+      workspaceName: '', workspaceNamed: false });
+  },
+  renameWorkspace: async (name) => {
+    const { sessionId } = get();
+    const text = name.trim();
+    if (!sessionId || !text) return;
+    const before = { workspaceName: get().workspaceName, workspaceNamed: get().workspaceNamed };
+    set({ workspaceName: text, workspaceNamed: true });
+    try {
+      await api.renameWorkspace(sessionId, text);
+    } catch (err) {
+      set({ ...before, error: `Could not rename: ${(err as Error).message}` });
+    }
   },
   addMeshes: async (files) => {
     const added = files.filter(isMeshFile).slice(0, MAX_MESHES);
@@ -205,11 +299,11 @@ export const useStore = create<State>((set, get) => ({
     };
     if (!sessionId) {
       done();
-      set({ error: 'No workspace is open; reload the page.' });
+      set({ error: 'No workspace is open.' });
       return;
     }
     try {
-      await api.uploadMeshes(sessionId, added, units || undefined);
+      await whileOpen(() => api.uploadMeshes(sessionId, added, units || undefined));
     } catch (err) {
       set({ error: `${added.map((f) => f.name).join(', ')} not added: ${(err as Error).message}` });
     } finally {
@@ -238,17 +332,20 @@ export const useStore = create<State>((set, get) => ({
     if (opening) await opening;
     const { sessionId, images } = get();
     if (!sessionId) {
-      set({ error: 'No workspace is open; reload the page.' });
+      set({ error: 'No workspace is open.' });
       return;
     }
-    set((s) => ({ feed: [...s.feed, { kind: 'user', id: nextId++, text }], error: null }));
+    set({ error: null });
     try {
-      // Photos go to the agent with this message.
-      if (images.length) {
-        await api.uploadImages(sessionId, images);
-        set({ images: [] });
-      }
-      await api.sendTurn(sessionId, text);
+      // The prompt shows once the server records it (user_prompt), so history and live agree.
+      await whileOpen(async () => {
+        // Photos go to the agent with this message.
+        if (images.length) {
+          await api.uploadImages(sessionId, images);
+          set({ images: [] });
+        }
+        await api.sendTurn(sessionId, text);
+      });
     } catch (err) {
       set((s) => ({ feed: [...s.feed, note(`Message not sent: ${(err as Error).message}`, 'error')] }));
     }
@@ -256,7 +353,8 @@ export const useStore = create<State>((set, get) => ({
 
   apply: (events) =>
     set((s) => {
-      let { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error, endedAt } = s;
+      let { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error, endedAt,
+        references, workspaceName, currentVersion } = s;
       feed = [...feed];
       const updateLastTool = (name: string | null, change: (t: ToolItem) => ToolItem) => {
         for (let i = feed.length - 1; i >= 0; i--) {
@@ -339,6 +437,17 @@ export const useStore = create<State>((set, get) => ({
           case 'notice':
             feed.push(note(e.text, 'muted'));
             break;
+          case 'references':
+            references = e.items;
+            break;
+          case 'version':
+            feed.push({ kind: 'version', id: nextId++, number: e.number, meshRevision: e.mesh_revision });
+            currentVersion = e.number;
+            break;
+          case 'version_restored':
+            feed.push(note(`Restored version ${e.number}`, 'ok'));
+            currentVersion = e.number;
+            break;
           case 'heatmap_skipped':
           case 'mesh_skipped':
             break; // expected while the agent experiments; not worth a feed entry
@@ -358,25 +467,32 @@ export const useStore = create<State>((set, get) => ({
             feed.push(note(turnLine(e), e.is_error ? 'error' : 'ok'));
             break;
           case 'session_done':
-            feed.push(note('Session finished', 'muted'));
+            feed.push(note('Workspace paused', 'muted'));
             break;
           case 'user_prompt':
-            // Live sessions already show the prompt the user typed; replays need it.
-            if (s.replay) feed.push({ kind: 'user', id: nextId++, text: e.text });
+            feed.push({ kind: 'user', id: nextId++, text: e.text });
+            // An unnamed workspace goes by its first prompt (as on the home screen).
+            if (!s.replay && !s.workspaceNamed && (!workspaceName || workspaceName === UNTITLED)) {
+              workspaceName = e.text.slice(0, 60).trim();
+            }
             break;
           case 'interrupted':
-            feed.push(note('Stopped. Send a prompt to continue.', 'muted'));
+            feed.push(note('Stopped. Send a message to continue.', 'muted'));
             break;
         }
       }
       const lastEventAt = events.length ? events[events.length - 1].at : s.lastEventAt;
       return { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error,
-        endedAt, lastEventAt };
+        endedAt, lastEventAt, references, workspaceName, currentVersion };
     }),
 
   showRevision: (revision) => set({ shownRevision: revision }),
   setViewMode: (viewMode) => set({ viewMode }),
-  setTab: (tab) => set({ tab }),
+  setStepsOpen: (stepsOpen) => set({ stepsOpen }),
+  toggleHidden: (part) =>
+    set((s) => ({ hiddenParts: s.hiddenParts.includes(part) ? s.hiddenParts.filter((p) => p !== part) : [...s.hiddenParts, part] })),
+  dismissReply: (replyDismissedId) => set({ replyDismissedId }),
+  clearError: () => set({ error: null }),
   setFocus: (focusId) => set({ focusId }),
   setFollow: (followAgent) => set({ followAgent, ...(followAgent ? { focusId: null } : {}) }),
 
@@ -384,9 +500,7 @@ export const useStore = create<State>((set, get) => ({
     clearTimeout(replayTimer);
     unsubscribe?.();
     unsubscribe = null;
-    // A replay replaces the open workspace; end it so its CAD engine is freed.
-    const live = get().sessionId;
-    if (live) api.closeSession(live);
+    // The open workspace (if any) keeps running on the server and frees itself when idle.
     try {
       replayEvents = await api.replayEvents(id);
     } catch (err) {
@@ -420,7 +534,6 @@ export const useStore = create<State>((set, get) => ({
     if (!get().replay) return;
     replayEvents = [];
     set({ ...freshSession, replay: null, status: 'idle', sessionId: null });
-    void get().openWorkspace();
   },
 }));
 
@@ -509,11 +622,11 @@ function note(text: string, tone: 'muted' | 'error' | 'ok'): FeedItem {
 }
 
 function turnLine(e: Extract<ServerEvent, { type: 'turn_end' }>) {
-  if (e.subtype === 'error_max_turns') return 'Turn limit reached. Ask Aida to continue.';
-  if (e.is_error) return e.subtype === 'success' ? 'The turn failed; see the message above.' : `Turn stopped (${e.subtype})`;
-  const parts = ['Turn complete'];
-  if (e.turns) parts.push(`${e.turns} steps`);
-  if (e.duration_s) parts.push(`${Math.round(e.duration_s)}s`);
+  if (e.subtype === 'error_max_turns') return 'Aida reached its step limit. Ask it to continue.';
+  if (e.is_error) return e.subtype === 'success' ? 'Aida stopped with an error; see its reply.' : `Aida stopped (${e.subtype.replaceAll('_', ' ')})`;
+  const parts = ['Done'];
+  if (e.duration_s) parts.push(duration(e.duration_s));
+  if (typeof e.cost_usd === 'number' && e.cost_usd > 0) parts.push(`$${e.cost_usd.toFixed(2)}`);
   return parts.join(' · ');
 }
 

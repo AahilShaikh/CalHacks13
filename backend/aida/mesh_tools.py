@@ -208,6 +208,23 @@ class MeshTools:
         result['content'].append({'type': 'text', 'text': f'[SEND: {save_to}]'})
         return result
 
+    async def render_file(self, stl, spec, save_to, style='scan', sheet=False):
+        """Render any STL (a scan, or generated CAD with ``style='cad'``) to ``save_to``;
+        ``sheet`` makes one image of the front, right, top and iso views."""
+        argv = [str(stl), str(save_to), '--style', style, *self._units_args()]
+        if sheet:
+            argv.append('--sheet')
+        else:
+            normalize_spec(spec)  # fail fast with a clean message
+            argv += ['--spec', json.dumps(spec)]
+        async with self.lock:
+            out = await self._run('aida.mesh_render', argv)
+        meta = json.loads(out)
+        result = self.artifacts.image(str(save_to))
+        result['content'].append({'type': 'text', 'text': json.dumps(meta)})
+        result['content'].append({'type': 'text', 'text': f'[SEND: {save_to}]'})
+        return result
+
     async def view(self, args):
         cad = None
         try:

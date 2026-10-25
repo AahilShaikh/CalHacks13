@@ -11,27 +11,28 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 // Flat shading derives face normals in the shader: the API's GLBs carry no vertex
 // normals (lit materials would render black), and CAD faces are planar anyway.
 const materials = {
-  cad: new THREE.MeshStandardMaterial({ color: '#6ee7ff', roughness: 0.42, metalness: 0.08, flatShading: true,
+  cad: new THREE.MeshStandardMaterial({ color: '#c9ced6', roughness: 0.55, metalness: 0.1, flatShading: true,
     polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
-  ghost: new THREE.MeshStandardMaterial({ color: '#a5b4fc', roughness: 0.85, transparent: true, opacity: 0.2,
+  ghost: new THREE.MeshStandardMaterial({ color: '#6b7fa8', roughness: 0.85, transparent: true, opacity: 0.18,
     depthWrite: false, side: THREE.DoubleSide, flatShading: true }),
-  solid: new THREE.MeshStandardMaterial({ color: '#a5b4fc', roughness: 0.7, metalness: 0.02, flatShading: true }),
+  solid: new THREE.MeshStandardMaterial({ color: '#a9b6cf', roughness: 0.7, metalness: 0.02, flatShading: true }),
   // Deviation heatmap: the reference's own vertex colours (blue extra, white match, red missing).
   heat: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0, flatShading: true }),
   // CAD drawn as an outline over the heatmap, so the colours stay readable.
-  outline: new THREE.MeshBasicMaterial({ color: '#6ee7ff', transparent: true, opacity: 0.06, depthWrite: false }),
+  outline: new THREE.MeshBasicMaterial({ color: '#27272a', transparent: true, opacity: 0.05, depthWrite: false }),
 };
 // Parts other than the selected one, when a part is selected.
-const dimmed = new THREE.MeshStandardMaterial({ color: '#6ee7ff', roughness: 0.6, transparent: true, opacity: 0.16,
+const dimmed = new THREE.MeshStandardMaterial({ color: '#c9ced6', roughness: 0.6, transparent: true, opacity: 0.22,
   depthWrite: false, flatShading: true });
-const selectedMaterial = new THREE.MeshStandardMaterial({ color: '#a7f3ff', emissive: '#1b6f80', roughness: 0.38,
+const selectedMaterial = new THREE.MeshStandardMaterial({ color: '#f7b48a', emissive: '#5a1e00', roughness: 0.5,
   metalness: 0.08, flatShading: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
 const edgeMaterials = {
-  cad: new THREE.LineBasicMaterial({ color: '#0b101d', transparent: true, opacity: 0.55 }),
-  outline: new THREE.LineBasicMaterial({ color: '#6ee7ff', transparent: true, opacity: 0.9 }),
+  cad: new THREE.LineBasicMaterial({ color: '#27272a', transparent: true, opacity: 0.6 }),
+  outline: new THREE.LineBasicMaterial({ color: '#27272a', transparent: true, opacity: 0.85 }),
 };
 
 export type Look = keyof typeof materials;
+const NONE: readonly string[] = [];
 
 /**
  * The API writes 8-bit sRGB vertex colours, but glTF COLOR_0 is linear, so three.js would
@@ -87,11 +88,15 @@ function styled(source: THREE.Object3D, look: Look) {
   return scene;
 }
 
-/** Highlight one part's meshes (every instance of it) and dim the rest; null restores the look. */
-function highlight(scene: THREE.Object3D, look: Look, part: string | null) {
+/**
+ * Highlight one part's meshes (every instance of it) and dim the rest; null restores the look.
+ * Parts in ``hidden`` are not drawn at all.
+ */
+function highlight(scene: THREE.Object3D, look: Look, part: string | null, hidden: readonly string[]) {
   scene.traverse((node) => {
     const mesh = node as THREE.Mesh;
     if (!mesh.isMesh) return;
+    mesh.visible = !hidden.includes(mesh.userData.part);
     const mine = mesh.userData.part === part;
     mesh.material = part === null || look !== 'cad' ? materials[look] : mine ? selectedMaterial : dimmed;
     for (const child of mesh.children) child.visible = part === null || look !== 'cad' || mine;
@@ -102,19 +107,20 @@ function highlight(scene: THREE.Object3D, look: Look, part: string | null) {
  * A GLB revision from the API. Suspends while loading; results are cached by URL.
  * ``selected`` highlights one part; ``onPick`` reports the part under a click.
  */
-export function GlbModel({ url, look, x = 0, selected = null, onPick }: {
+export function GlbModel({ url, look, x = 0, selected = null, hidden = NONE, onPick }: {
   url: string;
   look: Look;
   x?: number;
   selected?: string | null;
+  hidden?: readonly string[];
   onPick?: (part: string | null) => void;
 }) {
   const gltf = useGLTF(url);
   const scene = useMemo(() => styled(gltf.scene, look), [gltf, look]);
   useEffect(() => {
-    highlight(scene, look, selected);
+    highlight(scene, look, selected, hidden);
     invalidateFrame(); // the canvas renders on demand
-  }, [scene, look, selected]);
+  }, [scene, look, selected, hidden]);
   return (
     <primitive
       object={scene}

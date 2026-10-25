@@ -83,3 +83,28 @@ async def test_export_path_and_reference_protection(tmp_path):
         await bridge.call('export', {'filename': '../escape.step'})
     await bridge.call('export', {'filename': 'part.step'})
     assert bridge.session.calls[-1] == ('export', {'filename': str(bridge.artifacts.root / 'part.step')})
+
+
+async def test_render_view_defaults_to_the_model_and_uses_our_renderer(tmp_path):
+    bridge = CadBridge(FakeSession(), Artifacts(tmp_path))
+    bridge.default_objects = lambda: ['assembly']
+    seen = {}
+
+    async def tessellate(name):
+        seen['object'] = name
+        return tmp_path / 'assembly.stl'
+
+    async def render_file(stl, spec, save_to, style='scan', sheet=False):
+        seen.update(stl=stl, style=style, direction=spec['direction'])
+        from PIL import Image
+        image = Image.new('RGB', (8, 8), 'gray')
+        image.putpixel((0, 0), (0, 0, 0))  # not blank, so the PNG check passes
+        image.save(save_to)
+        return {'content': [{'type': 'text', 'text': 'ok'}]}
+
+    bridge._tessellate = tessellate
+    bridge.mesh.render_file = render_file
+    result = await bridge.call('render_view', {'direction': 'front'})
+    assert not result.get('isError'), result
+    assert seen == {'object': 'assembly', 'stl': tmp_path / 'assembly.stl', 'style': 'cad', 'direction': 'front'}
+    assert not any(name == 'render_view' for name, _ in bridge.session.calls)  # not the engine's renderer

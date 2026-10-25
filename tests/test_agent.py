@@ -41,13 +41,13 @@ def test_runtime_restricted(tmp_path):
     assert opts.permission_mode == 'dontAsk'
     assert opts.max_turns == 100
     assert set(opts.mcp_servers) == {'aida'}
-    assert set(opts.allowed_tools) == {f'mcp__aida__{n}' for n in EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image'}}
+    assert set(opts.allowed_tools) == {f'mcp__aida__{n}' for n in EXPOSED | MESH_TOOLS | MODEL_TOOLS | {'view_image', 'view_sheet'}}
 
 
 async def test_dynamic_handlers_keep_correct_tool_names(tmp_path):
     tools = make_tools(FakeCad(), Artifacts(tmp_path))
     for item in tools:
-        if item.name != 'view_image' and item.name not in MODEL_TOOLS:
+        if item.name not in ('view_image', 'view_sheet') and item.name not in MODEL_TOOLS:
             result = await item.handler({})
             assert result['content'][0]['text'] == item.name
 
@@ -108,3 +108,30 @@ async def test_model_tools_stream_model_state(tmp_path):
     assembly = state['assembly']
     assert assembly['revision'] == 0 and assembly['params'] == {} and assembly['features'] == []
     assert assembly['history'] == [] and assembly['can_undo'] is False
+
+
+async def test_turn_cost_is_this_turns_share_of_the_running_total(tmp_path):
+    from claude_agent_sdk import ResultMessage
+
+    from aida.agent import run_turn
+
+    class Client:
+        totals = iter([0.14, 0.15])
+
+        async def query(self, prompt):
+            pass
+
+        async def receive_response(self):
+            yield ResultMessage(subtype='success', duration_ms=1000, duration_api_ms=900, is_error=False,
+                                num_turns=1, session_id='s', total_cost_usd=next(self.totals))
+
+    events = []
+
+    async def collect(event):
+        events.append(event)
+
+    client = Client()
+    await run_turn(client, 'first', Artifacts(tmp_path), on_event=collect)
+    await run_turn(client, 'second', Artifacts(tmp_path), on_event=collect)
+    costs = [round(e['cost_usd'], 4) for e in events if e['type'] == 'turn_end']
+    assert costs == [0.14, 0.01]

@@ -31,6 +31,8 @@ from ..scan.pipeline import run_scan
 from .cad_sessions import CadSessionManager, router as cad_sessions_router
 from .jobs import JobManager
 from .replays import router as replays_router
+from .versions import router as versions_router
+from .workspaces import router as workspaces_router
 from .turntable import router as turntable_router
 from .camera import router as camera_router
 from .acquisition import router as acquisition_router
@@ -52,6 +54,8 @@ async def lifespan(_app):
     # Start a CAD engine now so the first prompt does not wait ~10 s for it.
     if os.environ.get('ANTHROPIC_API_KEY'):
         cad_manager.prewarm()
+    # Workspaces nobody watches free their CAD engine; they reopen from disk.
+    cad_manager.start_reaper()
     yield
     await cad_manager.shutdown()
 
@@ -159,8 +163,16 @@ app.include_router(turntable_router)
 app.include_router(camera_router)
 app.include_router(acquisition_router)
 app.include_router(replays_router)
+app.include_router(workspaces_router)
+app.include_router(versions_router)
 # The web UI is mounted last so API routes match first.
 if (FRONTEND_DIST / 'index.html').is_file():
+    # The app's own pages (a workspace, a replay) all load index.html; the app routes them.
+    @app.get('/w/{workspace_id}', include_in_schema=False)
+    @app.get('/replay/{replay_id}', include_in_schema=False)
+    def app_page(workspace_id: str = '', replay_id: str = ''):
+        return FileResponse(FRONTEND_DIST / 'index.html')
+
     app.mount('/legacy', StaticFiles(directory=WEB_DIR, html=True), name='legacy-web')
     app.mount('/', StaticFiles(directory=FRONTEND_DIST, html=True), name='web')
 else:

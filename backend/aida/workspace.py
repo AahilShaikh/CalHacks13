@@ -211,12 +211,15 @@ class Workspace:
         for spec in parts:
             self._add(spec['name'], spec.get('reference'), spec.get('description', ''))
         self.assembly = AssemblyModel(cad, artifacts)
+        self.assembly.load_saved()
         self.assembly.on_saved = self.save
         self.active = active if active in self.parts else next(iter(self.parts), None)
         mesh = getattr(cad, 'mesh', None)
         if mesh is not None and hasattr(mesh, 'references'):
             mesh.references = {name: p.reference for name, p in self.parts.items() if p.reference}
             mesh.active_part = lambda: self.active
+        if hasattr(cad, 'default_objects'):
+            cad.default_objects = self.objects  # render_view without objects shows the model
 
     @classmethod
     def load(cls, cad, artifacts):
@@ -226,6 +229,7 @@ class Workspace:
     def _add(self, name, reference=None, description=''):
         model = ParametricModel(self.cad, self.artifacts, name, Path(reference) if reference else None,
                                 description)
+        model.load_saved()  # a reopened workspace continues where it left off
         model.on_saved = self.save
         self.parts[name] = model
         return model
@@ -275,6 +279,24 @@ class Workspace:
         self.active = name
         self.save()
         return {'active': name}
+
+    def has_saved_models(self):
+        """True when any part or the assembly has saved features (a reopened workspace)."""
+        return any(p.state['features'] for p in [*self.parts.values(), self.assembly])
+
+    async def restore(self):
+        """Rebuild every saved part, then the assembly, in a fresh CAD engine.
+        Returns notes about anything that did not rebuild."""
+        notes = []
+        for part in self.parts.values():
+            note = await part.restore()
+            if note:
+                notes.append(note)
+        if self.assembly.state['features']:
+            note = await self.assembly.restore()
+            if note:
+                notes.append(note)
+        return notes
 
     def references(self):
         """(part, reference STL) for each part that has one."""
