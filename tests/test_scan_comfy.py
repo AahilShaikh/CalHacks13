@@ -1,5 +1,6 @@
 """ComfyUI client tests: workflow wiring and the REST protocol against a stub server."""
 import json
+from pathlib import Path
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -295,3 +296,47 @@ def test_both_workflows_accept_one_to_four_inputs(preset, views):
     assert {v for v in VIEW_ORDER if v in graph['324']['inputs']} == set(views)
     for view in set(VIEW_ORDER)-set(views):
         assert graph[ComfyConfig().load_image_nodes[view]]['inputs']['image'] == '(none)'
+
+
+def test_cancelled_scan_does_not_submit_more_comfy_requests(monkeypatch):
+    import threading
+    from aida.scan.comfy import ComfyError
+    event = threading.Event()
+    event.set()
+    client = ComfyClient()
+    client.cancelled = event
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Cancelled scans must not access ComfyUI again')
+    monkeypatch.setattr('urllib.request.urlopen', forbidden)
+    with pytest.raises(ComfyError, match='cancelled'):
+        client.upload_image(b'photo', 'front.png')
+
+
+def test_http_validation_error_preserves_missing_node_message(monkeypatch):
+    import io, urllib.error
+    detail = {'error': {'type':'missing_node_type', 'message':"Node AidaObjectOnlyViews not found"}}
+    def fail(*args, **kwargs):
+        raise urllib.error.HTTPError('http://fake/prompt',400,'Bad Request',{},io.BytesIO(json.dumps(detail).encode()))
+    monkeypatch.setattr('urllib.request.urlopen',fail)
+    with pytest.raises(ComfyError,match='AidaObjectOnlyViews') as error:
+        ComfyClient()._json('/prompt',{'prompt':{}})
+    assert 'HTTP 400' in str(error.value) and 'Cannot reach' not in str(error.value)
+
+
+def test_preflight_reports_missing_nodes_and_models_before_capture(monkeypatch):
+    client = ComfyClient()
+    monkeypatch.setattr(client,'_json',lambda _: {
+        'CheckpointLoaderSimple': {'input':{'required':{'ckpt_name':[[],{}]}}}})
+    with pytest.raises(ComfyError) as error:
+        client.validate_workflow()
+    assert 'AidaObjectOnlyViews' in str(error.value)
+    assert 'sam3.1_multiplex_fp16.safetensors' in str(error.value)
+
+
+def test_preflight_does_not_require_photos_that_have_not_been_captured(monkeypatch):
+    client=ComfyClient()
+    workflow=json.loads(Path(client.config.workflow_path).read_text())
+    definitions={node['class_type']:{'input':{'required':{}}} for node in workflow.values()}
+    definitions['LoadImage']['input']['required']['image']=[['different_photo.png'],{}]
+    monkeypatch.setattr(client,'_json',lambda _:definitions)
+    client.validate_workflow()

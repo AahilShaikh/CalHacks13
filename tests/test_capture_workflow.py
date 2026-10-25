@@ -442,3 +442,17 @@ def test_scanner_photos_and_previews_remain_available_in_replay(client):
     photo = next(item['url'] for item in refs if item['kind'] == 'photo')
     assert photo.startswith(prefix) and http.get(photo).status_code == 200
     assert http.get(prefix + '..%2F..%2Foutside.txt').status_code == 404
+
+
+def test_workflow_preflight_failure_prevents_turntable_capture(tmp_path,monkeypatch):
+    from aida.scan.comfy import ComfyClient,ComfyError
+    client=ComfyClient()
+    monkeypatch.setattr(client,'health',lambda:True)
+    def fail():raise ComfyError('Missing AidaObjectOnlyViews')
+    monkeypatch.setattr(client,'validate_workflow',fail)
+    @contextmanager
+    def rig(_):
+        raise AssertionError('Invalid workflows must not move the turntable')
+        yield
+    with pytest.raises(ComfyError,match='AidaObjectOnlyViews'):
+        run_capture_scan(tmp_path,controller=SimpleNamespace(capture_session=rig),client=client)

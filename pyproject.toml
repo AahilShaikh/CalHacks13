@@ -20,6 +20,7 @@ dependencies = [
     "pyserial>=3.5,<4",
     "scipy>=1.14,<2",
     "ngsolve>=6.2.2406,<7",
+    "networkx>=3,<4",
 ]
 
 [project.scripts]

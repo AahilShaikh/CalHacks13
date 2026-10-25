@@ -20,6 +20,7 @@ import json
 import math
 import time
 import uuid
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -159,15 +160,24 @@ def wire_workflow(workflow: dict, images: dict, config: ComfyConfig, object_regi
 class ComfyClient:
     def __init__(self, config: ComfyConfig | None = None):
         self.config = config or ComfyConfig()
+        self.cancelled = None
 
     # -- HTTP helpers -----------------------------------------------------
 
+    def _check_cancelled(self):
+        if self.cancelled is not None and self.cancelled.is_set():
+            raise ComfyError('Scan cancelled.')
+
     def _request(self, path, data=None, headers=None, timeout=60):
+        self._check_cancelled()
         request = urllib.request.Request(
             f'{self.config.base_url}{path}', data=data, headers=headers or {})
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(6000).decode('utf-8', errors='replace')
+            raise ComfyError(f'ComfyUI {path} returned HTTP {exc.code}: {detail or exc.reason}') from exc
         except OSError as exc:
             raise ComfyError(
                 f'Cannot reach ComfyUI at {self.config.base_url}: {exc}') from exc
@@ -190,6 +200,28 @@ class ComfyClient:
         except ComfyError:
             return False
         return True
+
+    def validate_workflow(self):
+        """Check installed node classes and model choices before moving the turntable."""
+        workflow = json.loads(Path(self.config.workflow_path).read_text(encoding='utf-8'))
+        definitions = self._json('/object_info')
+        missing = sorted({node['class_type'] for node in workflow.values()} - definitions.keys())
+        problems = []
+        if missing:
+            problems.append('Missing node types: ' + ', '.join(missing) +
+                            '. Install backend/aida/scan/comfy_nodes as custom_nodes/aida_scan and restart ComfyUI.')
+        for identity, node in workflow.items():
+            inputs = definitions.get(node['class_type'], {}).get('input', {})
+            specs = {**inputs.get('required', {}), **inputs.get('optional', {})}
+            for name, value in node.get('inputs', {}).items():
+                if name == 'image':
+                    continue  # Captures have not been uploaded yet.
+                spec = specs.get(name, [])
+                if isinstance(value, str) and spec and isinstance(spec[0], list) and value not in spec[0]:
+                    problems.append(f'Node {identity} ({node["class_type"]}) needs {name}={value}; '
+                                    'it is not installed or available in ComfyUI.')
+        if problems:
+            raise ComfyError('ComfyUI workflow is not ready. ' + ' '.join(problems))
 
     # -- Pipeline steps ---------------------------------------------------
 
@@ -248,6 +280,7 @@ class ComfyClient:
         deadline = time.monotonic()+self.config.timeout
         masks = {}
         while time.monotonic() < deadline:
+            self._check_cancelled()
             entry = self._json(f'/history/{prompt_id}').get(prompt_id)
             if entry:
                 self._raise_on_error(entry)
@@ -261,7 +294,10 @@ class ComfyClient:
                         raise ComfyError(f'Object segmentation returned an empty {view} mask')
                     masks[view] = mask
                 break
-            time.sleep(self.config.poll_interval)
+            if self.cancelled is not None:
+                self.cancelled.wait(self.config.poll_interval)
+            else:
+                time.sleep(self.config.poll_interval)
         if not masks:
             raise ComfyError('Object segmentation timed out')
         self._condition_from_masks(wired, images, masks, output_dir)
@@ -355,6 +391,7 @@ class ComfyClient:
             raise ComfyError(f'ComfyUI rejected the workflow: {queued}')
         deadline = time.monotonic() + self.config.timeout
         while time.monotonic() < deadline:
+            self._check_cancelled()
             entry = (self._json(f"/history/{queued['prompt_id']}") or {}).get(queued['prompt_id'])
             if entry:
                 self._raise_on_error(entry)
@@ -370,12 +407,16 @@ class ComfyClient:
                     return mesh, masks
                 if entry.get('status', {}).get('completed'):
                     raise ComfyError('ComfyUI completed without a downloadable mesh output.')
-            time.sleep(self.config.poll_interval)
+            if self.cancelled is not None:
+                self.cancelled.wait(self.config.poll_interval)
+            else:
+                time.sleep(self.config.poll_interval)
         raise ComfyError(f'Pixal3D exceeded {self.config.timeout:.0f}s including foreground masks')
 
     def _wait_for_mesh(self, prompt_id: str, output_path: Path) -> Path:
         deadline = time.monotonic() + self.config.timeout
         while time.monotonic() < deadline:
+            self._check_cancelled()
             history = self._json(f'/history/{prompt_id}') or {}
             entry = history.get(prompt_id)
             if entry:
@@ -385,7 +426,10 @@ class ComfyClient:
                     return self._download(record, output_path)
                 if entry.get('status', {}).get('completed'):
                     raise ComfyError('ComfyUI completed without a downloadable mesh output.')
-            time.sleep(self.config.poll_interval)
+            if self.cancelled is not None:
+                self.cancelled.wait(self.config.poll_interval)
+            else:
+                time.sleep(self.config.poll_interval)
         raise ComfyError(
             f'Pixal3D generation exceeded {self.config.timeout:.0f}s (prompt {prompt_id})')
 

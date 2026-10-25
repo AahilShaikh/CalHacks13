@@ -96,6 +96,8 @@ def run_capture_scan(directory, *, controller, progress=lambda _: None,
         client.cancelled = cancelled
     if not client.health():
         raise RuntimeError('ComfyUI is not ready at ' + client.config.base_url)
+    if isinstance(client, ComfyClient):
+        client.validate_workflow()
     check_cancelled(cancelled)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)

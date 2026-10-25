@@ -156,6 +156,18 @@ Select with `aida scan run --workflow fast` (or `full`), the setup page's
 `"workflow":"fast"` on `/api/v1/acquisitions`. Custom API graphs use
 `--workflow-path` or `AIDA_PIXAL3D_WORKFLOW`.
 
+Install Aida's local node pack into ComfyUI's own environment before scanning:
+
+```powershell
+uv pip install --python ComfyUI/.venv/Scripts/python.exe -r backend/aida/scan/comfy_nodes/requirements.txt
+New-Item -ItemType Directory -Force ComfyUI/custom_nodes/aida_scan
+Copy-Item backend/aida/scan/comfy_nodes/*.py ComfyUI/custom_nodes/aida_scan/ -Force
+```
+
+Restart ComfyUI after installing the node pack. The Windows launchers synchronize
+these local nodes on startup. Scanning checks node and model availability before
+moving the turntable; a reachable ComfyUI server alone is not sufficient.
+
 Raw ChArUco photos use the built-in SAM 3.1 segmenter with object boxes
 automatically located from the print. No matching background reference is needed.
 Install `sam3.1_multiplex_fp16.safetensors` from

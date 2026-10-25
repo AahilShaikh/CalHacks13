@@ -12,6 +12,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "matplotlib" },
     { name = "mcp" },
+    { name = "networkx" },
     { name = "ngsolve" },
     { name = "opencv-contrib-python" },
     { name = "pillow" },
@@ -39,6 +40,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.162.0" },
     { name = "matplotlib", specifier = ">=3.11.2" },
     { name = "mcp", specifier = ">=2,<3" },
+    { name = "networkx", specifier = ">=3,<4" },
     { name = "ngsolve", specifier = ">=6.2.2406,<7" },
     { name = "opencv-contrib-python", specifier = ">=5.0.0.93" },
     { name = "pillow" },
@@ -918,6 +920,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/31/14/04f6ccea776378394861c56e7c12da5b1a1df934b1ae14b40654bff63874/netgen_occt-7.8.1-py3-none-macosx_11_0_arm64.whl", hash = "sha256:c93a22f7459866f3eba3e93d24bd184dcc93c4352817dac0520ca30f2edf50a9", size = 19837849, upload-time = "2024-06-21T13:25:15.9Z" },
     { url = "https://files.pythonhosted.org/packages/2a/9e/dbe6b538248f6e2d7c2972cdf9aa59e2904505c4a345fcd6cfcfe1841f9f/netgen_occt-7.8.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:db71d77f56f79c0768489e76dde8febdeb25b95777986587a5d09575fa112f94", size = 25610800, upload-time = "2024-06-21T13:25:19.373Z" },
     { url = "https://files.pythonhosted.org/packages/00/6f/9e838c4e4445aa0dddff2501e7744787c941635b99589d968db14b1b20a2/netgen_occt-7.8.1-py3-none-win_amd64.whl", hash = "sha256:f701705183832cf2497c6c9339886d95dede7be63187f06be89fa146f6463d09", size = 18924411, upload-time = "2024-06-21T13:25:22.86Z" },
+]
+
+[[package]]
+name = "networkx"
+version = "3.7"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/dc/76/3af777226b63a5e64a6b36b1ec5855c14e2b94a37096d4760e595fc43511/networkx-3.7.tar.gz", hash = "sha256:fd77a511bd90f39f3d016351345b52cf5319b813bdca01de3f755d3cca62e96a", size = 1866482, upload-time = "2026-09-21T16:45:16.974Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7e/cd/fe58041e9011f307c490e3e17dd48cc516448f7c698a3f2d9d9d65d7e6a8/networkx-3.7-py3-none-any.whl", hash = "sha256:e3fd2c13a7814cee3746340d8d7f8598a67f16a58bf47fb7f8793fab6efca1b0", size = 2142205, upload-time = "2026-09-21T16:45:14.609Z" },
 ]
 
 [[package]]
