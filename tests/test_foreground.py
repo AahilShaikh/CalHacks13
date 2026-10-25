@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from aida.scan.camera import CameraCalibration
-from aida.scan.foreground import object_foreground
+from aida.scan.foreground import isolate_object, object_foreground
 from aida.scan.scaling import ScalingError
 
 
@@ -52,3 +52,22 @@ def test_compensates_rotating_board_pattern():
     frame[200:340,360:440] = [20,60,180]
     mask = object_foreground(frame,current_pose,empty,pose,calibration)
     assert np.count_nonzero(mask) == pytest.approx(140*80,rel=.03)
+
+
+def test_isolation_preserves_object_pixels_despite_subtraction_holes_and_cable():
+    frame = np.full((600, 800, 3), 90, np.uint8)
+    frame[210:340, 280:520] = [230, 240, 250]
+    mask = np.zeros((600, 800), np.uint8)
+    mask[210:340, 280:520] = 255
+    mask[240:260, 340:370] = 0  # Light object on a matching white board square.
+    cv2.line(mask, (500, 215), (799, 0), 255, 5)  # Thin connected background fringe.
+    isolated = isolate_object(frame, mask)
+    assert np.array_equal(isolated[210:340, 280:520], frame[210:340, 280:520])
+    assert not isolated[:100].any()
+    assert not isolated[:, 700:].any()
+    assert isolated.shape == frame.shape
+
+
+def test_isolation_rejects_an_empty_region():
+    with pytest.raises(ScalingError, match='No substantial object'):
+        isolate_object(np.zeros((600, 800, 3), np.uint8), np.zeros((600, 800), np.uint8))

@@ -90,14 +90,15 @@ def test_stationary_angle_must_stay_within_tolerance(no_settling):
     assert result.pulses > 0
 
 
-def test_stall_times_out(no_settling, monkeypatch):
+def test_stall_stops_after_bounded_attempts(no_settling, monkeypatch):
     ticks = iter(i / 1000 for i in range(10000))
     monkeypatch.setattr('aida.hardware.control.time.monotonic', lambda: next(ticks))
     table = SimulatedTable(gain=0)
-    with pytest.raises(TurntableError, match='time') as error:
+    with pytest.raises(TurntableError) as error:
         PositionController(table, table).rotate(90, 1, 1.0)
-    assert error.value.code == 'timeout'
-    assert table.pulses
+    assert error.value.code == 'stalled'
+    assert len(table.pulses) == 5
+    assert table.stops == 2
 
 
 def test_lost_feedback_aborts_without_another_pulse(no_settling):
@@ -123,3 +124,58 @@ def test_rejects_invalid_control_configuration():
         replace(ControlConfig(), max_pulse_s=1)
     with pytest.raises(ValueError):
         replace(ControlConfig(), positive_deg_per_s=float('nan'))
+
+
+def test_discovers_reversed_direction_with_small_probe(no_settling):
+    table = SimulatedTable(gain=-1)
+    events = []
+    controller = PositionController(table, table, trace=events.append)
+    result = controller.rotate(90, 1, time.monotonic() + 2)
+    assert abs(result.error_degrees) <= 1
+    assert table.pulses[0][1] <= controller.config.probe_s
+    assert controller.profile()['positive_pulse_us'] < 1500
+    assert sum(event['event'] == 'polarity_corrected' for event in events) == 1
+    # Learned polarity and speeds remain in effect for the next view.
+    controller.rotate(180, 1, time.monotonic() + 2)
+    assert sum(event['event'] == 'polarity_corrected' for event in events) == 1
+
+
+def test_deadband_and_asymmetric_realistic_servo(no_settling):
+    table = SimulatedTable()
+    def pulse(pulse_us, duration, deadline):
+        table.pulses.append((pulse_us, duration))
+        offset = pulse_us - 1500
+        # Fine pulses initially lie in the deadband; opposite directions differ in speed.
+        if abs(offset) > 70:
+            rate = (offset - 70) * .9 if offset > 0 else (offset + 70) * .5
+            table.angle = (table.angle + rate * max(0, duration - .015)) % 360
+    table.pulse = pulse
+    events = []
+    controller = PositionController(table, table, trace=events.append)
+    for angle in (90, 180, 270, 0, 355):
+        result = controller.rotate(angle, .5, time.monotonic() + 2)
+        assert abs(result.error_degrees) <= .5
+    assert any(e['event'] == 'deadband_adjusted' for e in events)
+
+
+def test_transient_feedback_loss_retries_while_stopped(no_settling):
+    table = SimulatedTable(90)
+    original = table.read_angle
+    calls = []
+    def read(deadline):
+        calls.append(True)
+        if len(calls) == 2:
+            raise TurntableError('feedback_lost', 'Temporary occlusion')
+        return original(deadline)
+    table.read_angle = read
+    result = PositionController(table, table).rotate(90, 1, time.monotonic() + 2)
+    assert result.pulses == 0
+    assert len(calls) == 4
+
+
+def test_expired_deadline_stops_without_driving(no_settling):
+    table = SimulatedTable()
+    with pytest.raises(TurntableError) as error:
+        PositionController(table, table).rotate(90, 1, time.monotonic() - 1)
+    assert error.value.code == 'timeout'
+    assert not table.pulses

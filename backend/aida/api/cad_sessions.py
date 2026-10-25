@@ -125,6 +125,7 @@ class CadSession:
         self.error: str | None = None
         self.events: list[dict] = []
         self.meshes: list[dict] = []    # one entry per revision: path + stats
+        self.fea_jobs: dict[str, dict] = {}
         self.turns: asyncio.Queue = asyncio.Queue()
         self.task: asyncio.Task | None = None
         # Live handles while the runner is active: CAD bridge (downloads) and
@@ -238,6 +239,7 @@ class CadSessionManager:
         self._sessions: dict[str, CadSession] = {}
         self._mutex = threading.Lock()
         self._warm = None
+        self.fea_slots = asyncio.Semaphore(2)
 
     # -- lifecycle ----------------------------------------------------------
     def create(self, mesh_bytes: bytes, mesh_name: str,
@@ -315,6 +317,12 @@ class CadSessionManager:
         return warm['ready'].result(), warm['release']
 
     async def shutdown(self):
+        tasks = [job['task'] for session in self._sessions.values()
+                 for job in session.fea_jobs.values() if not job['task'].done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         if self._warm is not None:
             self._warm['release'].set()
             self._warm['task'].cancel()
@@ -410,8 +418,19 @@ def snapshot_hook(cad, session: CadSession):
                 return
             glb = session.artifacts.root / f'mesh-{revision:03d}.glb'
             stats = await asyncio.to_thread(_stls_to_glb, parts, glb)
+            # Capture the same object under the execute lock, before another
+            # mutation can occur. Older engines may offer only STL snapshots.
+            exact = {}
+            if len(names) == 1:
+                step = session.artifacts.root / f'cad-{revision:03d}.step'
+                try:
+                    await cad.snapshot_step(step, names[0])
+                    if step.is_file() and step.stat().st_size:
+                        exact['step_path'] = step
+                except Exception as exc:
+                    session.record({'type': 'step_snapshot_skipped', 'revision': revision, 'error': str(exc)[:400]})
             session.meshes.append({'revision': revision, 'path': glb,
-                                   'generated': True, **stats})
+                                   'generated': True, **stats, **exact})
             session.publish({'type': 'mesh', 'revision': revision,
                              'url': session.mesh_url(revision), 'generated': True,
                              **stats})

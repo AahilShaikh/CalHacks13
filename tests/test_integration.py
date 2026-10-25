@@ -79,6 +79,8 @@ show(plate, "generated_cad")'''
     assert mesh['generated'] and mesh['triangles'] > 0
     assert mesh['path'].read_bytes()[:4] == b'glTF'
     assert mesh['extents'][0] == pytest.approx(60, abs=0.1)
+    assert mesh['step_path'].is_file()
+    assert mesh['step_path'].read_text().startswith('ISO-10303-21;')
     assert [e['type'] for e in session.events].count('mesh') == 1
 
 

@@ -227,7 +227,9 @@ def test_reconstruction_runs_segmentation_metric_fit_and_exports(tmp_path,monkey
             masks={}
             for view,filename in uploaded.items():
                 image=cv2.imdecode(np.frombuffer(self.uploads[filename],np.uint8),cv2.IMREAD_COLOR)
-                mask=np.any(image>0,axis=2).astype(np.uint8)*255
+                # The preparation retains background context inside a padded ROI;
+                # emulate semantic removal of that background, not a nonzero mask.
+                mask=np.all(image == [20,60,180],axis=2).astype(np.uint8)*255
                 target=folder/f'{view}_mask.png'
                 cv2.imwrite(str(target),mask)
                 masks[view]=target

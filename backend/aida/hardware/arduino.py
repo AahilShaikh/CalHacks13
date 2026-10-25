@@ -14,6 +14,7 @@ class ArduinoDrive:
         self.baud = baud
         self.reset_wait_s = reset_wait_s
         self.connection = None
+        self.firmware_info = None
         if not port or not 1000 <= neutral_us <= 2000:
             raise ValueError('A serial port and neutral pulse in [1000, 2000] are required.')
 
@@ -30,6 +31,22 @@ class ArduinoDrive:
             time.sleep(self.reset_wait_s)
             self.connection.reset_input_buffer()
             self._command('PING', '', 'PING', deadline)
+            self.stop(deadline)
+            try:
+                info = self._command('INFO', '', 'INFO', deadline).split()
+            except TurntableError as exc:
+                if exc.code != 'firmware_error':
+                    raise
+                raise TurntableError('firmware_update_required',
+                                     'Upload firmware/turntable/turntable.ino; firmware INFO is required.') from exc
+            if len(info) != 5 or info[1] != '2' or any(not value.isdecimal() for value in info[2:]):
+                raise TurntableError('firmware_update_required', 'Unsupported turntable firmware INFO response.')
+            self.firmware_info = {'version': int(info[1]), 'startup_neutral_us': int(info[2]),
+                                  'pin': int(info[3]), 'max_pulse_ms': int(info[4])}
+            if self.firmware_info['startup_neutral_us'] != self.neutral_us:
+                raise TurntableError('neutral_mismatch',
+                                     'Firmware startup neutral differs from the configured stop pulse; '
+                                     'update STARTUP_NEUTRAL_US and re-upload to avoid movement on USB reset.')
         except TurntableError:
             raise
         except Exception as exc:
@@ -44,11 +61,21 @@ class ArduinoDrive:
             self.connection.write_timeout = min(0.2, remaining(deadline))
             if self.connection.write(payload) != len(payload):
                 raise TurntableError('serial_error', 'Incomplete command sent to Arduino.')
+            pending = b''
             while True:
                 self.connection.timeout = min(0.1, remaining(deadline))
-                response = self.connection.readline(128).decode('ascii', errors='replace').strip()
-                if response == f'OK {token} {expected}':
-                    return
+                pending += self.connection.readline(128)
+                if len(pending) > 256:
+                    raise TurntableError('serial_error', 'Oversized Arduino response.')
+                if not pending.endswith(b'\n'):
+                    continue
+                response = pending.decode('ascii', errors='replace').strip()
+                pending = b''
+                prefix = f'OK {token} '
+                if response.startswith(prefix):
+                    body = response[len(prefix):]
+                    if body == expected or (expected == 'INFO' and body.startswith('INFO ')):
+                        return body
                 if response.startswith(f'ERR {token} '):
                     raise TurntableError('firmware_error', response)
                 # Ignore startup banners and late replies to previous commands.

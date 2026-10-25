@@ -230,6 +230,8 @@ class ComfyClient:
                             raise ComfyError(f'ComfyUI did not return the original-coordinate {view} mask')
                         masks[view] = self._download(records[0], output_dir / f'{view}_mask.png')
                     return mesh, masks
+                if entry.get('status', {}).get('completed'):
+                    raise ComfyError('ComfyUI completed without a downloadable mesh output.')
             time.sleep(self.config.poll_interval)
         raise ComfyError(f'Pixal3D exceeded {self.config.timeout:.0f}s including foreground masks')
 
@@ -243,6 +245,8 @@ class ComfyClient:
                 record = self._find_mesh_record(entry)
                 if record:
                     return self._download(record, output_path)
+                if entry.get('status', {}).get('completed'):
+                    raise ComfyError('ComfyUI completed without a downloadable mesh output.')
             time.sleep(self.config.poll_interval)
         raise ComfyError(
             f'Pixal3D generation exceeded {self.config.timeout:.0f}s (prompt {prompt_id})')
@@ -259,11 +263,17 @@ class ComfyClient:
     def _find_mesh_record(self, entry: dict) -> dict | None:
         outputs = entry.get('outputs', {})
         node_ids = [self.config.output_node] + [k for k in outputs if k != self.config.output_node]
+        candidates = []
         for node_id in node_ids:
-            for value in outputs.get(node_id, {}).get('files', []):
-                if isinstance(value, dict) and value.get('filename'):
-                    return value
-        return None
+            node = outputs.get(node_id, {})
+            # New ComfyUI versions expose MeshToFile3D through downstream 3D
+            # preview/save nodes under `3d`, rather than the legacy `files` key.
+            for value in node.get('files', []) + node.get('3d', []):
+                if (isinstance(value, dict) and isinstance(value.get('filename'), str)
+                        and Path(value['filename']).suffix.lower() in ('.glb', '.gltf', '.obj', '.stl', '.ply')):
+                    candidates.append((value.get('type') == 'temp',
+                                       node_id != self.config.output_node, value))
+        return min(candidates, key=lambda item: item[:2])[2] if candidates else None
 
     def _download(self, record: dict, output_path: Path) -> Path:
         query = urllib.parse.urlencode({

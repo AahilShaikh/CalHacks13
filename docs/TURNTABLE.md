@@ -79,29 +79,35 @@ AIDA_TURNTABLE_PORT=/dev/cu.usbmodemYOUR_PORT
 AIDA_TURNTABLE_CAMERA=0
 AIDA_TURNTABLE_STORAGE=artifacts/turntable
 AIDA_TURNTABLE_NEUTRAL_US=1450
-AIDA_TURNTABLE_POSITIVE_US=1550
-AIDA_TURNTABLE_NEGATIVE_US=1350
-AIDA_TURNTABLE_POSITIVE_DPS=90
-AIDA_TURNTABLE_NEGATIVE_DPS=90
-AIDA_TURNTABLE_FINE_POSITIVE_US=1510
-AIDA_TURNTABLE_FINE_NEGATIVE_US=1390
-AIDA_TURNTABLE_FINE_POSITIVE_DPS=30
-AIDA_TURNTABLE_FINE_NEGATIVE_DPS=30
+# Optional overrides; normally use the saved measured motion profile.
+# AIDA_TURNTABLE_POSITIVE_US=1300
+# AIDA_TURNTABLE_NEGATIVE_US=1600
+# AIDA_TURNTABLE_POSITIVE_DPS=27
+# AIDA_TURNTABLE_NEGATIVE_DPS=36
+# AIDA_TURNTABLE_FINE_POSITIVE_US=1390
+# AIDA_TURNTABLE_FINE_NEGATIVE_US=1470
+# AIDA_TURNTABLE_FINE_POSITIVE_DPS=12
+# AIDA_TURNTABLE_FINE_NEGATIVE_DPS=12
+AIDA_TURNTABLE_MAX_PULSE_S=0.45
 AIDA_TURNTABLE_SETTLE_S=0.25
 ```
 
-Neutral 1450 µs was measured on this rig. Other pulse widths and rates are
-starting estimates, not measured calibration. If omitted, coarse pulses default
-to neutral ±100 µs and fine pulses to neutral ±60 µs. Explicit environment values
-override these offsets; recheck existing overrides after changing neutral. Positive angles rotate
-the printed board X axis toward its Y axis: clockwise viewed from the printed
-side. Pulse polarity depends on the mechanics. If the first pulse moves the
-wrong way, `direction_mismatch` aborts. Swap **both** coarse and fine positive/
-negative pulse values before retrying.
+Neutral 1450 µs and the commented pulse settings above were measured on this rig.
+Successful moves save learned direction, coarse/fine pulse widths and travel rates
+in `artifacts/turntable/motion_profile.json`, bound to the serial port, camera ID
+and neutral. Explicit environment values override the saved profile. Without a
+matching profile, coarse pulses default to neutral ±100 µs and fine pulses to
+neutral ±60 µs. The first use of each pulse mode is limited to a 60 ms discovery
+pulse (or shorter near the target). Camera feedback determines actual direction;
+the controller automatically swaps polarity once if the initial mapping is reversed.
+A direction reversal after verification aborts with `direction_mismatch`. Positive
+angles rotate the printed board X axis toward its Y axis: clockwise viewed from
+the printed side. Recheck calibration if the camera or mechanics move.
 
 Fine commands must lie between neutral and their corresponding coarse command
 and still move the loaded table. The FS90R has a neutral deadband: if fine
-commands stall, tune them experimentally. Use a slower drive so the smallest
+commands stall, the controller steps them toward the coarse pulse in 10 µs increments.
+Repeated pulses with no measurable movement abort with `stalled`. Use a slower drive so the smallest
 useful movement is smaller than the target tolerance. An API parameter cannot
 guarantee precision the mechanics and camera cannot achieve.
 
@@ -113,22 +119,32 @@ uv run aida-api
 ```
 
 An in-process lock rejects overlapping operations with 409; the serial driver
-also requests exclusive access. Importing modules and starting the server opens
-no devices and causes no movement.
+also requests exclusive access. Importing modules opens no devices. On server startup the configured camera
+and Arduino are opened to establish zero: STOP is commanded at neutral, the
+mounted board is observed, and stationary checks must pass. No DRIVE command is
+issued. Missing hardware is reported by the setup page and `/health`; the HTTP
+service remains available for setup and CAD work.
 
-## Set zero, then rotate and capture
+## Automatic startup zero, then rotate and capture
 
-Manually put the board at your intended zero. Set it once:
+Mount the board flat and fix the camera before starting the server. The current
+observed board orientation becomes 0° on each server startup. This defines a
+fresh angle origin; it does not physically home or rotate the table. STOP at
+neutral and stationary camera checks are required before reporting ready.
 
-```bash
-curl --fail-with-body -X POST http://127.0.0.1:8000/api/v1/turntable/zero \
-  -H 'Content-Type: application/json' -d '{}'
-```
+`GET /api/v1/turntable/status` reports readiness and initialization errors. If
+hardware was missing or unready at startup, correct it and use **Retry startup
+zero** on `/setup.html` or `POST /api/v1/turntable/initialize`.
 
-This stops the motor and saves its observed board pose as
-`artifacts/turntable/zero.json`, which persists across API restarts. The ChArUco
-board supplies the reference geometry; a saved pose defines its world-facing
-zero. Do not call `/zero` again between normal rotations.
+For automatic mesh scanning, leave the table empty and click **Capture empty-table
+reference** (or `POST /api/v1/turntable/reference` with `{}`). This separate action
+does not change zero, and is never assumed safe from an object-containing startup
+photo. Recapture after camera, lighting or mounting changes. A valid empty
+reference remains usable across logical zero resets with unchanged calibration.
+
+`POST /api/v1/turntable/zero` remains available for an explicit manual override.
+It should not be called between ordinary moves. The zero homography is stored
+in `artifacts/turntable/zero.json`.
 
 Rotate to an absolute angle and save a photo:
 
@@ -166,9 +182,10 @@ targets current measured angle plus the supplied angle, still by shortest path.
 Default tolerance is 1° with three fresh settled checks, whose measured angle
 spread must also be at most half the tolerance. This is a measured
 camera criterion, not independently verified physical accuracy. Normal bursts
-are capped at 250 ms, slower commands apply within 8° of target, and settling
-defaults to 250 ms. Timing estimates adapt from measured travel within each
-call. Measure your loaded table speeds, improve image quality, tune fine pulses,
+are capped at 450 ms, slower commands apply within 8° of target, and settling
+defaults to 250 ms. Timing estimates adapt after every measured pulse, persist
+across views and are saved after successful moves. Each normal pulse targets
+at most 9° based on the current rate estimate. Improve image quality, tune fine pulses,
 and shorten settling only after checking vibration. Tighten tolerance after
 validating physical accuracy on your hardware.
 
@@ -188,17 +205,24 @@ standard 422 validation response:
 | 409 | `busy`, `zero_required` |
 | 422 | Invalid input or unknown fields |
 | 503 | `not_configured`, `configuration_error`, `serial_unavailable`, `serial_error`, `firmware_error` |
-| 503 | `camera_unavailable`, `feedback_lost`, `feedback_invalid`, `direction_mismatch`, `stop_unconfirmed` |
+| 503 | `firmware_update_required`, `neutral_mismatch` |
+| 503 | `camera_unavailable`, `feedback_lost`, `feedback_invalid`, `direction_mismatch`, `stalled`, `stop_unconfirmed` |
 | 504 | `timeout` |
 | 500 | `capture_failed`, `calibration_save_failed` |
 
-Feedback loss aborts immediately. Stalls time out. Cleanup attempts STOP on
-every opened connection, including on failures. `stop_unconfirmed` means the
+Transient board loss is retried up to three times with the motor stopped;
+continued loss aborts without another drive pulse. Stalls abort after five
+consecutive pulses with no measurable movement. Cleanup attempts STOP on
+every opened connection, including on failures. Motion measurements, pulse
+widths/durations, rate estimates, retries and failures are saved as JSONL in
+`artifacts/turntable/motion/` for standalone moves and `motion.jsonl` in each
+acquisition directory. `stop_unconfirmed` means the
 final STOP could not be acknowledged and the position is unverified.
 
 - `hardware/control.py`: drive/feedback interfaces, coarse/fine controller,
   shortest-path math, deadline and stable checks. Replace adapters independently.
-- `hardware/arduino.py`: pyserial, correlated command IDs and completion ACKs.
+- `hardware/arduino.py`: pyserial, firmware/neutral verification, correlated command IDs and completion ACKs.
+- `hardware/motion.py`: hardware-bound measured profiles and per-move JSONL traces.
 - `hardware/vision.py`: fresh webcam frames and planar ChArUco angle feedback.
 - `turntable.py`: exclusive hardware lifecycle, photo/metadata persistence, and
   existing async `capture_views()` integration for four scan views.
@@ -209,14 +233,18 @@ final STOP could not be acknowledged and the position is unverified.
 
 ```text
 PING <id>                                    -> OK <id> PING
+INFO <id>                                    -> OK <id> INFO 2 1450 9 500
 STOP <id> <neutral_us>                        -> OK <id> STOP
 DRIVE <id> <pulse_us> <duration_ms> <neutral_us> -> OK <id> DONE (after stop)
 invalid/busy                                 -> ERR <id> BAD_COMMAND/BUSY
 ```
 
 Pulse values: 1000–2000 µs; burst duration: 1–500 ms. The sketch boots with
-`READY AIDA_TURNTABLE_V1`. Command IDs prevent stale responses completing a new
-operation; the motor timer is nonblocking.
+`READY AIDA_TURNTABLE_V2`. The host requires version 2 and verifies that
+firmware startup neutral equals the configured neutral before allowing motion.
+Re-upload the sketch when updating from version 1 or changing the neutral.
+Command IDs prevent stale responses completing a new operation; the motor timer
+is nonblocking.
 
 ```bash
 uv run pytest tests/test_turntable_control.py tests/test_turntable_vision.py \
@@ -225,4 +253,7 @@ uv run pytest tests/test_turntable_control.py tests/test_turntable_vision.py \
 
 Tests use actual OpenCV on synthetic perspective-projected boards, simulated
 motors, serial fakes and HTTP integration. They do not move hardware. Firmware
-still needs compilation/upload in Arduino IDE and validation on the assembled system.
+must be compiled/uploaded and validated on the assembled system.
+The development rig was flashed with version 2 and exercised at 0°, 90°, 180°,
+270° and back to 0° using the USB camera; all five final readings were within
+0.5° of their targets. This verifies camera-reported accuracy, not external metrology.

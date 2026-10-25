@@ -1,8 +1,13 @@
 import type { ServerEvent } from './events';
+import type { FeaJob, FeaSettings } from './fea';
 
 async function json<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.detail || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const detail = body.detail;
+    throw new Error(typeof detail === 'string' ? detail : Array.isArray(detail)
+      ? detail.map((item: { msg: string }) => item.msg).join('; ') : `Request failed (${response.status})`);
+  }
   return body as T;
 }
 
@@ -27,6 +32,17 @@ export async function sendTurn(sessionId: string, prompt: string) {
 
 export async function interrupt(sessionId: string) {
   return json(await fetch(`/api/v1/cad-sessions/${sessionId}/interrupt`, { method: 'POST' }));
+}
+
+export async function createFea(sessionId: string, revision: number, settings: FeaSettings) {
+  return json<FeaJob>(await fetch(`/api/v1/cad-sessions/${sessionId}/fea`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ revision, ...settings }),
+  }));
+}
+
+export async function getFea(sessionId: string, analysisId: string) {
+  return json<FeaJob>(await fetch(`/api/v1/cad-sessions/${sessionId}/fea/${analysisId}`));
 }
 
 export type DownloadKind = 'step' | 'stl' | 'model.py';

@@ -24,6 +24,12 @@ dependencies = [
 [project.scripts]
 aida = "aida.cli:main"
 aida-api = "aida.api.server:main"
+aida-fea-mcp = "aida.analysis.mcp:main"
+
+[project.optional-dependencies]
+fea = [
+    "ngsolve>=6.2.2406,<7",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -2,6 +2,7 @@ import { useStore } from '../store';
 import { AccuracyChart } from './AccuracyChart';
 import { Composer } from './Composer';
 import { Feed } from './Feed';
+import { FeaPanel } from './FeaPanel';
 import { ModelTab } from './ModelTab';
 import { PanelTabs } from './PanelTabs';
 import { ReplayControls, ReplayList } from './Replay';
@@ -10,6 +11,7 @@ const STEPS = [
   { label: 'Inspect', dot: 'bg-inspect', text: 'text-inspect', line: 'Slices and views of the mesh' },
   { label: 'Build', dot: 'bg-build', text: 'text-build', line: 'Features added to the CAD model' },
   { label: 'Verify', dot: 'bg-verify', text: 'text-verify', line: 'Deviation from the scan, per revision' },
+  { label: 'Test', dot: 'bg-warn', text: 'text-warn', line: 'Stress and deformation under load' },
 ];
 
 /** Figma: "Right panel" in Screen / 1 Empty (7:7) and Screen / 2 Running (7:58). */
@@ -22,9 +24,9 @@ export function RightPanel() {
     <aside className="flex h-full w-[400px] shrink-0 flex-col gap-3 border-l border-line bg-base p-3">
       {hasSession ? (
         <>
-          <AccuracyChart />
+          {tab !== 'fea' && <AccuracyChart />}
           <PanelTabs />
-          {tab === 'activity' ? <Feed /> : <ModelTab />}
+          {tab === 'activity' ? <Feed /> : tab === 'fea' ? <FeaPanel /> : <ModelTab />}
         </>
       ) : (
         <div className="flex flex-1 flex-col gap-3">

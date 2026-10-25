@@ -23,13 +23,19 @@ Flat turntable rotation alone cannot calibrate the lens. These setup photos do n
 <button id="preview">Refresh camera preview</button><button id="sample">Take calibration sample</button>
 <button id="solve">Solve calibration</button><button id="reset">Reset samples</button>
 <p id="calibration"></p><img id="frame" alt="Camera preview appears here after capture" hidden></section>
-<section><h2>2. Mount the board and set zero</h2>
+<section><h2>2. Automatic zero and empty-table reference</h2>
 <p>Mount the board flat on the turntable, leave it empty, and fix the USB camera on its stand. Keep
 board corners visible around the object at every rotation. The camera must see both the board and the object.
 Close Arduino Serial Monitor, connect the Mega and ensure the 1450 µs firmware is uploaded.</p>
+<p>The board's current orientation becomes <strong>0° automatically when the server starts</strong>.
+The server commands STOP and observes the board; it does not rotate to a home position.
+If startup ran before the hardware was ready, retry initialization after mounting the board.</p>
 <button id="ports">Refresh USB ports</button><select id="port" aria-label="Arduino USB port"></select>
 <button id="save-port">Save Arduino port</button><p id="port-status"></p>
-<button id="zero">Set zero and save empty-table reference</button></section>
+<p id="zero-status" aria-live="polite"></p><button id="initialize">Retry startup zero</button>
+<p>With the table empty, capture its background once before scanning. This does not change zero.
+Retake it after changing the camera position, lighting or board mounting.</p>
+<button id="reference">Capture empty-table reference</button></section>
 <section><h2>3. Scan an object and start CAD</h2>
 <p>Place the object on the board. Leave the USB camera and board mounting fixed.
 The agent can acquire up to four cardinal views. Automatic scaling needs front plus at least one side view.
@@ -65,7 +71,10 @@ async function ports(){const data=await api('/api/v1/turntable/configuration');$
  for(const device of data.ports){const option=document.createElement('option');option.value=device.port;option.textContent=`${device.port} · ${device.description}`;$('port').append(option)}
  if(data.port)$('port').value=data.port;$('port-status').textContent=data.ports.length?`Saved port: ${data.port||'none'}`:'No USB serial device detected. Connect the Mega, then refresh.';}
 action('ports',ports);action('save-port',async()=>{log(await api('/api/v1/turntable/configuration','POST',{port:$('port').value}));await ports()});
-action('zero',async()=>log(await api('/api/v1/turntable/zero','POST',{empty_table_reference:true})));
+async function startupState(){const data=await api('/api/v1/turntable/status');
+ $('zero-status').textContent=`Startup zero: ${data.startup_zero.status}${data.startup_zero.message?' · '+data.startup_zero.message:''} · Empty-table reference: ${data.empty_reference_ready?'ready':'needed'}`;}
+action('initialize',async()=>{try{log(await api('/api/v1/turntable/initialize','POST'))}finally{await startupState()}});
+action('reference',async()=>{log(await api('/api/v1/turntable/reference','POST',{}));await startupState()});
 function showFiles(data){$('files').replaceChildren();for(const [name,url] of Object.entries(data.files||{})){const link=document.createElement('a');link.textContent=name;link.href=url;link.target='_blank';link.rel='noopener';link.style.marginRight='16px';$('files').append(link)}
  if(data.viewer_url){const link=document.createElement('a');link.href=data.viewer_url;link.textContent='Open live CAD viewer';link.style.display='block';$('files').prepend(link)}}
 async function poll(){if(!currentJob)return;try{const data=await api(`/api/v1/acquisitions/${currentJob}`);$('job').textContent=`${data.status} · ${data.stage}`;showFiles(data);
@@ -74,6 +83,6 @@ async function poll(){if(!currentJob)return;try{const data=await api(`/api/v1/ac
 $('start').onclick=async()=>{$('start').disabled=true;try{const data=await api('/api/v1/acquisitions','POST',{prompt:$('prompt').value,policy:$('policy').value,start_cad:$('cad').checked});
  currentJob=data.job_id;$('cancel').disabled=false;log(data);poll()}catch(error){log(error.message,true);$('start').disabled=false}};
 action('cancel',async()=>log(await api(`/api/v1/acquisitions/${currentJob}/cancel`,'POST')));
-state().catch(error=>log(error.message,true));ports().catch(error=>log(error.message,true));cameras().catch(error=>log(error.message,true));
+state().catch(error=>log(error.message,true));ports().catch(error=>log(error.message,true));cameras().catch(error=>log(error.message,true));startupState().catch(error=>log(error.message,true));
 </script>
 </html>

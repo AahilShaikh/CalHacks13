@@ -54,6 +54,7 @@ class AcquisitionManager:
         self.runner = runner
 
     def submit(self, request, cad_manager):
+        service.ensure_zero_ready()
         if any(job.status in ('queued', 'running', 'cancelling') for job in self.jobs.values()):
             raise HTTPException(409, 'Another capture-to-CAD workflow is active.')
         settings = HardwareSettings.from_env()
@@ -61,9 +62,9 @@ class AcquisitionManager:
         if calibration.camera_id != settings.camera_id:
             raise HTTPException(409, 'Selected camera differs from its calibration.')
         if not (settings.storage / 'zero.json').is_file():
-            raise HTTPException(409, 'Set the mounted turntable zero before starting a scan.')
+            raise HTTPException(409, 'Startup zero is not ready; retry initialization at /setup.html.')
         if not all((settings.storage / name).is_file() for name in ('empty_table.png', 'empty_table.json')):
-            raise HTTPException(409, 'Save an empty-table reference when setting zero at /setup.html.')
+            raise HTTPException(409, 'Capture an empty-table reference at /setup.html.')
         identity = uuid.uuid4().hex
         directory = Path(os.environ.get('AIDA_ACQUISITION_STORAGE', 'artifacts/acquisitions')) / identity
         directory.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as api from './lib/api';
+import type { FeaJob, FeaSettings } from './lib/fea';
 import {
   argSummary,
   deviationFrom,
@@ -49,8 +50,8 @@ export type Revision = {
   heatmap?: HeatScale & { url: string };
 };
 
-export type ViewMode = 'overlay' | 'side' | 'heatmap';
-export type Tab = 'activity' | 'model';
+export type ViewMode = 'overlay' | 'side' | 'heatmap' | 'fea-stress' | 'fea-displacement';
+export type Tab = 'activity' | 'model' | 'fea';
 export type AppStatus = 'idle' | 'starting' | SessionStatus;
 
 type State = {
@@ -62,6 +63,11 @@ type State = {
   units: 'mm' | '';
   // Session.
   sessionId: string | null;
+  sessionUnits: 'mm' | null;
+  feaJob: FeaJob | null;
+  feaStarting: boolean;
+  feaError: string | null;
+  runFea: (settings: FeaSettings) => Promise<void>;
   status: AppStatus;
   stage: string;
   error: string | null;
@@ -121,6 +127,7 @@ const freshSession = {
   error: null, feed: [], revisions: [], deviations: [], features: [], cost: 0, model: null,
   changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true,
   stage: '', startedAt: null, endedAt: null, lastEventAt: null,
+  sessionUnits: null, feaJob: null, feaStarting: false, feaError: null, viewMode: 'overlay',
 } satisfies Partial<State>;
 
 export const MESH_EXTENSIONS = ['.stl', '.obj', '.ply', '.glb'];
@@ -132,6 +139,10 @@ export const useStore = create<State>((set, get) => ({
   images: [],
   units: 'mm',
   sessionId: null,
+  sessionUnits: null,
+  feaJob: null,
+  feaStarting: false,
+  feaError: null,
   status: 'idle',
   stage: '',
   error: null,
@@ -152,6 +163,43 @@ export const useStore = create<State>((set, get) => ({
   followAgent: true,
   replay: null,
   lastEventAt: null,
+
+  runFea: async (settings) => {
+    const s = get();
+    const revision = selectedRevision(s)?.revision;
+    if (!s.sessionId || s.replay || revision === undefined || s.feaStarting
+      || s.feaJob?.status === 'running' || s.feaJob?.status === 'queued') return;
+    const sessionId = s.sessionId;
+    set({ feaStarting: true, feaError: null });
+    let job: FeaJob;
+    try {
+      job = await api.createFea(sessionId, revision, settings);
+    } catch (err) {
+      if (get().sessionId === sessionId) set({ feaStarting: false, feaError: (err as Error).message });
+      return;
+    }
+    if (get().sessionId !== sessionId) return;
+    set({ feaJob: job, feaStarting: false,
+      ...(get().viewMode.startsWith('fea-') ? { viewMode: 'overlay' } : {}) });
+    while (get().sessionId === sessionId && get().feaJob?.analysis_id === job.analysis_id) {
+      try {
+        job = await api.getFea(sessionId, job.analysis_id);
+        if (get().sessionId !== sessionId || get().feaJob?.analysis_id !== job.analysis_id) return;
+        set({ feaJob: job, feaError: job.error });
+        if (job.status === 'succeeded') {
+          if (selectedRevision(get())?.revision === revision) {
+            set({ viewMode: 'fea-stress', followAgent: false, focusId: null });
+          }
+          return;
+        }
+        if (job.status === 'failed') return;
+      } catch (err) {
+        if (get().sessionId !== sessionId) return;
+        set({ feaError: `Reconnecting to FEA: ${(err as Error).message}` });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  },
 
   setMesh: (file) => {
     const previous = get().meshPreviewUrl;
@@ -195,7 +243,7 @@ export const useStore = create<State>((set, get) => ({
     try {
       const { session_id } = await api.createSession(meshFile, text, images, units || undefined);
       unsubscribe?.();
-      set({ sessionId: session_id, status: 'queued', startedAt: Date.now() / 1000, endedAt: null, shownRevision: null });
+      set({ sessionId: session_id, sessionUnits: units || null, status: 'queued', startedAt: Date.now() / 1000, endedAt: null, shownRevision: null });
       unsubscribe = api.subscribe(
         session_id,
         (events) => get().apply(events),
@@ -316,11 +364,14 @@ export const useStore = create<State>((set, get) => ({
         }
       }
       const lastEventAt = events.length ? events[events.length - 1].at : s.lastEventAt;
+      const viewMode = s.viewMode.startsWith('fea-') && !activeFea({ ...s, revisions }) ? 'overlay' : s.viewMode;
       return { feed, revisions, deviations, features, model, changedParams, pendingCode, cost, status, stage, error,
-        endedAt, lastEventAt };
+        endedAt, lastEventAt, viewMode };
     }),
 
-  showRevision: (revision) => set({ shownRevision: revision }),
+  showRevision: (shownRevision) => set((s) => ({ shownRevision,
+    ...(s.viewMode.startsWith('fea-') && !activeFea({ ...s, shownRevision }) ? { viewMode: 'overlay' as const } : {}),
+  })),
   setViewMode: (viewMode) => set({ viewMode }),
   setTab: (tab) => set({ tab }),
   setFocus: (focusId) => set({ focusId }),
@@ -425,3 +476,14 @@ export function activeTool(s: Pick<State, 'feed' | 'focusId' | 'followAgent'>): 
 
 export const generatedRevisions = (revisions: Revision[]) => revisions.filter((r) => r.generated);
 export const referenceRevision = (revisions: Revision[]) => revisions.find((r) => !r.generated) ?? null;
+
+export function selectedRevision(s: Pick<State, 'revisions' | 'shownRevision'>) {
+  const generated = generatedRevisions(s.revisions);
+  return s.shownRevision === null ? generated.at(-1) : generated.find((r) => r.revision === s.shownRevision);
+}
+
+/** Results are visible only on the exact CAD revision that was tested. */
+export function activeFea(s: Pick<State, 'feaJob' | 'revisions' | 'shownRevision'>) {
+  const result = s.feaJob?.result;
+  return result && result.revision === selectedRevision(s)?.revision ? result : null;
+}

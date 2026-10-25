@@ -6,6 +6,7 @@ import pytest
 def simulated_camera_inventory(monkeypatch):
     """Unit/integration tests never enumerate or open the host's real cameras."""
     monkeypatch.setenv('AIDA_TURNTABLE_CAMERA_ID', 'test-usb-camera')
+    monkeypatch.setenv('AIDA_TURNTABLE_AUTO_ZERO', '0')
     monkeypatch.setattr('aida.hardware.cameras.list_cameras', lambda: [{
         'index': 0, 'device_id': 'test-usb-camera', 'name': 'Test USB camera', 'is_usb': True}])
 

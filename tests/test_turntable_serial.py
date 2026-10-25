@@ -10,15 +10,18 @@ from aida.turntable import HardwareSettings, hardware_session
 
 
 class SerialConnection:
-    def __init__(self):
+    def __init__(self, neutral=1500):
         self.replies = []
         self.sent = []
         self.closed = False
+        self.neutral = neutral
 
     def write(self, payload):
         command, token, *arguments = payload.decode().split()
         self.sent.append((command, arguments))
         expected = 'DONE' if command == 'DRIVE' else command
+        if command == 'INFO':
+            expected = f'INFO 2 {self.neutral} 9 500'
         self.replies.extend([b'READY AIDA_TURNTABLE_V1\n', b'OK stale DONE\n',
                              f'OK {token} {expected}\n'.encode()])
         return len(payload)
@@ -42,7 +45,8 @@ def test_serial_protocol_waits_for_matching_done(monkeypatch):
     drive.pulse(1600, 0.1, end)
     drive.stop(end)
     drive.close()
-    assert serial.sent == [('PING', []), ('DRIVE', ['1600', '100', '1500']),
+    assert serial.sent == [('PING', []), ('STOP', ['1500']), ('INFO', []),
+                           ('DRIVE', ['1600', '100', '1500']),
                            ('STOP', ['1500'])]
     assert serial.closed
 
@@ -83,6 +87,55 @@ def test_firmware_rejection_is_an_error():
     with pytest.raises(TurntableError) as error:
         drive.pulse(1600, 0.1, time.monotonic() + 3)
     assert error.value.code == 'firmware_error'
+
+
+def test_firmware_neutral_must_match_host(monkeypatch):
+    serial = SerialConnection(neutral=1500)
+    monkeypatch.setattr('serial.Serial', lambda *args, **kwargs: serial)
+    drive = ArduinoDrive('fake', neutral_us=1450, reset_wait_s=0)
+    with pytest.raises(TurntableError) as error:
+        drive.connect(time.monotonic() + 2)
+    assert error.value.code == 'neutral_mismatch'
+    assert ('STOP', ['1450']) in serial.sent
+    assert not any(command == 'DRIVE' for command, _ in serial.sent)
+
+
+def test_partial_serial_acknowledgements_are_reassembled(monkeypatch):
+    serial = SerialConnection()
+    original_read = serial.readline
+    remainder = []
+    def split_read(size):
+        if remainder:
+            return remainder.pop()
+        line = original_read(size)
+        if line:
+            remainder.append(line[4:])
+            return line[:4]
+        return line
+    serial.readline = split_read
+    monkeypatch.setattr('serial.Serial', lambda *args, **kwargs: serial)
+    drive = ArduinoDrive('fake', reset_wait_s=0)
+    drive.connect(time.monotonic() + 2)
+    drive.pulse(1600, .1, time.monotonic() + 2)
+    assert drive.firmware_info['startup_neutral_us'] == 1500
+
+
+def test_old_firmware_is_stopped_before_requiring_update(monkeypatch):
+    serial = SerialConnection()
+    original = serial.write
+    def old_firmware(payload):
+        if payload.startswith(b'INFO '):
+            token = payload.decode().split()[1]
+            serial.replies.append(f'ERR {token} BAD_COMMAND\n'.encode())
+            return len(payload)
+        return original(payload)
+    serial.write = old_firmware
+    monkeypatch.setattr('serial.Serial', lambda *args, **kwargs: serial)
+    drive = ArduinoDrive('fake', reset_wait_s=0)
+    with pytest.raises(TurntableError) as error:
+        drive.connect(time.monotonic() + 2)
+    assert error.value.code == 'firmware_update_required'
+    assert serial.sent[-1] == ('STOP', ['1500'])
 
 
 @pytest.mark.parametrize('stop_fails', [False, True])

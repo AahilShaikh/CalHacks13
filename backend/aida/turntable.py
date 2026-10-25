@@ -12,8 +12,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .hardware.arduino import ArduinoDrive
-from .hardware.control import ControlConfig, PositionController, TurntableError, remaining
+from .hardware.control import ControlConfig, PositionController, TurntableError, remaining, angle_error
 from .hardware.cameras import selected_camera
+from .hardware.motion import MotionTrace, load_profile, save_profile
 
 VIEW_ANGLES = {'front': 0.0, 'left': 90.0, 'back': 180.0, 'right': 270.0}
 
@@ -37,15 +38,21 @@ class HardwareSettings:
             if not port:
                 raise TurntableError('not_configured', 'Set AIDA_TURNTABLE_PORT to the Arduino USB port.')
             neutral = int(os.environ.get('AIDA_TURNTABLE_NEUTRAL_US', '1450'))
+            camera = selected_camera()
+            profile = load_profile(folder, port, camera['device_id'], neutral)
+            def setting(name, field, default, cast):
+                return cast(os.environ.get(f'AIDA_TURNTABLE_{name}', profile.get(field, default)))
             control = ControlConfig(
-                positive_pulse_us=int(os.environ.get('AIDA_TURNTABLE_POSITIVE_US', str(neutral + 100))),
-                negative_pulse_us=int(os.environ.get('AIDA_TURNTABLE_NEGATIVE_US', str(neutral - 100))),
-                positive_deg_per_s=float(os.environ.get('AIDA_TURNTABLE_POSITIVE_DPS', '90')),
-                negative_deg_per_s=float(os.environ.get('AIDA_TURNTABLE_NEGATIVE_DPS', '90')),
-                fine_positive_pulse_us=int(os.environ.get('AIDA_TURNTABLE_FINE_POSITIVE_US', str(neutral + 60))),
-                fine_negative_pulse_us=int(os.environ.get('AIDA_TURNTABLE_FINE_NEGATIVE_US', str(neutral - 60))),
-                fine_positive_deg_per_s=float(os.environ.get('AIDA_TURNTABLE_FINE_POSITIVE_DPS', '30')),
-                fine_negative_deg_per_s=float(os.environ.get('AIDA_TURNTABLE_FINE_NEGATIVE_DPS', '30')),
+                positive_pulse_us=setting('POSITIVE_US', 'positive_pulse_us', neutral + 100, int),
+                negative_pulse_us=setting('NEGATIVE_US', 'negative_pulse_us', neutral - 100, int),
+                positive_deg_per_s=setting('POSITIVE_DPS', 'positive_deg_per_s', 90, float),
+                negative_deg_per_s=setting('NEGATIVE_DPS', 'negative_deg_per_s', 90, float),
+                fine_positive_pulse_us=setting('FINE_POSITIVE_US', 'fine_positive_pulse_us', neutral + 60, int),
+                fine_negative_pulse_us=setting('FINE_NEGATIVE_US', 'fine_negative_pulse_us', neutral - 60, int),
+                fine_positive_deg_per_s=setting('FINE_POSITIVE_DPS', 'fine_positive_deg_per_s', 30, float),
+                fine_negative_deg_per_s=setting('FINE_NEGATIVE_DPS', 'fine_negative_deg_per_s', 30, float),
+                max_pulse_s=float(os.environ.get('AIDA_TURNTABLE_MAX_PULSE_S', '0.45')),
+                pulse_gain=0.75,
                 settle_s=float(os.environ.get('AIDA_TURNTABLE_SETTLE_S', '0.25')),
             )
             if not 1000 <= neutral <= 2000 or neutral in (
@@ -57,7 +64,6 @@ class HardwareSettings:
                                  (control.negative_pulse_us, control.fine_negative_pulse_us)):
                 if (coarse - neutral) * (fine - neutral) <= 0 or abs(fine-neutral) > abs(coarse-neutral):
                     raise ValueError('Fine pulses must lie between neutral and their corresponding coarse pulses.')
-            camera = selected_camera()
             return cls(port, camera['index'], neutral, folder, control,
                        camera_id=camera['device_id'], camera_name=camera['name'])
         except (ValueError, OSError) as exc:
@@ -104,6 +110,54 @@ class TurntableService:
     def __init__(self, session_factory=hardware_session):
         self._lock = threading.Lock()
         self._session_factory = session_factory
+        self.startup_zero = {'status': 'not_started', 'message': None}
+
+    def initialize_zero(self):
+        """Use the mounted board's current orientation as zero; never issue DRIVE."""
+        from .scan.camera import CameraCalibration
+
+        if self._lock.locked():
+            raise TurntableError('busy', 'Another turntable operation is in progress.', 409)
+        previous = dict(self.startup_zero)
+        self.startup_zero = {'status': 'initializing', 'message': 'Reading the mounted board.'}
+        try:
+            settings = HardwareSettings.from_env()
+            calibration = CameraCalibration.load(settings.storage / 'camera.json')
+            if calibration.camera_id != settings.camera_id:
+                raise TurntableError('calibration_required', 'Calibrate the selected USB camera first.', 409)
+            self.zero()
+        except Exception as exc:
+            if isinstance(exc, TurntableError) and exc.code == 'busy':
+                self.startup_zero = previous
+                raise
+            self.startup_zero = {'status': 'failed', 'code': getattr(exc, 'code', 'initialization_failed'),
+                                 'message': str(exc)}
+        return dict(self.startup_zero)
+
+    def ensure_zero_ready(self):
+        if self.startup_zero['status'] in ('initializing', 'failed'):
+            raise TurntableError('zero_required',
+                                 'Startup zero is not ready. Mount the board and retry initialization '
+                                 'at /setup.html. ' + (self.startup_zero.get('message') or ''), 409)
+
+    def status(self):
+        from .hardware.cameras import camera_storage
+
+        folder = camera_storage()
+        reference_ready = self._empty_reference_ready(folder)
+        return {'startup_zero': dict(self.startup_zero),
+                'zero_ready': self.startup_zero['status'] == 'ready' and (folder/'zero.json').is_file(),
+                'empty_reference_ready': reference_ready}
+
+    @staticmethod
+    def _empty_reference_ready(folder):
+        try:
+            reference = json.loads((folder / 'empty_table.json').read_text())
+            signature = hashlib.sha256((folder / 'camera.json').read_bytes()).hexdigest()
+            return (reference['calibration_signature'] == signature and
+                    (folder / 'empty_table.png').is_file())
+        except (OSError, ValueError, KeyError):
+            return False
 
     @contextmanager
     def _exclusive(self):
@@ -116,13 +170,16 @@ class TurntableService:
 
     def rotate(self, angle: float, *, relative: bool = False, tolerance: float = 1.0,
                timeout_s: float = 30.0, capture: bool = True) -> dict:
+        self.ensure_zero_ready()
         started = time.monotonic()
         deadline = started + timeout_s
         with self._exclusive():
             settings = HardwareSettings.from_env()
             with self._session_factory(settings, deadline, True) as (drive, feedback):
-                result = PositionController(drive, feedback, settings.control).rotate(
-                    angle, tolerance, deadline, relative)
+                trace = MotionTrace(settings.storage / 'motion' / f'{uuid.uuid4().hex}.jsonl')
+                controller = PositionController(drive, feedback, settings.control, trace=trace)
+                result = controller.rotate(angle, tolerance, deadline, relative)
+                save_profile(settings, controller)
                 data = {'status': 'succeeded', **asdict(result), 'tolerance_degrees': tolerance,
                         'feedback': 'charuco', 'capture_url': None}
                 if capture:
@@ -152,6 +209,17 @@ class TurntableService:
         return path
 
     def zero(self, timeout_s: float = 15.0, empty_table_reference: bool = False) -> dict:
+        try:
+            result = self._zero(timeout_s, empty_table_reference)
+        except Exception as exc:
+            if not isinstance(exc, TurntableError) or exc.code != 'busy':
+                self.startup_zero = {'status': 'failed', 'message': str(exc)}
+            raise
+        self.startup_zero = {'status': 'ready', 'message': 'Current mounted board pose is 0 degrees.',
+                             'initialized_at': time.time()}
+        return result
+
+    def _zero(self, timeout_s, empty_table_reference):
         deadline = time.monotonic() + timeout_s
         with self._exclusive():
             settings = HardwareSettings.from_env()
@@ -161,19 +229,45 @@ class TurntableService:
                     raise TurntableError('timeout', 'Timed out before setting zero.', 504)
                 time.sleep(settings.control.settle_s)
                 feedback.set_zero(deadline)
+                for _ in range(settings.control.stable_samples):
+                    if remaining(deadline) <= settings.control.settle_s:
+                        raise TurntableError('timeout', 'Timed out verifying stationary zero.', 504)
+                    time.sleep(settings.control.settle_s)
+                    if abs(angle_error(0, feedback.read_angle(deadline))) > 0.5:
+                        raise TurntableError('table_unstable', 'Table moved while setting zero; '
+                                             'check neutral trim and allow it to settle.')
                 if empty_table_reference:
-                    import cv2
-                    from .scan.camera import CameraCalibration, board_pose
-                    calibration = CameraCalibration.load(settings.storage / 'camera.json')
-                    frame = feedback.last_frame
-                    calibration.validate_frame(frame, settings.camera_index, settings.camera_id)
-                    pose = board_pose(frame, calibration)
-                    if not cv2.imwrite(str(settings.storage / 'empty_table.png'), frame):
-                        raise TurntableError('capture_failed', 'Could not save empty-table reference.', 500)
-                    (settings.storage / 'empty_table.json').write_text(json.dumps({
-                        'board_pose': pose, 'zero_signature': hashlib.sha256(
-                            (settings.storage/'zero.json').read_bytes()).hexdigest()}, indent=2)+'\n')
+                    self._save_empty_reference(settings, feedback.last_frame)
             return {'status': 'succeeded', 'angle': 0.0, 'feedback': 'charuco'}
+
+    @staticmethod
+    def _save_empty_reference(settings, frame):
+        import cv2
+        from .scan.camera import CameraCalibration, board_pose
+
+        calibration = CameraCalibration.load(settings.storage / 'camera.json')
+        calibration.validate_frame(frame, settings.camera_index, settings.camera_id)
+        pose = board_pose(frame, calibration)
+        if not cv2.imwrite(str(settings.storage / 'empty_table.png'), frame):
+            raise TurntableError('capture_failed', 'Could not save empty-table reference.', 500)
+        (settings.storage / 'empty_table.json').write_text(json.dumps({
+            'board_pose': pose, 'calibration_signature': hashlib.sha256(
+                (settings.storage/'camera.json').read_bytes()).hexdigest()}, indent=2)+'\n')
+
+    def capture_empty_reference(self, timeout_s=15.0):
+        """Capture an explicitly empty table without changing the established zero."""
+        self.ensure_zero_ready()
+        deadline = time.monotonic() + timeout_s
+        with self._exclusive():
+            settings = HardwareSettings.from_env()
+            with self._session_factory(settings, deadline, True) as (drive, feedback):
+                drive.stop(deadline)
+                if remaining(deadline) <= settings.control.settle_s:
+                    raise TurntableError('timeout', 'Timed out before empty-table capture.', 504)
+                time.sleep(settings.control.settle_s)
+                angle = feedback.read_angle(deadline)
+                self._save_empty_reference(settings, feedback.last_frame)
+            return {'status': 'succeeded', 'measured_angle': angle, 'zero_changed': False}
 
     def camera_frame(self, timeout_s=10.0):
         """Calibration/preview capture without opening or moving the Arduino."""
@@ -197,19 +291,14 @@ class TurntableService:
         """Reserve one object scan; keep camera/serial open between agent calls."""
         from .scan.camera import CameraCalibration
 
+        self.ensure_zero_ready()
         with self._exclusive():
             settings = HardwareSettings.from_env()
             calibration = CameraCalibration.load(settings.storage / 'camera.json')
             if calibration.camera_id != settings.camera_id:
                 raise TurntableError('calibration_required', 'Selected camera differs from its calibration.', 409)
-            try:
-                reference = json.loads((settings.storage / 'empty_table.json').read_text())
-                if reference['zero_signature'] != hashlib.sha256((settings.storage/'zero.json').read_bytes()).hexdigest():
-                    raise ValueError('Zero changed')
-                if not (settings.storage / 'empty_table.png').is_file():
-                    raise ValueError('Reference missing')
-            except (OSError, ValueError, KeyError) as exc:
-                raise TurntableError('reference_required', 'Set zero with an empty-table reference at /setup.html.', 409) from exc
+            if not self._empty_reference_ready(settings.storage):
+                raise TurntableError('reference_required', 'Capture the empty-table reference at /setup.html.', 409)
             output_directory = Path(output_directory)
             output_directory.mkdir(parents=True, exist_ok=True)
             for name in ('empty_table.png', 'empty_table.json'):
@@ -221,7 +310,8 @@ class TurntableService:
 
 class CaptureSession:
     def __init__(self, drive, feedback, settings, calibration, directory, tolerance, timeout):
-        self.controller = PositionController(drive, feedback, settings.control)
+        self.controller = PositionController(drive, feedback, settings.control,
+                                             trace=MotionTrace(directory / 'motion.jsonl'))
         self.feedback = feedback
         self.settings = settings
         self.calibration = calibration
@@ -242,6 +332,7 @@ class CaptureSession:
             raise ValueError('At most four object views per scan.')
         result = self.controller.rotate(VIEW_ANGLES[view], self.tolerance,
                                         time.monotonic()+self.timeout)
+        save_profile(self.settings, self.controller)
         frame = self.feedback.last_frame
         self.calibration.validate_frame(frame, self.settings.camera_index, self.settings.camera_id)
         pose = board_pose(frame, self.calibration)

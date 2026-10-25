@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import playIcon from '../../assets/icons/play.svg';
-import { generatedRevisions, useStore, type ViewMode } from '../../store';
+import { activeFea, generatedRevisions, useStore, type ViewMode } from '../../store';
+import { FEA_GRADIENT, feaNumber, type FeaResult } from '../../lib/fea';
 
 const MODES: { id: ViewMode; label: string }[] = [
   { id: 'overlay', label: 'Overlay' },
   { id: 'side', label: 'Side by side' },
   { id: 'heatmap', label: 'Heatmap' },
+  { id: 'fea-stress', label: 'Stress' },
+  { id: 'fea-displacement', label: 'Deformation' },
 ];
 
 /** The generated revision the viewer is showing (the latest unless the user scrubbed back). */
@@ -21,7 +24,8 @@ export function ViewModeToggle() {
   const viewMode = useStore((s) => s.viewMode);
   const setViewMode = useStore((s) => s.setViewMode);
   const hasHeat = Boolean(useShownRevision()?.heatmap);
-  const ready = (id: ViewMode) => id !== 'heatmap' || hasHeat;
+  const fea = useStore(activeFea);
+  const ready = (id: ViewMode) => id === 'heatmap' ? hasHeat : id.startsWith('fea-') ? Boolean(fea) : true;
   return (
     <div role="radiogroup" aria-label="View mode" className="flex gap-1 rounded-md border border-line bg-raised/90 p-1 backdrop-blur">
       {MODES.map((m) => (
@@ -30,9 +34,9 @@ export function ViewModeToggle() {
           role="radio"
           aria-checked={viewMode === m.id}
           disabled={!ready(m.id)}
-          title={ready(m.id) ? undefined : 'The heatmap appears once this revision has been compared with the scan'}
-          onClick={() => setViewMode(m.id)}
-          className={`rounded-sm px-3 py-1 text-[12px] font-medium ${
+          title={ready(m.id) ? undefined : m.id.startsWith('fea-') ? 'Run FEA on this CAD revision first' : 'The heatmap appears once this revision has been compared with the scan'}
+          onClick={() => { setViewMode(m.id); if (m.id.startsWith('fea-')) useStore.getState().setFollow(false); }}
+          className={`rounded-sm px-2 py-1 text-[12px] font-medium ${
             viewMode === m.id ? 'bg-line-strong text-ink' : 'text-muted hover:text-ink'
           } disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-muted`}
         >
@@ -75,6 +79,8 @@ export function FollowControl() {
 export function Legend() {
   const viewMode = useStore((s) => s.viewMode);
   const heat = useShownRevision()?.heatmap;
+  const fea = useStore(activeFea);
+  if (fea && (viewMode === 'fea-stress' || viewMode === 'fea-displacement')) return <FeaLegend result={fea} deformed={viewMode === 'fea-displacement'} />;
   if (viewMode === 'heatmap' && heat) return <HeatLegend range={heat.range} threshold={heat.threshold} share={heat.share_within} />;
   return (
     <div className="flex items-center gap-3 rounded-md border border-line bg-raised/90 px-3 py-2 text-[12px] text-muted backdrop-blur">
@@ -82,6 +88,17 @@ export function Legend() {
       <span className="size-2 rounded-full bg-cad" /> Generated CAD
     </div>
   );
+}
+
+function FeaLegend({ result, deformed }: { result: FeaResult; deformed: boolean }) {
+  return <div className="flex w-64 flex-col gap-1.5 rounded-md border border-line bg-raised/90 px-3 py-2 text-[11px] text-muted backdrop-blur">
+    <div className="flex justify-between font-medium text-ink"><span>{deformed ? 'Displacement · mm' : 'von Mises · MPa'}</span><span>rev {result.revision}</span></div>
+    <div className="h-2 rounded-full" style={{ background: FEA_GRADIENT }} />
+    <div className="flex justify-between font-mono text-[10px]"><span>0</span><span>{feaNumber(deformed ? result.max_displacement_mm : result.max_von_mises_mpa)}</span></div>
+    {deformed && <span>Deformation magnified {feaNumber(result.deformation_scale)}× · cyan outline: original CAD</span>}
+    <div className="flex items-center gap-1.5 text-[10px]"><span className="size-1.5 rounded-full bg-ok" />Fixed end<span className="ml-2 text-slice">↗</span>{feaNumber(result.settings.force_n)} N · {result.settings.load_direction.toUpperCase()}</div>
+    <span className="text-[10px]">{result.engine === 'ngsolve' ? 'CAD mesh' : 'Voxel mesh'} · {result.elements.toLocaleString()} elements</span>
+  </div>;
 }
 
 const n = (v: number) => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1) : v.toFixed(2));

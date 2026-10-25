@@ -3,6 +3,7 @@ import { useStore, type Tab } from '../store';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'activity', label: 'Activity' },
   { id: 'model', label: 'Model' },
+  { id: 'fea', label: 'FEA' },
 ];
 
 /** Figma: PanelTabs (4:105). */

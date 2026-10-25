@@ -29,8 +29,33 @@ class ZeroRequest(BaseModel):
     empty_table_reference: bool = False
 
 
+class ReferenceRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    timeout_s: float = Field(default=15.0, ge=3, le=120)
+
+
 def get_service() -> TurntableService:
     return service
+
+
+@router.get('/status')
+def hardware_status(controller: TurntableService = Depends(get_service)):
+    return controller.status()
+
+
+@router.post('/initialize')
+def initialize(controller: TurntableService = Depends(get_service)):
+    status = controller.initialize_zero()
+    if status['status'] != 'ready':
+        raise HTTPException(409, detail={'code': status.get('code', 'zero_required'),
+                                        'message': status['message']})
+    return status
+
+
+@router.post('/reference')
+def empty_reference(request: ReferenceRequest = ReferenceRequest(),
+                    controller: TurntableService = Depends(get_service)):
+    return controller.capture_empty_reference(request.timeout_s)
 
 
 def serial_ports():

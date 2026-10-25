@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchExample, listExamples } from '../../lib/api';
-import { isMeshFile, useStore } from '../../store';
+import { activeFea, isMeshFile, useStore } from '../../store';
 import { FollowControl, Legend, RevisionScrubber, ViewModeToggle } from './Controls';
 import { Scene } from './Scene';
 
@@ -11,6 +11,7 @@ export function Viewer() {
   const meshFile = useStore((s) => s.meshFile);
   const revisions = useStore((s) => s.revisions);
   const setMesh = useStore((s) => s.setMesh);
+  const analysisView = useStore((s) => Boolean(activeFea(s)) && s.viewMode.startsWith('fea-'));
   const [dragging, setDragging] = useState(false);
 
   const hasSession = status !== 'idle';
@@ -45,10 +46,10 @@ export function Viewer() {
         <Hint text={status === 'starting' ? 'Uploading mesh…' : 'Starting the CAD engine…'} spinner />
       )}
 
-      <div className="pointer-events-none absolute inset-x-4 top-4 flex items-start justify-between gap-4">
+      <div className="pointer-events-none absolute inset-x-4 top-4 flex flex-wrap items-start justify-between gap-3">
         <div className="pointer-events-auto">{hasCad && <ViewModeToggle />}</div>
         <div className="pointer-events-auto flex flex-wrap items-start justify-end gap-2">
-          {hasSession && <FollowControl />}
+          {hasSession && !analysisView && <FollowControl />}
           {hasCad && <Legend />}
         </div>
       </div>

@@ -50,6 +50,9 @@ export function TopBar() {
   const endedAt = useStore((s) => s.endedAt);
   const replay = useStore((s) => s.replay);
   const lastEventAt = useStore((s) => s.lastEventAt);
+  const feaJob = useStore((s) => s.feaJob);
+  const feaStarting = useStore((s) => s.feaStarting);
+  const feaBusy = feaStarting || feaJob?.status === 'queued' || feaJob?.status === 'running';
   // A replay's clock is the recorded timeline, not the wall clock.
   const elapsed = useElapsed(startedAt, endedAt ?? (replay ? lastEventAt ?? startedAt : null));
 
@@ -92,6 +95,12 @@ export function TopBar() {
         </span>
       )}
       <span className="font-mono text-[12px] text-muted">{metrics}</span>
+      <button type="button" disabled={!rev} onClick={() => useStore.getState().setTab('fea')}
+        title={rev ? 'Configure a structural test of the displayed CAD revision' : 'Build a CAD model to enable FEA'}
+        className="flex items-center gap-1.5 rounded-sm border border-cad/40 bg-cad/10 px-3 py-1 text-[12px] font-medium text-cad hover:bg-cad/20 disabled:cursor-not-allowed disabled:opacity-40">
+        {feaBusy && <span className="size-1.5 animate-pulse-dot rounded-full bg-cad" />}
+        {feaBusy ? 'FEA running…' : 'FEA test'}
+      </button>
       <DownloadMenu />
     </header>
   );

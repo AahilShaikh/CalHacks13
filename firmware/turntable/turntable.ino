@@ -40,6 +40,12 @@ void handleLine() {
   if (strcmp(command, "PING") == 0 &&
       sscanf(line, "%8s %16s %c", command, token, &extra) == 2) {
     reply("OK", token, "PING");
+  } else if (strcmp(command, "INFO") == 0 &&
+             sscanf(line, "%8s %16s %c", command, token, &extra) == 2) {
+    char details[40];
+    snprintf(details, sizeof(details), "INFO 2 %d %d %lu", STARTUP_NEUTRAL_US,
+             (int)SERVO_PIN, MAX_DRIVE_MS);
+    reply("OK", token, details);
   } else if (strcmp(command, "STOP") == 0 &&
              sscanf(line, "%8s %16s %d %c", command, token, &neutral, &extra) == 3 &&
              validPulse(neutral)) {
@@ -72,7 +78,7 @@ void setup() {
   motor.attach(SERVO_PIN, 1000, 2000);
   stopMotor();
   Serial.begin(115200);
-  Serial.println("READY AIDA_TURNTABLE_V1");
+  Serial.println("READY AIDA_TURNTABLE_V2");
 }
 
 void loop() {

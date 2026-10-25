@@ -24,6 +24,11 @@ dependencies = [
     { name = "vtk" },
 ]
 
+[package.optional-dependencies]
+fea = [
+    { name = "ngsolve" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
@@ -38,6 +43,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.162.0" },
     { name = "matplotlib", specifier = ">=3.11.2" },
     { name = "mcp", specifier = ">=2,<3" },
+    { name = "ngsolve", marker = "extra == 'fea'", specifier = ">=6.2.2406,<7" },
     { name = "opencv-contrib-python", specifier = ">=5.0.0.93" },
     { name = "pillow" },
     { name = "pyserial", specifier = ">=3.5,<4" },
@@ -49,6 +55,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
     { name = "vtk", specifier = ">=9.3,<10" },
 ]
+provides-extras = ["fea"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -891,6 +898,55 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/bf/21/f64d6b2dbea7bf3f8c38cdc786dcc6ef012ca3d173ad208c782c9a7bedf6/narwhals-2.27.1.tar.gz", hash = "sha256:aed93076a3ea42d9c32c88e4eb5ea422a21937011cbe1f480f9572a523c82094", size = 735013, upload-time = "2026-10-10T06:52:18.113Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/89/5d4c86da1130d9059681e5b6cd7645df5c10279a6a079c5c37dcb2cc6f3f/narwhals-2.27.1-py3-none-any.whl", hash = "sha256:d057df13f5852b8e157596e82eb5e955fad267425df5e420e0ee9863da483b31", size = 483211, upload-time = "2026-10-10T06:52:16.32Z" },
+]
+
+[[package]]
+name = "netgen-mesher"
+version = "6.2.2608"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "netgen-occt" },
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/4d/994ee94cb66820bd6480dc252b808a2203c3ca245656fa4a0360e0134fbd/netgen_mesher-6.2.2608-cp312-cp312-macosx_10_15_universal2.whl", hash = "sha256:6d92c6e60adb138e971b90b5257c9b03ac38602363f0f53b42e2973c6c2fbdfe", size = 10951895, upload-time = "2026-10-01T14:01:31.335Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/98/6bab034e8b0d40bd8e15db87f04843009587df01c9b889d19cca00dd16c3/netgen_mesher-6.2.2608-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d610911dd5a28263d49527cf6376352761534a8d1bfaaab0681fc29e8e81c2f5", size = 8505802, upload-time = "2026-10-01T13:52:29.339Z" },
+    { url = "https://files.pythonhosted.org/packages/47/53/72853102622604964131648d17a4ec89060b1f6f800375c0c935d741997d/netgen_mesher-6.2.2608-cp312-cp312-win_amd64.whl", hash = "sha256:a2ceb102155999e41095218b6d939044279318d597f958ed138565f2412a18db", size = 8090526, upload-time = "2026-10-01T14:01:20.073Z" },
+]
+
+[[package]]
+name = "netgen-occt"
+version = "7.8.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/14/bf/82b076795dc8d26bcd37a89308cde295a5c3296d948a7cf11a8b483476da/netgen_occt-7.8.1-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:fd2883ae5ce119cb0ff3467f6fc6d2e1540d6622662bdb2327c341ea302ada07", size = 21554286, upload-time = "2024-06-21T13:25:12.364Z" },
+    { url = "https://files.pythonhosted.org/packages/31/14/04f6ccea776378394861c56e7c12da5b1a1df934b1ae14b40654bff63874/netgen_occt-7.8.1-py3-none-macosx_11_0_arm64.whl", hash = "sha256:c93a22f7459866f3eba3e93d24bd184dcc93c4352817dac0520ca30f2edf50a9", size = 19837849, upload-time = "2024-06-21T13:25:15.9Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/9e/dbe6b538248f6e2d7c2972cdf9aa59e2904505c4a345fcd6cfcfe1841f9f/netgen_occt-7.8.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:db71d77f56f79c0768489e76dde8febdeb25b95777986587a5d09575fa112f94", size = 25610800, upload-time = "2024-06-21T13:25:19.373Z" },
+    { url = "https://files.pythonhosted.org/packages/00/6f/9e838c4e4445aa0dddff2501e7744787c941635b99589d968db14b1b20a2/netgen_occt-7.8.1-py3-none-win_amd64.whl", hash = "sha256:f701705183832cf2497c6c9339886d95dede7be63187f06be89fa146f6463d09", size = 18924411, upload-time = "2024-06-21T13:25:22.86Z" },
+]
+
+[[package]]
+name = "ngsolve"
+version = "6.2.2608"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "netgen-mesher" },
+    { name = "ngsolve-openblas", marker = "sys_platform != 'darwin'" },
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7e/bf/84f62adb5727f8d6b3c43c384d069168a84b03ef7db4bdd9a8fe3f03d1f6/ngsolve-6.2.2608-cp312-cp312-macosx_10_15_universal2.whl", hash = "sha256:bfb0fd0acea589ed27aa893513de55a4bc428eb3c5b494c482d3d839ae9d74cd", size = 44007934, upload-time = "2026-10-01T17:09:40.296Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/6c/458b18b635a35b9c449f3df15c0b4215f7683754fd4ef4aa987328188125/ngsolve-6.2.2608-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:eac33f65c3ece26ea778d5306553043358ff210daee1294936dde06272ef4a33", size = 30205402, upload-time = "2026-10-01T16:32:20.17Z" },
+    { url = "https://files.pythonhosted.org/packages/57/e9/fa533d1ad8c780fd2baa0c98cd15ed1f7e7059536465d0da6d7a404193de/ngsolve-6.2.2608-cp312-cp312-win_amd64.whl", hash = "sha256:dbc1aa1d5faf70c9c3ecc5d2eaad48c882d40e8e35259ef9b7b9c84e7ba2faf1", size = 15011922, upload-time = "2026-10-01T18:21:36.118Z" },
+]
+
+[[package]]
+name = "ngsolve-openblas"
+version = "0.3.33"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/08/45/60d2124e32f2f07b2f3822f6325dd6bb60b42f743d73906ea93aa2db9a48/ngsolve_openblas-0.3.33-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:8d3266615c7b099e78c5891a41971c6bffe5d6014d13d736cef0cc119d1ca141", size = 15064649, upload-time = "2026-04-29T09:19:30.85Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/5f/2c0fc3c56758f9790fd7bbf576734432c04c6c40a4d336821229b89b1fcc/ngsolve_openblas-0.3.33-py3-none-win_amd64.whl", hash = "sha256:7f117cc2c92cc13dbba0a7d80cc7a5633e4a2bd6d701ea8143cb0dfe7e1b973f", size = 7743781, upload-time = "2026-04-29T09:19:34.884Z" },
 ]
 
 [[package]]

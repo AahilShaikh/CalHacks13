@@ -145,10 +145,17 @@ class CadBridge:
         without the export validation gate: intermediate design states are
         expected to fail validation while the agent iterates, but the viewer
         still wants them."""
+        return await self.snapshot_cad(target, object_name, 'stl')
+
+    async def snapshot_step(self, target, object_name):
+        """Persist exact CAD geometry for this revision while the execute lock is held."""
+        return await self.snapshot_cad(target, object_name, 'step')
+
+    async def snapshot_cad(self, target, object_name, format):
         fields = self.schemas['export'].input_schema.get('properties', {})
         if 'format' not in fields:
-            raise RuntimeError('Installed export schema cannot select the STL format')
-        args = {'format': 'stl', 'object_name': object_name}
+            raise RuntimeError('Installed export schema cannot select the CAD format')
+        args = {'format': format, 'object_name': object_name}
         for field in ('filename', 'path', 'file_path'):
             if field in fields:
                 args[field] = str(target)

@@ -1,8 +1,9 @@
 import { Bounds, GizmoHelper, GizmoViewport, OrbitControls, useBounds } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { Suspense, useEffect, useRef } from 'react';
-import { activeTool, generatedRevisions, referenceRevision, useStore } from '../../store';
+import { activeFea, activeTool, generatedRevisions, referenceRevision, useStore } from '../../store';
 import { AgentCamera, AgentPlanes } from './AgentFocus';
+import { FeaMarkers } from './FeaMarkers';
 import { GlbModel, StlPreview } from './Models';
 
 /** Re-frame the camera when the reference geometry changes (not on every CAD revision). */
@@ -19,6 +20,7 @@ function Models() {
   const shownRevision = useStore((s) => s.shownRevision);
   const viewMode = useStore((s) => s.viewMode);
   const preview = useStore((s) => s.meshPreviewUrl);
+  const fea = useStore(activeFea);
   // Show the scan as a ghost while a slice plane is up, so the plane reads through it.
   const slicing = useStore((s) => {
     const view = activeTool(s)?.view;
@@ -39,6 +41,21 @@ function Models() {
   const gap = side ? (reference.extents[0] || 1) * 0.65 : 0;
   // Heatmap: the scan coloured by distance to the shown revision, CAD as an outline on top.
   const heat = viewMode === 'heatmap' ? shown?.heatmap : undefined;
+
+  if (fea && (viewMode === 'fea-stress' || viewMode === 'fea-displacement')) {
+    const deformed = viewMode === 'fea-displacement';
+    const url = deformed ? fea.displacement_url : fea.stress_url;
+    return <group rotation={[-Math.PI / 2, 0, 0]}>
+      <Bounds fit clip observe margin={1.7} maxDuration={0.6}>
+        <Suspense fallback={shown ? <GlbModel url={shown.url} look="cad" /> : null}>
+          <GlbModel url={url} look="heat" />
+          {deformed && shown && <GlbModel url={shown.url} look="outline" />}
+          <Refit token={url} />
+        </Suspense>
+      </Bounds>
+      <FeaMarkers result={fea} />
+    </group>;
+  }
 
   return (
     <>

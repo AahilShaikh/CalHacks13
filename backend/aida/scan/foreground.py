@@ -5,6 +5,30 @@ import numpy as np
 from .scaling import ScalingError
 
 
+def isolate_object(frame, foreground):
+    """Use background subtraction to locate the object, preserving its pixels.
+
+    Pixelwise subtraction punches holes in light objects over white squares.
+    Thin board-registration fringes can also connect to cables outside the disc.
+    Find the largest substantial region, then let ComfyUI segment the intact
+    object within a padded ROI, still in the original calibrated coordinates.
+    """
+    size = max(3, round(min(frame.shape[:2]) * 0.015)) | 1
+    solid = cv2.morphologyEx(foreground, cv2.MORPH_OPEN, np.ones((size, size), np.uint8))
+    count, _, stats, _ = cv2.connectedComponentsWithStats((solid > 127).astype(np.uint8))
+    if count < 2:
+        raise ScalingError('No substantial object region separated from the empty table.')
+    x, y, width, height, area = stats[1:][np.argmax(stats[1:, cv2.CC_STAT_AREA])]
+    if area < foreground.size * 0.005:
+        raise ScalingError('Object region is too small; improve framing or the empty-table reference.')
+    margin = max(size * 2, round(max(width, height) * 0.08))
+    x0, y0 = max(0, x-margin), max(0, y-margin)
+    x1, y1 = min(frame.shape[1], x+width+margin), min(frame.shape[0], y+height+margin)
+    isolated = np.zeros_like(frame)
+    isolated[y0:y1, x0:x1] = frame[y0:y1, x0:x1]
+    return isolated
+
+
 def object_foreground(frame, pose, empty_frame, empty_pose, calibration):
     calibration.validate_frame(frame)
     calibration.validate_frame(empty_frame)

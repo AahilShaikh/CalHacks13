@@ -85,17 +85,22 @@ bound to localhost.
 7. Mount the board flat and centered on the turntable again, reconnect servo
    power if removed, and leave the table **empty**. Click **Refresh USB ports**,
    choose the Mega's port, then **Save Arduino port**.
-8. Click **Set zero and save empty-table reference**. The servo must stop still
-   at 1450 µs. Do not move the camera, change lighting, remount the board or
-   change focus after saving this reference.
-9. Place a small opaque, matte object at the center. Leave at least **eight
+8. Restart the server after mounting the board. **Startup zero** is established
+   automatically from its current orientation, using STOP at 1450 µs and stationary
+   camera checks; the server does not drive to a home position. Check that startup
+   zero is `ready`. If the server started before the hardware was ready, click
+   **Retry startup zero** after correcting the reported problem.
+9. Leave the table **empty** and click **Capture empty-table reference**. This
+   captures the background without changing zero. Do not move the camera, change
+   lighting, remount the board or change focus after saving the reference.
+10. Place a small opaque, matte object at the center. Leave at least **eight
    visible ChArUco corners spanning 60 mm in both board directions** around it
    in every view. Keep hands out of the scene during capture.
-10. For the first check, choose **Four views (no capture-agent call)** and uncheck
+11. For the first check, choose **Four views (no capture-agent call)** and uncheck
     **Start CAD agent after fitting**, then click **Start scan**. Confirm that the
     job reaches `metric_mesh_ready` and inspect photos, masks, dimensions and
     `metric_model.stl`. Failure messages identify missing corners or a bad scale fit.
-11. Once that works, choose **Agent chooses 2–4 views**, check **Start CAD agent
+12. Once that works, choose **Agent chooses 2–4 views**, check **Start CAD agent
     after fitting**, enter the modeling request, and click **Start scan**. Open
     the live CAD viewer when its link appears. Both agent stages need configured
     Claude authentication.
@@ -119,9 +124,11 @@ required by the automatic workflow.
 
 Calibration from the built-in camera cannot be reused for the USB camera.
 Click **Reset samples** and collect a new USB-camera calibration. Recalibrate
-after changing camera, resolution or lens settings. Re-zero and
-capture a new empty reference after moving the USB camera, changing lighting or
-the background, or remounting the board. A calibration change invalidates the
+after changing camera, resolution or lens settings. Startup observes a fresh
+zero on every server launch. Capture a new empty reference after moving the USB
+camera, changing lighting or the background, or remounting the board. A reference
+can survive a zero reset/server restart when the physical scene and calibration
+are unchanged; it is bound to camera calibration, not the logical angle origin. A calibration change invalidates the
 old zero reference. Do not reuse a zero reference from another camera.
 
 ## Automatic workflow
@@ -151,10 +158,13 @@ scan. A hardware/camera/Comfy failure disables further agent motion. Shutdown
 attempts a confirmed STOP even on failure; firmware locally bounds every burst.
 
 The empty-table photo is warped using each measured board pose to compensate
-for the rotating print. Foreground differencing isolates the object. Original
-photos remain unchanged; derived object images and masks preserve the original
-pixel coordinates. ComfyUI receives isolated object images and returns both
-the generated mesh and original-coordinate foreground masks.
+for the rotating print. Foreground differencing locates a substantial object
+region after removing thin registration fringes. A padded region keeps the
+original pixels intact so light objects over white board squares do not acquire
+holes. ComfyUI then segments the object within that region. Original photos
+remain unchanged; derived images and masks retain the original pixel coordinates.
+Inspect the saved masks for missed thin features or board/shadow contamination.
+ComfyUI returns both the generated mesh and original-coordinate foreground masks.
 
 Metric registration fits a single uniform scale, orientation and ground-plane
 position against **calibrated multi-view convex outer silhouettes**. It uses
@@ -181,6 +191,7 @@ Files under `artifacts/acquisitions/{job_id}/` include:
 - `front.png` and any additional views, with `*_pose.json` angle/board evidence;
 - `empty_table.png`, `empty_table.json`, `camera.json`;
 - `*_foreground.png`, `*_object.png`, and ComfyUI `*_mask.png`;
+- `motion.jsonl`, containing each verified angle, drive pulse, retry and result;
 - `unscaled_model.glb`, `metric_model.glb`, `metric_model.stl`;
 - `dimensions.json`, `blueprints.png`, `agent_prompt.txt`, capture-agent log.
 
@@ -210,7 +221,10 @@ An in-flight inference can continue until it completes or times out.
 | POST | `/api/v1/camera/calibration/samples` | Capture one varied board pose |
 | POST | `/api/v1/camera/calibration/solve` | Solve camera intrinsics from at least 10 samples |
 | DELETE | `/api/v1/camera/calibration/samples` | Clear setup samples, retain solved calibration |
-| POST | `/api/v1/turntable/zero` | Use `{"empty_table_reference":true}` during setup |
+| GET | `/api/v1/turntable/status` | Startup zero status and empty-reference readiness |
+| POST | `/api/v1/turntable/initialize` | Retry automatic zero after making hardware ready |
+| POST | `/api/v1/turntable/reference` | Capture an explicitly empty table without resetting zero |
+| POST | `/api/v1/turntable/zero` | Optional manual zero override |
 | GET/POST | `/api/v1/turntable/configuration` | List detected USB ports / save selected Arduino port |
 | POST | `/api/v1/acquisitions` | Start bounded capture → metric mesh → optional CAD |
 | GET | `/api/v1/acquisitions/{id}` | Poll workflow and artifact URLs |

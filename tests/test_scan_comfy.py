@@ -56,6 +56,8 @@ class StubComfy(BaseHTTPRequestHandler):
     history_hits = 0
     fail = False
     mask_nodes = {}
+    native_3d = False
+    missing_mesh = False
 
     def log_message(self, *args):
         pass
@@ -92,10 +94,13 @@ class StubComfy(BaseHTTPRequestHandler):
             elif self.history_hits < 2:
                 self._send({})
             else:
+                mesh_outputs = ({'323': {'3d': [{'filename': 'preview.glb', 'type': 'temp'}]},
+                                 '372': {'3d': [{'filename': 'mesh.glb', 'subfolder': '3d', 'type': 'output'}]}}
+                                if self.native_3d else
+                                {'285': {'files': [{'filename': 'mesh.glb', 'subfolder': '3d', 'type': 'output'}]}})
                 self._send({'p1': {
-                    'status': {'status_str': 'success', 'messages': []},
-                    'outputs': {'285': {'files': [
-                        {'filename': 'mesh.glb', 'subfolder': '3d', 'type': 'output'}]}, **self.mask_nodes},
+                    'status': {'status_str': 'success', 'completed': True, 'messages': []},
+                    'outputs': {**({} if self.missing_mesh else mesh_outputs), **self.mask_nodes},
                 }})
         elif parsed.path == '/view':
             query = parse_qs(parsed.query)
@@ -113,6 +118,8 @@ class StubComfy(BaseHTTPRequestHandler):
 def stub_server():
     StubComfy.history_hits = 0
     StubComfy.fail = False
+    StubComfy.native_3d = False
+    StubComfy.missing_mesh = False
     server = ThreadingHTTPServer(('127.0.0.1', 0), StubComfy)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -142,6 +149,26 @@ def test_run_pixal3d_retains_original_coordinate_masks(stub_server, tmp_path):
     assert mesh.read_bytes() == b'GLB-BYTES'
     assert set(masks) == {'front','left'}
     assert all(path.read_bytes() == b'MASK-BYTES' for path in masks.values())
+
+
+def test_native_3d_response_prefers_saved_mesh_over_preview(stub_server, tmp_path):
+    StubComfy.native_3d = True
+    client = make_client(stub_server)
+    mesh, masks = client.run_pixal3d_with_masks({'front': 'front.png', 'left': 'left.png'}, tmp_path)
+    assert mesh.read_bytes() == b'GLB-BYTES'
+    assert set(masks) == {'front', 'left'}
+
+
+@pytest.mark.parametrize('with_masks', [False, True])
+def test_completed_workflow_without_mesh_fails_immediately(stub_server, tmp_path, with_masks):
+    StubComfy.missing_mesh = True
+    client = make_client(stub_server)
+    with pytest.raises(ComfyError, match='completed without a downloadable mesh'):
+        if with_masks:
+            client.run_pixal3d_with_masks({'front': 'front.png'}, tmp_path)
+        else:
+            client.run_pixal3d({'front': 'front.png'}, tmp_path / 'mesh.glb')
+    assert StubComfy.history_hits == 2
 
 
 def test_run_pixal3d_requires_front(stub_server, tmp_path):

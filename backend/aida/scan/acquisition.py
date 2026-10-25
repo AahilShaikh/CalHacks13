@@ -14,7 +14,7 @@ from claude_agent_sdk import (
 from . import blueprints
 from .comfy import ComfyClient, ComfyConfig
 from .metric import MetricView, fit_metric_mesh
-from .foreground import object_foreground
+from .foreground import isolate_object, object_foreground
 from .pipeline import ScanResult, agent_prompt_for
 from .scaling import ScalingError, export_stl
 
@@ -41,7 +41,7 @@ def reconstruct(captures, calibration, directory, client, progress):
         frame = cv2.imread(record['path'])
         foreground = object_foreground(frame, record['board_pose'], empty_frame, empty_pose, calibration)
         cv2.imwrite(str(directory / f'{name}_foreground.png'), foreground)
-        isolated = cv2.bitwise_and(frame, frame, mask=foreground)
+        isolated = isolate_object(frame, foreground)
         path = directory / f'{name}_object.png'
         if not cv2.imwrite(str(path), isolated):
             raise ScalingError('Could not save isolated object image.')
