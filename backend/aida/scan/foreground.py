@@ -1,37 +1,40 @@
-"""Separate the object from the rotating printed board using an empty-table photo."""
+"""Locate objects on the known ChArUco print and prepare segmentation prompts.
+
+Empty-reference subtraction remains available for diagnostics; prompted SAM
+segmentation uses only the submitted photo and the known printed pattern.
+"""
 import cv2
 import numpy as np
 
 from .scaling import ScalingError
 
 
-def isolate_object(frame, foreground):
-    """Use background subtraction to locate the object, preserving its pixels.
+def clean_object_mask(foreground):
+    from .comfy_nodes.board import clean_object_mask as clean, SegmentationError
+    try:
+        return clean(foreground)
+    except SegmentationError as exc:
+        raise ScalingError(str(exc)) from exc
 
-    Pixelwise subtraction punches holes in light objects over white squares.
-    Thin board-registration fringes can also connect to cables outside the disc.
-    Find the largest substantial region, then let ComfyUI segment the intact
-    object within a padded ROI, still in the original calibrated coordinates.
-    """
-    size = max(3, round(min(frame.shape[:2]) * 0.015)) | 1
-    solid = cv2.morphologyEx(foreground, cv2.MORPH_OPEN, np.ones((size, size), np.uint8))
-    count, _, stats, _ = cv2.connectedComponentsWithStats((solid > 127).astype(np.uint8))
-    if count < 2:
-        raise ScalingError('No substantial object region separated from the empty table.')
-    x, y, width, height, area = stats[1:][np.argmax(stats[1:, cv2.CC_STAT_AREA])]
-    if area < foreground.size * 0.005:
-        raise ScalingError('Object region is too small; improve framing or the empty-table reference.')
-    margin = max(size * 2, round(max(width, height) * 0.08))
-    x0, y0 = max(0, x-margin), max(0, y-margin)
-    x1, y1 = min(frame.shape[1], x+width+margin), min(frame.shape[0], y+height+margin)
-    isolated = np.zeros_like(frame)
-    isolated[y0:y1, x0:x1] = frame[y0:y1, x0:x1]
-    return isolated
+
+def isolate_object(frame, foreground):
+    """Composite only the cleaned object silhouette onto black at raw resolution."""
+    mask = clean_object_mask(foreground)
+    return cv2.bitwise_and(frame, frame, mask=mask)
 
 
 def object_foreground(frame, pose, empty_frame, empty_pose, calibration):
     calibration.validate_frame(frame)
     calibration.validate_frame(empty_frame)
+    # A rotation preserves board center and normal. A moved camera/reference
+    # cannot be repaired by warping only the printed plane.
+    R, empty_R = np.asarray(pose['R']), np.asarray(empty_pose['R'])
+    center = np.array([100., -100., 0.])
+    center_delta = (R @ center + np.asarray(pose['t_mm']) -
+                    empty_R @ center - np.asarray(empty_pose['t_mm']))
+    if (np.dot(R[:, 2], empty_R[:, 2]) < 0.98 or np.linalg.norm(center_delta) > 15):
+        raise ScalingError('Empty-table reference is stale: camera or board mounting changed. '
+                           'Remove the object and capture a new reference at /setup.html.')
     K, dist = calibration.K, calibration.distortion
     current = cv2.undistort(frame, K, dist)
     empty = cv2.undistort(empty_frame, K, dist)
@@ -70,3 +73,11 @@ def object_foreground(frame, pose, empty_frame, empty_pose, calibration):
     raw_pixels = np.stack((x, y), axis=-1).astype(np.float32).reshape(-1, 1, 2)
     ideal_pixels = cv2.undistortPoints(raw_pixels, K, dist, P=K).reshape(height, width, 2)
     return cv2.remap(ideal_mask, ideal_pixels[:, :, 0], ideal_pixels[:, :, 1], cv2.INTER_NEAREST)
+
+
+def board_object_region(frame):
+    from .comfy_nodes.board import board_object_region as locate, SegmentationError
+    try:
+        return locate(frame)
+    except SegmentationError as exc:
+        raise ScalingError(str(exc)) from exc

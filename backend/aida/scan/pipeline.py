@@ -15,8 +15,12 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 from . import blueprints, charuco, scaling
 from .comfy import ComfyClient, ComfyConfig
+from .foreground import board_object_region
 
 VIEW_ORDER = ('front', 'left', 'back', 'right')
 
@@ -49,7 +53,7 @@ def agent_prompt_for(cad_specs: dict) -> str:
 
 
 def run_scan(images, output_dir, *, known_height_mm=None, known_base_dia_mm=None,
-             scale_factor=None, client=None, progress=None):
+             scale_factor=None, client=None, progress=None, workflow=None):
     """Run the full image-to-metric-mesh pipeline and return a :class:`ScanResult`.
 
     ``images`` maps view names (front/left/back/right) to image bytes or paths;
@@ -96,16 +100,23 @@ def run_scan(images, output_dir, *, known_height_mm=None, known_base_dia_mm=None
 
     # 2. Pixal3D mesh generation through external ComfyUI.
     report('generating_mesh')
-    client = client or ComfyClient(ComfyConfig())
-    uploaded = {}
+    client = client or ComfyClient(ComfyConfig(workflow=workflow or 'full'))
+    uploaded, regions = {}, {}
     for view in VIEW_ORDER:
         if images.get(view):
             data = source_bytes(view)
             if view != 'front':
                 (output_dir / f'{view}_raw.png').write_bytes(data)
+            frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+            if frame is None:
+                raise scaling.ScalingError(f'Cannot read {view} image.')
+            region = board_object_region(frame)
+            if region is not None:
+                regions[view] = region
             uploaded[view] = client.upload_image(data, f'{view}.png')
     unscaled_mesh = output_dir / 'unscaled_model.glb'
-    client.run_pixal3d(uploaded, unscaled_mesh)
+    (output_dir / 'object_prompts.json').write_text(json.dumps(regions, indent=2)+'\n')
+    client.run_pixal3d(uploaded, unscaled_mesh, **({'object_regions': regions} if regions else {}))
 
     # 3. Scale to 1:1 metric millimeters.
     report('scaling')
@@ -134,8 +145,8 @@ def run_scan(images, output_dir, *, known_height_mm=None, known_base_dia_mm=None
         }
     elif calibration_error:
         cad_specs['charuco_calibration'] = {'error': calibration_error}
+    cad_specs['workflow'] = getattr(getattr(client, 'config', None), 'workflow', 'custom')
     dimensions_json.write_text(json.dumps(cad_specs, indent=2))
-
     prompt = agent_prompt_for(cad_specs)
     (output_dir / 'agent_prompt.txt').write_text(prompt + '\n')
 
@@ -153,9 +164,10 @@ def run_scan(images, output_dir, *, known_height_mm=None, known_base_dia_mm=None
             'metric_model.glb': metric_mesh,
             'metric_model.stl': metric_stl,
             'dimensions.json': dimensions_json,
+            'object_prompts.json': output_dir / 'object_prompts.json',
             'blueprints.png': blueprint,
             'agent_prompt.txt': output_dir / 'agent_prompt.txt',
             'unscaled_model.glb': unscaled_mesh,
-            'front_raw.png': front_path,
+            **{p.name: p for p in output_dir.glob('*.png')},
         },
     )

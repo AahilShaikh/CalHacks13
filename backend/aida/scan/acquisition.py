@@ -14,13 +14,13 @@ from claude_agent_sdk import (
 from . import blueprints
 from .comfy import ComfyClient, ComfyConfig
 from .metric import MetricView, fit_metric_mesh
-from .foreground import isolate_object, object_foreground
+from .foreground import board_object_region
 from .pipeline import ScanResult, agent_prompt_for
 from .scaling import ScalingError, export_stl
 
 
-def configured_comfy():
-    config = ComfyConfig(host=os.environ.get('COMFY_HOST', '127.0.0.1:8188'))
+def configured_comfy(workflow=None):
+    config = ComfyConfig(host=os.environ.get('COMFY_HOST', '127.0.0.1:8188'), workflow=workflow or 'full')
     if os.environ.get('AIDA_PIXAL3D_WORKFLOW'):
         config.workflow_path = Path(os.environ['AIDA_PIXAL3D_WORKFLOW'])
     return ComfyClient(config)
@@ -32,33 +32,37 @@ def reconstruct(captures, calibration, directory, client, progress):
         raise ScalingError('Capture front and at least one side view before reconstruction.')
     directory = Path(directory)
     progress('uploading_images')
-    empty_frame = cv2.imread(str(directory / 'empty_table.png'))
-    if empty_frame is None:
-        raise ScalingError('Empty-table reference is missing or unreadable.')
-    empty_pose = json.loads((directory/'empty_table.json').read_text())['board_pose']
-    uploaded = {}
+    if hasattr(client, 'config'):
+        client.config.camera_focal_px = float(calibration.K[0, 0])
+    uploaded, regions = {}, {}
     for name, record in captures.items():
         frame = cv2.imread(record['path'])
-        foreground = object_foreground(frame, record['board_pose'], empty_frame, empty_pose, calibration)
-        cv2.imwrite(str(directory / f'{name}_foreground.png'), foreground)
-        isolated = isolate_object(frame, foreground)
-        path = directory / f'{name}_object.png'
-        if not cv2.imwrite(str(path), isolated):
-            raise ScalingError('Could not save isolated object image.')
-        uploaded[name] = client.upload_image(path.read_bytes(), f'{name}_object.png')
+        if frame is None:
+            raise ScalingError(f'Cannot read {name} capture.')
+        region = board_object_region(frame)
+        if region is not None:
+            regions[name] = region
+        uploaded[name] = client.upload_image(Path(record['path']).read_bytes(), f'{name}.png')
+    (directory / 'object_prompts.json').write_text(json.dumps(regions, indent=2)+'\n')
     progress('generating_mesh_and_masks')
-    raw_mesh, masks = client.run_pixal3d_with_masks(uploaded, directory)
+    options = {'object_regions': regions} if regions else {}
+    raw_mesh, masks = client.run_pixal3d_with_masks(uploaded, directory, **options)
     views = []
     for name, record in captures.items():
         mask = cv2.imread(str(masks[name]), cv2.IMREAD_GRAYSCALE)
         if mask is None:
             raise ScalingError(f'Cannot read {name} foreground mask.')
+        cv2.imwrite(str(directory / f'{name}_raw_mask.png'), mask)
+        frame = cv2.imread(record['path'])
+        cv2.imwrite(str(directory / f'{name}_object.png'), cv2.bitwise_and(frame, frame, mask=mask))
+        cv2.imwrite(str(directory / f'{name}_foreground.png'), mask)
         pose = record['board_pose']
         views.append(MetricView(name, mask, np.asarray(pose['R']), np.asarray(pose['t_mm']),
                                 record['measured_angle']))
     progress('fitting_metric_scale')
     metric_mesh = directory / 'metric_model.glb'
     specs = fit_metric_mesh(raw_mesh, views, calibration, metric_mesh)
+    specs['workflow'] = getattr(getattr(client, 'config', None), 'workflow', 'custom')
     specs['camera_calibration'] = calibration.to_dict()
     specs['capture_poses'] = {name: {k: v for k, v in record.items() if k != 'path'}
                               for name, record in captures.items()}
@@ -197,8 +201,8 @@ failed motion blindly. Never invent a measurement, scale factor, or successful c
 
 
 def run_capture_scan(directory, prompt, *, controller, policy='agent', progress=lambda _: None,
-                     client=None, cancelled=None):
-    client = client or configured_comfy()
+                     client=None, cancelled=None, workflow=None):
+    client = client or configured_comfy(workflow)
     if not client.health():
         raise RuntimeError('ComfyUI is not ready at '+client.config.base_url)
     directory = Path(directory)

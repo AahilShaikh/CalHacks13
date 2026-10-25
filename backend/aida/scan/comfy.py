@@ -6,8 +6,7 @@ this module assumes the ComfyUI output directory is on the local filesystem:
 generated meshes are fetched over the ``/view`` endpoint, so a remote
 ``COMFY_HOST`` works the same as a local one.
 
-The workflow template (an API-format export of the Pixal3D multi-view ComfyUI
-workflows) uses fixed node ids shared by all four shipped variants:
+The two API-format presets (fast geometry and full PBR) share fixed node ids:
 
 - ``364`` front ``LoadImage`` (wired through background removal)
 - ``377`` left, ``380`` back, ``383`` right ``LoadImage`` (optional views)
@@ -16,7 +15,9 @@ workflows) uses fixed node ids shared by all four shipped variants:
 The bundled front-image preparation path is expanded for optional views.
 Supplied views must reach the output node; unsupported exports fail explicitly.
 """
+import io
 import json
+import math
 import time
 import uuid
 import urllib.parse
@@ -24,7 +25,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_WORKFLOW_PATH = Path(__file__).parent / 'assets' / 'pixal3d_workflow_api.json'
+from PIL import Image
+
+WORKFLOWS = {name: Path(__file__).parent / 'assets' / f'pixal3d_{name}_api.json'
+             for name in ('fast', 'full')}
+DEFAULT_WORKFLOW_PATH = WORKFLOWS['full']
 
 # LoadImage node ids per view, shared by the shipped Pixal3D workflow variants.
 LOAD_IMAGE_NODES = {'front': '364', 'left': '377', 'back': '380', 'right': '383'}
@@ -40,11 +45,19 @@ class ComfyError(RuntimeError):
 @dataclass
 class ComfyConfig:
     host: str = '127.0.0.1:8188'
-    workflow_path: Path = DEFAULT_WORKFLOW_PATH
-    timeout: float = 900.0
+    workflow_path: Path | None = None
+    timeout: float = 1800.0
     poll_interval: float = 2.0
     load_image_nodes: dict = field(default_factory=lambda: dict(LOAD_IMAGE_NODES))
     output_node: str = OUTPUT_NODE
+    workflow: str = 'full'
+    camera_focal_px: float | None = None
+
+    def __post_init__(self):
+        if self.workflow not in WORKFLOWS:
+            raise ValueError(f'Unknown workflow: {self.workflow}; choose fast or full')
+        if self.workflow_path is None:
+            self.workflow_path = WORKFLOWS[self.workflow]
 
     @property
     def base_url(self) -> str:
@@ -54,7 +67,7 @@ class ComfyConfig:
         return host
 
 
-def wire_workflow(workflow: dict, images: dict, config: ComfyConfig) -> dict:
+def wire_workflow(workflow: dict, images: dict, config: ComfyConfig, object_regions=None) -> dict:
     """Return a copy of ``workflow`` with uploaded image names set per view.
 
     ``images`` maps view names (front/left/back/right) to ComfyUI image names
@@ -63,6 +76,10 @@ def wire_workflow(workflow: dict, images: dict, config: ComfyConfig) -> dict:
     """
     wired = json.loads(json.dumps(workflow))
     conditioning = wired.get('324', {})
+    direct_object_preparation = wired.get('500', {}).get('class_type') == 'AidaObjectOnlyViews'
+    if direct_object_preparation and config.camera_focal_px is not None:
+        wired['500']['inputs']['camera_focal_px'] = config.camera_focal_px
+        conditioning['inputs']['fov'] = ['500',10]
     bundled_preparation = (
         conditioning.get('class_type') == 'Pixal3DMultiViewConditioning' and
         wired.get('192', {}).get('class_type') == 'RemoveBackground' and
@@ -77,6 +94,9 @@ def wire_workflow(workflow: dict, images: dict, config: ComfyConfig) -> dict:
         name = images.get(view)
         node_id = config.load_image_nodes.get(view)
         if not name:
+            if direct_object_preparation and view != 'front':
+                wired[node_id]['inputs']['image'] = '(none)'
+                wired['500']['inputs'].pop(view, None)
             if conditioning.get('class_type') == 'Pixal3DMultiViewConditioning':
                 conditioning['inputs'].pop(view, None)
             continue
@@ -95,9 +115,28 @@ def wire_workflow(workflow: dict, images: dict, config: ComfyConfig) -> dict:
             wired[prepare_id]['inputs'].update(images=[node_id, 0], masks=[mask_id, 0])
             conditioning['inputs'][view] = [prepare_id, 0]
         node = wired[node_id]
-        if node.get('class_type') != 'LoadImage':
+        if node.get('class_type') not in ('LoadImage', 'AidaOptionalImage'):
             raise ComfyError(f'Workflow node {node_id} is not a LoadImage node')
         node['inputs']['image'] = name
+        if direct_object_preparation:
+            wired['500']['inputs'][view] = [node_id, 0]
+            conditioning['inputs'][view] = ['500', VIEW_ORDER.index(view)]
+    # BiRefNet sees the board itself as a foreground object. For detected board
+    # photos, use an object box derived from the projected print to prompt SAM.
+    # Its final mask is computed on the ORIGINAL image, preserving object edges.
+    if object_regions and not (bundled_preparation or direct_object_preparation):
+        raise ComfyError('Board object segmentation requires the bundled preparation paths.')
+    for view, region in (object_regions or {}).items() if not direct_object_preparation else []:
+        if view not in images or not images[view]:
+            raise ComfyError(f'Object prompt has no supplied image: {view}')
+        prepare_id = conditioning['inputs'][view][0]
+        mask_id = wired[prepare_id]['inputs']['masks'][0]
+        wired['aida_object_segmenter'] = {'class_type': 'CheckpointLoaderSimple', 'inputs': {
+            'ckpt_name': 'sam3.1_multiplex_fp16.safetensors'}}
+        wired[mask_id] = {'class_type': 'SAM3_Detect', 'inputs': {
+            'model': ['aida_object_segmenter', 0], 'image': [config.load_image_nodes[view], 0],
+            'bboxes': region, 'threshold': 0.5, 'refine_iterations': 1, 'individual_masks': False}}
+
     # Reject silent omissions even when an export contains disconnected image nodes.
     reachable = set()
     def visit(node_id):
@@ -171,48 +210,147 @@ class ComfyClient:
         except ValueError as exc:
             raise ComfyError('ComfyUI upload returned invalid JSON') from exc
 
-    def run_pixal3d(self, images: dict, output_path: Path) -> Path:
+    def _queue(self, wired, client_id=None):
+        queued = self._json('/prompt', {'prompt': wired, 'client_id': client_id or str(uuid.uuid4())})
+        if queued.get('node_errors'):
+            raise ComfyError(f"ComfyUI rejected workflow nodes: {queued['node_errors']}")
+        return queued
+
+    def _frame_board_views(self, wired, images, output_dir):
+        """Segment first, then use one crop scale for the complete camera orbit.
+
+        Independent tight crops make a narrow side as wide as the front, which
+        contradicts the fixed-orbit model's projection geometry.
+        """
+        saves = {}
+        mask_graph = {}
+        def include(node_id):
+            if node_id in mask_graph:
+                return
+            mask_graph[node_id] = wired[node_id]
+            for value in wired[node_id].get('inputs', {}).values():
+                if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str):
+                    include(value[0])
+        for view, name in images.items():
+            if not name:
+                continue
+            prepare = wired[wired['324']['inputs'][view][0]]
+            image_id, save_id = f'aida_{view}_frame_mask_image', f'aida_{view}_frame_mask_save'
+            wired[image_id] = {'class_type':'MaskToImage', 'inputs':{'mask':prepare['inputs']['masks']}}
+            wired[save_id] = {'class_type':'SaveImage', 'inputs':{
+                'images':[image_id,0], 'filename_prefix':f'aida/{uuid.uuid4().hex}_{view}_silhouette'}}
+            saves[view] = save_id
+            include(save_id)
+        queued = self._queue(mask_graph)
+        prompt_id = queued.get('prompt_id')
+        if not prompt_id:
+            raise ComfyError(f'ComfyUI rejected segmentation: {queued}')
+        deadline = time.monotonic()+self.config.timeout
+        masks = {}
+        while time.monotonic() < deadline:
+            entry = self._json(f'/history/{prompt_id}').get(prompt_id)
+            if entry:
+                self._raise_on_error(entry)
+                for view, save in saves.items():
+                    records = entry.get('outputs', {}).get(save, {}).get('images', [])
+                    if not records:
+                        raise ComfyError(f'Object segmentation returned no {view} mask')
+                    path = self._download(records[0], output_dir/f'{view}_mask.png')
+                    mask = Image.open(path).convert('L').point(lambda x:255 if x>127 else 0)
+                    if mask.getbbox() is None:
+                        raise ComfyError(f'Object segmentation returned an empty {view} mask')
+                    masks[view] = mask
+                break
+            time.sleep(self.config.poll_interval)
+        if not masks:
+            raise ComfyError('Object segmentation timed out')
+        self._condition_from_masks(wired, images, masks, output_dir)
+        return wired
+
+    def _condition_from_masks(self, wired, images, masks, output_dir):
+        boxes = {view:mask.getbbox() for view, mask in masks.items()}
+        side = max(max(box[2]-box[0], box[3]-box[1]) for box in boxes.values())
+        side = max(1, round(side*1.1))
+        for view, mask in masks.items():
+            query = urllib.parse.urlencode({'filename':images[view], 'type':'input'})
+            photo = Image.open(io.BytesIO(self._request('/view?'+query))).convert('RGB')
+            if photo.size != mask.size:
+                raise ComfyError(f'{view} mask resolution differs from the original photo')
+            composite = Image.composite(photo, Image.new('RGB', photo.size), mask)
+            composite.save(output_dir/f'{view}_object.png')
+            x0,y0,x1,y1 = boxes[view]
+            left, top = round((x0+x1-side)/2), round((y0+y1-side)/2)
+            framed = composite.crop((left,top,left+side,top+side)).resize((1024,1024),Image.Resampling.LANCZOS)
+            buffer = io.BytesIO()
+            framed.save(buffer,format='PNG')
+            (output_dir/f'{view}_conditioned.png').write_bytes(buffer.getvalue())
+            name = self.upload_image(buffer.getvalue(),f'{view}_conditioned.png')
+            node_id = f'aida_{view}_conditioned'
+            wired[node_id] = {'class_type':'LoadImage','inputs':{'image':name}}
+            wired['324']['inputs'][view] = [node_id,0]
+        if self.config.camera_focal_px is not None:
+            wired['324']['inputs']['fov'] = math.degrees(2*math.atan(side/(2*self.config.camera_focal_px)))
+        (output_dir/'framing.json').write_text(json.dumps({
+            'common_crop_pixels':side, 'boxes':boxes,
+            'fov_degrees':wired['324']['inputs'].get('fov',20.)},indent=2)+'\n')
+
+    def run_pixal3d(self, images: dict, output_path: Path, *, object_regions=None) -> Path:
         """Run the Pixal3D workflow on uploaded views and save the mesh to ``output_path``.
 
         ``images`` maps view names (front/left/back/right) to ComfyUI image
         names. At least ``front`` is required. Returns the saved mesh path.
         """
+        if object_regions:
+            mesh, _ = self.run_pixal3d_with_masks(images, Path(output_path).parent, object_regions=object_regions)
+            if mesh != Path(output_path):
+                Path(output_path).write_bytes(mesh.read_bytes())
+            return Path(output_path)
         if not images.get('front'):
             raise ComfyError('Pixal3D requires at least the front view image')
         workflow_path = Path(self.config.workflow_path)
         if not workflow_path.is_file():
             raise ComfyError(f'Workflow template not found: {workflow_path}')
         workflow = json.loads(workflow_path.read_text())
-        wired = wire_workflow(workflow, images, self.config)
+        wired = wire_workflow(workflow, images, self.config, object_regions)
 
         client_id = str(uuid.uuid4())
-        queued = self._json('/prompt', {'prompt': wired, 'client_id': client_id})
+        queued = self._queue(wired, client_id)
         prompt_id = queued.get('prompt_id')
         if not prompt_id:
             raise ComfyError(f'ComfyUI rejected the workflow: {queued}')
         return self._wait_for_mesh(prompt_id, output_path)
 
-    def run_pixal3d_with_masks(self, images: dict, output_dir: Path):
+    def run_pixal3d_with_masks(self, images: dict, output_dir: Path, *, object_regions=None):
         """Generate geometry plus foreground masks in original photo coordinates."""
         if not images.get('front'):
             raise ComfyError('Pixal3D requires a front image')
         output_dir = Path(output_dir)
-        wired = wire_workflow(json.loads(Path(self.config.workflow_path).read_text()), images, self.config)
+        wired = wire_workflow(json.loads(Path(self.config.workflow_path).read_text()), images, self.config, object_regions)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        # Preserve the original mask links before conditioning is replaced with
+        # equally framed images; metric fitting stays in raw photo coordinates.
+        if wired.get('500', {}).get('class_type') == 'AidaObjectOnlyViews':
+            original_masks = {view:['500', 5+VIEW_ORDER.index(view)]
+                              for view,name in images.items() if name}
+        else:
+            try:
+                original_masks = {view:wired[wired['324']['inputs'][view][0]]['inputs']['masks']
+                                  for view, name in images.items() if name}
+            except KeyError as exc:
+                raise ComfyError('Automatic scaling requires the bundled mask/crop preparation paths.') from exc
+            if object_regions:
+                self._frame_board_views(wired, images, output_dir)
         save_nodes = {}
         for view, name in images.items():
             if not name:
                 continue
-            try:
-                prepare = wired[wired['324']['inputs'][view][0]]
-                mask_link = prepare['inputs']['masks']
-            except KeyError as exc:
-                raise ComfyError('Automatic scaling requires the bundled mask/crop preparation paths.') from exc
+            mask_link = original_masks[view]
             image_id, save_id = f'aida_{view}_mask_image', f'aida_{view}_mask_save'
             wired[image_id] = {'class_type': 'MaskToImage', 'inputs': {'mask': mask_link}}
             wired[save_id] = {'class_type': 'SaveImage', 'inputs': {
                 'images': [image_id, 0], 'filename_prefix': f'aida/{uuid.uuid4().hex}_{view}_mask'}}
             save_nodes[view] = save_id
-        queued = self._json('/prompt', {'prompt': wired, 'client_id': str(uuid.uuid4())})
+        queued = self._queue(wired)
         if not queued.get('prompt_id'):
             raise ComfyError(f'ComfyUI rejected the workflow: {queued}')
         deadline = time.monotonic() + self.config.timeout

@@ -243,3 +243,28 @@ def test_reconstruction_runs_segmentation_metric_fit_and_exports(tmp_path,monkey
     assert 'ALREADY in millimeters' in result.agent_prompt
     assert 'front_mask.png' in result.files
     assert stages[-1] == 'rendering_blueprints'
+
+
+def test_acquisition_workflow_forwarded_and_validated(client):
+    http, manager, _ = client
+    seen = []
+    def record(directory, prompt, **kwargs):
+        seen.append(kwargs['workflow'])
+        return fake_result(directory, prompt, **kwargs)
+    manager.runner = record
+    for preset in ('fast', 'full'):
+        response = http.post('/api/v1/acquisitions', json={'workflow':preset, 'start_cad':False})
+        assert wait_done(http, response.json()['status_url'])['status'] == 'succeeded'
+    assert seen == ['fast', 'full']
+    assert http.post('/api/v1/acquisitions', json={'workflow':'turbo'}).status_code == 422
+
+
+def test_capture_no_longer_requires_empty_background_reference(client, monkeypatch):
+    from aida.turntable import HardwareSettings
+    http, _, _ = client
+    folder = HardwareSettings.from_env().storage
+    (folder/'empty_table.png').unlink()
+    (folder/'empty_table.json').unlink()
+    response = http.post('/api/v1/acquisitions', json={'policy':'four_views','start_cad':False})
+    assert response.status_code == 202
+    assert wait_done(http,response.json()['status_url'])['status'] == 'succeeded'

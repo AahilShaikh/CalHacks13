@@ -297,12 +297,11 @@ class TurntableService:
             calibration = CameraCalibration.load(settings.storage / 'camera.json')
             if calibration.camera_id != settings.camera_id:
                 raise TurntableError('calibration_required', 'Selected camera differs from its calibration.', 409)
-            if not self._empty_reference_ready(settings.storage):
-                raise TurntableError('reference_required', 'Capture the empty-table reference at /setup.html.', 409)
             output_directory = Path(output_directory)
             output_directory.mkdir(parents=True, exist_ok=True)
             for name in ('empty_table.png', 'empty_table.json'):
-                shutil.copy2(settings.storage / name, output_directory / name)
+                if (settings.storage / name).is_file():
+                    shutil.copy2(settings.storage / name, output_directory / name)
             with self._session_factory(settings, time.monotonic()+move_timeout_s, True) as (drive, feedback):
                 yield CaptureSession(drive, feedback, settings, calibration, Path(output_directory),
                                      tolerance, move_timeout_s)

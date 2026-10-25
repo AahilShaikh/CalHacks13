@@ -17,6 +17,8 @@ Submission accepts 1-4 turntable photos (``front_image`` required,
 ``left_image``/``back_image``/``right_image`` optional) plus one scale anchor
 form field: ``known_height_mm``, ``known_base_dia_mm``, or ``scale_factor``.
 """
+from typing import Literal
+
 import os
 import asyncio
 import logging
@@ -91,8 +93,8 @@ async def calibration_error(request, exc):
         'detail': {'code': 'calibration_required', 'message': str(exc)}})
 
 
-def _comfy_config() -> ComfyConfig:
-    config = ComfyConfig(host=os.environ.get('COMFY_HOST', '127.0.0.1:8188'))
+def _comfy_config(workflow='full') -> ComfyConfig:
+    config = ComfyConfig(host=os.environ.get('COMFY_HOST', '127.0.0.1:8188'), workflow=workflow)
     workflow = os.environ.get('AIDA_PIXAL3D_WORKFLOW')
     if workflow:
         config.workflow_path = Path(workflow)
@@ -121,6 +123,7 @@ async def create_scan(
     known_height_mm: float | None = Form(None),
     known_base_dia_mm: float | None = Form(None),
     scale_factor: float | None = Form(None),
+    workflow: Literal['fast', 'full'] = Form('full'),
 ):
     images = {'front': await front_image.read()}
     for name, upload in (('left', left_image), ('back', back_image), ('right', right_image)):
@@ -133,7 +136,7 @@ async def create_scan(
             known_height_mm=known_height_mm,
             known_base_dia_mm=known_base_dia_mm,
             scale_factor=scale_factor,
-            client=ComfyClient(_comfy_config()),
+            client=ComfyClient(_comfy_config(workflow)),
             progress=lambda stage: manager.set_stage(job, stage))
 
     job = manager.submit(run)

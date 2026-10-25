@@ -87,3 +87,24 @@ def test_run_scan_rejects_missing_anchor_before_generating(tmp_path):
 def test_run_scan_requires_front_image(tmp_path):
     with pytest.raises(ValueError):
         pipeline.run_scan({}, tmp_path / 'job', client=FakeClient())
+
+
+def test_uploaded_board_uses_prompted_segmentation_without_reference(tmp_path, monkeypatch):
+    import cv2
+    import numpy as np
+    from aida.scan.charuco import make_board
+    board, _ = make_board()
+    frame = np.full((800,1000,3), 70, np.uint8)
+    frame[100:700,200:800] = cv2.cvtColor(board.generateImage((600,600)), cv2.COLOR_GRAY2BGR)
+    frame[320:440,430:570] = [60,90,150]
+    _, encoded = cv2.imencode('.png', frame)
+    class BoardClient(FakeClient):
+        def run_pixal3d(self, images, output_path, *, object_regions=None):
+            assert object_regions and object_regions['front']['width'] < 300
+            return super().run_pixal3d(images, output_path)
+    # There is no calibration or background reference in this directory.
+    monkeypatch.chdir(tmp_path)
+    result = pipeline.run_scan({'front':encoded.tobytes()}, tmp_path/'job',
+                               known_height_mm=60, client=BoardClient())
+    assert result.metric_mesh.exists()
+    assert 'front' in json.loads(result.files['object_prompts.json'].read_text())

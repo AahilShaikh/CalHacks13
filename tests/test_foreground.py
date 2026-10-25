@@ -71,3 +71,42 @@ def test_isolation_preserves_object_pixels_despite_subtraction_holes_and_cable()
 def test_isolation_rejects_an_empty_region():
     with pytest.raises(ScalingError, match='No substantial object'):
         isolate_object(np.zeros((600, 800, 3), np.uint8), np.zeros((600, 800), np.uint8))
+
+
+def test_isolation_removes_board_inside_object_bounding_box():
+    frame = np.full((600, 800, 3), 180, np.uint8)
+    mask = np.zeros((600, 800), np.uint8)
+    cv2.ellipse(mask, (400, 300), (120, 70), 25, 0, 360, 255, -1)
+    frame[mask > 0] = [20, 60, 180]
+    isolated = isolate_object(frame, mask)
+    assert not isolated[230, 285].any()  # In the old padded ROI, outside object.
+    assert np.array_equal(isolated[300, 400], frame[300, 400])
+    assert np.count_nonzero(np.all(isolated == 180, axis=2)) == 0
+
+
+def test_stale_reference_rejected_before_subtraction():
+    empty, pose, calibration = reference()
+    moved = {**pose, 't_mm': [-100, -100, 550]}
+    with pytest.raises(ScalingError, match='reference is stale'):
+        object_foreground(empty, moved, empty, pose, calibration)
+
+
+def test_board_prompt_is_independent_of_surrounding_background():
+    from aida.scan.foreground import board_object_region
+    from aida.scan.charuco import make_board
+    board, _ = make_board()
+    print_image = cv2.cvtColor(board.generateImage((600,600)), cv2.COLOR_GRAY2BGR)
+    frame = np.full((800,1000,3), 70, np.uint8)
+    frame[100:700,200:800] = print_image
+    frame[320:440,430:570] = [60, 90, 150]
+    first = board_object_region(frame)
+    assert first is not None
+    assert first['x'] <= 430 and first['x']+first['width'] >= 569
+    assert first['y'] <= 320 and first['y']+first['height'] >= 439
+    changed = frame.copy()
+    changed[:100] = 240
+    changed[700:] = 20
+    changed[:,:200] = 250
+    changed[:,800:] = 15
+    assert board_object_region(changed) == first
+    assert board_object_region(np.full((800,1000,3), 128, np.uint8)) is None

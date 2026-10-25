@@ -26,6 +26,7 @@ class AcquisitionRequest(BaseModel):
     prompt: str = Field(default='Scan this object and create a parametric CAD model.', min_length=1, max_length=10000)
     policy: Literal['agent', 'four_views'] = 'agent'
     start_cad: bool = True
+    workflow: Literal['fast', 'full'] = 'full'
 
 
 @dataclass
@@ -63,8 +64,6 @@ class AcquisitionManager:
             raise HTTPException(409, 'Selected camera differs from its calibration.')
         if not (settings.storage / 'zero.json').is_file():
             raise HTTPException(409, 'Startup zero is not ready; retry initialization at /setup.html.')
-        if not all((settings.storage / name).is_file() for name in ('empty_table.png', 'empty_table.json')):
-            raise HTTPException(409, 'Capture an empty-table reference at /setup.html.')
         identity = uuid.uuid4().hex
         directory = Path(os.environ.get('AIDA_ACQUISITION_STORAGE', 'artifacts/acquisitions')) / identity
         directory.mkdir(parents=True, exist_ok=True)
@@ -77,7 +76,8 @@ class AcquisitionManager:
         job.status = 'running'
         try:
             result = await asyncio.to_thread(
-                self.runner, job.directory, request.prompt, controller=service, policy=request.policy,
+                self.runner, job.directory, request.prompt, controller=service,
+                policy=request.policy, workflow=request.workflow,
                 progress=lambda stage: setattr(job, 'stage', stage), cancelled=job.cancelled)
             if job.cancelled.is_set():
                 job.status, job.stage = 'cancelled', 'cancelled'
