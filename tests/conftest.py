@@ -2,6 +2,14 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def simulated_camera_inventory(monkeypatch):
+    """Unit/integration tests never enumerate or open the host's real cameras."""
+    monkeypatch.setenv('AIDA_TURNTABLE_CAMERA_ID', 'test-usb-camera')
+    monkeypatch.setattr('aida.hardware.cameras.list_cameras', lambda: [{
+        'index': 0, 'device_id': 'test-usb-camera', 'name': 'Test USB camera', 'is_usb': True}])
+
+
 def _export(shape, path):
     from build123d import export_stl
     export_stl(shape, str(path), tolerance=0.01, angular_tolerance=0.1)

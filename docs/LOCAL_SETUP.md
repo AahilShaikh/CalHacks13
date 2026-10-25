@@ -308,39 +308,40 @@ arrows and green Z=0 ground lines. Together with `dimensions.json` and
 read before modeling. The agent's own exports live in a separate session
 (`uv run aida ...`), so scan artifacts stay untouched.
 
-## Multiple input views: current limitation
+## Multiple input views
 
-The API and CLI accept up to four images in fixed orbit order — front (0°),
-left (90°), back (180°), right (270°). Missing views are skipped, and a front
-image is always required.
+The API and CLI accept one to four images in fixed orbit order: front (0°),
+left (90°), back (180°), right (270°). A front image is required.
 
-However, the **bundled workflow template wires only the front image**. Its API
-export has one `LoadImage` node (`364`); the `left`/`back`/`right` nodes
-(`377`/`380`/`383`) that exist in the UI workflows are not part of the exported
-graph. So extra views are uploaded to ComfyUI and then ignored by the graph — no
-error, no effect on the mesh.
+The bundled API workflow starts with the front path. `wire_workflow` adds a
+separate LoadImage, background-removal and crop path for each supplied optional
+view, connecting it to Pixal3DMultiViewConditioning. Missing views are omitted.
+Supplying an image that cannot reach the mesh output now fails explicitly,
+rather than uploading it and silently ignoring it.
 
-To make multi-view input actually drive Pixal3D:
+Custom API-format exports can still be selected with `AIDA_PIXAL3D_WORKFLOW`.
+The default node mappings are front `364`, left `377`, back `380`, right `383`,
+and mesh output `285`; programmatic callers can override these in `ComfyConfig`.
+The automatic preparation expansion recognizes the bundled front path. Other
+custom exports must already connect their supplied image nodes to the output.
 
-1. Open a UI variant in ComfyUI (`3_turbo_fast_mesh.json` or similar) where the
-   `377`/`380`/`383` `LoadImage` nodes are connected to
-   `Pixal3DMultiViewConditioning`'s left/back/right inputs (the default Pixal3D
-   template has these inputs).
-2. Export it in API format: **Workflow → Export (API)** (older builds: "Save
-   (API Format)"). This produces a flat JSON keyed by node id, unlike the UI
-   `.json` you save normally.
-3. Point Aida at it:
+## Automatic calibrated capture and metric scaling
 
-```bash
-AIDA_PIXAL3D_WORKFLOW=/path/to/exported_api.json uv run aida-api
-uv run aida scan run --workflow /path/to/exported_api.json --front ... --out ...
-```
+For USB-webcam capture without an object dimension/caliper anchor, use
+`/setup.html` and `POST /api/v1/acquisitions`. See
+[automatic scanner setup](AUTOMATIC_SCAN.md).
 
-Aida wires node ids `364` (front), `377` (left), `380` (back), `383` (right) and
-reads the mesh from node `285`. If your export uses different ids, update
-`LOAD_IMAGE_NODES` and `OUTPUT_NODE` in `backend/aida/scan/comfy.py`. Views
-whose node is absent are skipped silently, which is exactly what makes the
-single-view template work today.
+This workflow calibrates the actual webcam, saves an empty-table reference,
+acquires two to four views through the bounded capture agent, isolates the
+object, and fits the generated mesh's uniform scale and pose against calibrated
+outer silhouettes. It records fit errors, estimated scale uncertainty and the
+applied transforms. The CAD agent receives an already metric mesh and is told
+not to apply the scale again. Poor or ambiguous fits fail instead of claiming
+an unverified millimeter scale.
+
+The uploaded-photo `/api/v1/scans` and `aida scan run` interfaces above retain
+their explicit-anchor contract because arbitrary photos lack the measured
+camera poses required by automatic registration.
 
 ## Troubleshooting
 

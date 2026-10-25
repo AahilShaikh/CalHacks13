@@ -14,10 +14,32 @@ def test_wire_workflow_sets_present_views():
     workflow = json.loads(DEFAULT_WORKFLOW_PATH.read_text())
     wired = wire_workflow(workflow, {'front': 'a.png', 'left': 'b.png'}, ComfyConfig())
     assert wired['364']['inputs']['image'] == 'a.png'
-    # This template carries no left/back/right LoadImage nodes; they are skipped.
-    assert '377' not in wired
+    assert wired['377']['inputs']['image'] == 'b.png'
+    assert wired['324']['inputs']['left'] == ['aida_left_prepare', 0]
+    assert wired['aida_left_prepare']['inputs']['images'] == ['377', 0]
+    assert wired['aida_left_prepare']['inputs']['masks'] == ['aida_left_mask', 0]
+    assert wired['aida_left_mask']['inputs']['image'] == ['377', 0]
+    assert 'back' not in wired['324']['inputs']
+    assert 'right' not in wired['324']['inputs']
     # The template itself is not mutated.
     assert workflow['364']['inputs']['image'] != 'a.png'
+    assert '377' not in workflow
+
+
+def test_wire_workflow_consumes_all_four_views():
+    workflow = json.loads(DEFAULT_WORKFLOW_PATH.read_text())
+    images = {name: f'{name}.png' for name in ('front', 'left', 'back', 'right')}
+    wired = wire_workflow(workflow, images, ComfyConfig())
+    for view, node_id in ComfyConfig().load_image_nodes.items():
+        assert wired[node_id]['inputs']['image'] == images[view]
+        assert view in wired['324']['inputs']
+
+
+def test_wire_workflow_rejects_disconnected_supplied_view():
+    workflow = json.loads(DEFAULT_WORKFLOW_PATH.read_text())
+    workflow['377'] = {'class_type': 'LoadImage', 'inputs': {'image': 'old.png'}}
+    with pytest.raises(ComfyError, match='not connected'):
+        wire_workflow(workflow, {'front': 'front.png', 'left': 'left.png'}, ComfyConfig())
 
 
 def test_wire_workflow_requires_matching_node():
@@ -33,6 +55,7 @@ class StubComfy(BaseHTTPRequestHandler):
 
     history_hits = 0
     fail = False
+    mask_nodes = {}
 
     def log_message(self, *args):
         pass
@@ -53,6 +76,8 @@ class StubComfy(BaseHTTPRequestHandler):
         elif self.path == '/prompt':
             payload = json.loads(body)
             assert payload['prompt']['364']['inputs']['image'] == 'front.png'
+            type(self).mask_nodes = {node_id: {'images':[{'filename':node_id+'.png','type':'output'}]}
+                                    for node_id in payload['prompt'] if node_id.endswith('_mask_save')}
             self._send({'prompt_id': 'p1'})
         else:
             self.send_error(404)
@@ -70,12 +95,14 @@ class StubComfy(BaseHTTPRequestHandler):
                 self._send({'p1': {
                     'status': {'status_str': 'success', 'messages': []},
                     'outputs': {'285': {'files': [
-                        {'filename': 'mesh.glb', 'subfolder': '3d', 'type': 'output'}]}},
+                        {'filename': 'mesh.glb', 'subfolder': '3d', 'type': 'output'}]}, **self.mask_nodes},
                 }})
         elif parsed.path == '/view':
             query = parse_qs(parsed.query)
-            assert query['filename'] == ['mesh.glb']
-            self._send(b'GLB-BYTES', content_type='application/octet-stream')
+            if query['filename'] == ['mesh.glb']:
+                self._send(b'GLB-BYTES', content_type='application/octet-stream')
+            else:
+                self._send(b'MASK-BYTES', content_type='image/png')
         elif parsed.path == '/system_stats':
             self._send({'system': 'stub'})
         else:
@@ -107,6 +134,14 @@ def test_run_pixal3d_downloads_mesh(stub_server, tmp_path):
     assert result == out
     assert out.read_bytes() == b'GLB-BYTES'
     assert StubComfy.history_hits >= 2
+
+
+def test_run_pixal3d_retains_original_coordinate_masks(stub_server, tmp_path):
+    mesh,masks = make_client(stub_server).run_pixal3d_with_masks(
+        {'front':'front.png','left':'left.png'},tmp_path)
+    assert mesh.read_bytes() == b'GLB-BYTES'
+    assert set(masks) == {'front','left'}
+    assert all(path.read_bytes() == b'MASK-BYTES' for path in masks.values())
 
 
 def test_run_pixal3d_requires_front(stub_server, tmp_path):

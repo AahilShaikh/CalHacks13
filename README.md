@@ -132,12 +132,28 @@ calibration PDFs), `scan/pipeline.py` (orchestration), and `aida.api`
 
 ### HTTP API
 
+For automatic USB-webcam capture, ChArUco metric registration and CAD handoff,
+open `/setup.html` after starting the API. See the
+[automatic scanner setup](docs/AUTOMATIC_SCAN.md) for calibration and the
+`POST /api/v1/acquisitions` workflow. No manual object dimension is required by
+this calibrated workflow; the uploaded-image scan endpoint below retains its
+explicit scale-anchor requirement.
+
 ```powershell
 uv run aida-api                       # http://127.0.0.1:8000
 # or: uv run uvicorn aida.api.server:app --port 8000
 ```
 
 - `GET /health` — service status and ComfyUI reachability.
+- `POST /api/v1/acquisitions` — agent-controlled capture of up to four views,
+  automatic metric mesh registration and optional CAD-agent startup; returns 202.
+- `GET /api/v1/acquisitions/{id}` — workflow status, dimensions, artifacts and CAD viewer link.
+- `POST /api/v1/turntable/zero` — save the current ChArUco board pose as zero.
+- `POST /api/v1/turntable/rotate` — blocking JSON `{"angle":90}` request:
+  drive the Arduino/FS90R with webcam angle feedback, verify the stopped pose,
+  and save its photo before returning 200. Setup and firmware:
+  [turntable guide](docs/TURNTABLE.md).
+- `GET /api/v1/turntable/captures/{filename}` — download the verified photo.
 - `POST /api/v1/scans` — multipart upload: `front_image` (required),
   `left_image`/`back_image`/`right_image` (optional), plus one scale anchor
   (`known_height_mm`, `known_base_dia_mm`, or `scale_factor`). Returns 202 with
