@@ -67,3 +67,34 @@ def test_changed_resolution_requires_zero_again(tmp_path):
     camera.frame = camera.frame[:1000]
     with pytest.raises(TurntableError, match='resolution changed'):
         feedback.read_angle(time.monotonic() + 5)
+
+
+@pytest.mark.parametrize('platform,backend', [('win32',cv2.CAP_DSHOW),('darwin',cv2.CAP_AVFOUNDATION),('linux',cv2.CAP_ANY)])
+def test_webcam_uses_native_backend_and_releases_capture(monkeypatch, platform, backend):
+    from aida.hardware.vision import Webcam
+    camera = Webcam(1)
+    opened, released = [], []
+    class Capture:
+        def set(self, *args): pass
+        def isOpened(self): return True
+        def read(self):
+            camera.closed.set()
+            return True, np.zeros((720,1280,3),np.uint8)
+        def release(self): released.append(True)
+    def open_capture(index, selected_backend):
+        opened.append((index, selected_backend))
+        return Capture()
+    monkeypatch.setattr('aida.hardware.vision.sys.platform', platform)
+    monkeypatch.setattr('aida.hardware.vision.cv2.VideoCapture', open_capture)
+    camera._run()
+    assert opened == [(1,backend)] and released == [True]
+    assert camera.sequence == 1 and camera.error is None
+
+
+def test_webcam_deadline_reports_camera_error_instead_of_turntable_timeout():
+    from aida.hardware.vision import Webcam
+    camera = Webcam(1)
+    with pytest.raises(TurntableError) as error:
+        camera.read(time.monotonic() - .01)
+    assert error.value.code == 'camera_timeout' and error.value.http_status == 504
+    assert 'camera index 1' in str(error.value)

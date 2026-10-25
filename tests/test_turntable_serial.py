@@ -164,3 +164,84 @@ def test_cleanup_on_feedback_error(tmp_path, monkeypatch, stop_fails):
     assert len(stops) == 1
     assert serial.closed
     assert closed == [True]
+
+
+def test_bootloader_can_drop_first_ping_without_losing_startup(monkeypatch):
+    serial = SerialConnection()
+    write = serial.write
+    sent_pings = []
+    def booting(payload):
+        if payload.startswith(b'PING '):
+            sent_pings.append(payload)
+            if len(sent_pings) == 1:
+                return len(payload)  # Bootloader swallowed the first command.
+        return write(payload)
+    serial.write = booting
+    monkeypatch.setattr('serial.Serial', lambda *args, **kwargs: serial)
+    drive = ArduinoDrive('fake', reset_wait_s=0)
+    drive.connect(time.monotonic() + 3)
+    assert len(sent_pings) == 2 and sent_pings[0] == sent_pings[1]
+    assert not any(command == 'DRIVE' for command, _ in serial.sent)
+
+
+def test_experimental_v3_firmware_is_rejected_before_motion(monkeypatch):
+    serial = SerialConnection(neutral=1450)
+    write = serial.write
+    def v3(payload):
+        if payload.startswith(b'INFO '):
+            token = payload.decode().split()[1]
+            serial.replies.append(f'OK {token} INFO 3 1450 9 15000\n'.encode())
+            return len(payload)
+        return write(payload)
+    serial.write = v3
+    monkeypatch.setattr('serial.Serial', lambda *args, **kwargs: serial)
+    drive = ArduinoDrive('fake', neutral_us=1450, reset_wait_s=0)
+    with pytest.raises(TurntableError) as error:
+        drive.connect(time.monotonic() + 2)
+    assert error.value.code == 'firmware_update_required'
+    assert 'firmware V2 is required' in str(error.value)
+    assert not any(command == 'DRIVE' for command, _ in serial.sent)
+
+
+def test_serial_timeout_names_the_unacknowledged_command():
+    serial = SerialConnection()
+    serial.write = lambda data: len(data)
+    drive = ArduinoDrive('COM14')
+    drive.connection = serial
+    with pytest.raises(TurntableError, match='Arduino STOP acknowledgement timed out on COM14'):
+        drive.stop(time.monotonic() + .01)
+
+
+def test_handshake_does_not_reconfigure_unchanged_windows_serial_timeouts(monkeypatch):
+    class Connection(SerialConnection):
+        @property
+        def timeout(self): return .1
+        @timeout.setter
+        def timeout(self, value): raise AssertionError('Unnecessary port reconfiguration')
+        @property
+        def write_timeout(self): return .2
+        @write_timeout.setter
+        def write_timeout(self, value): raise AssertionError('Unnecessary port reconfiguration')
+    serial = Connection()
+    monkeypatch.setattr('serial.Serial', lambda *args, **kwargs: serial)
+    ArduinoDrive('fake', reset_wait_s=0).connect(time.monotonic() + 2)
+
+
+def test_rejected_drive_reports_wire_arguments_and_firmware_without_retry():
+    serial = SerialConnection(neutral=1450)
+    writes = []
+    def reject(payload):
+        writes.append(payload)
+        token = payload.decode().split()[1]
+        serial.replies = [f'ERR {token} BAD_COMMAND\n'.encode()]
+        return len(payload)
+    serial.write = reject
+    drive = ArduinoDrive('COM14', neutral_us=1450)
+    drive.connection = serial
+    drive.firmware_info = {'version': 2, 'startup_neutral_us': 1450, 'pin':9, 'max_pulse_ms':500}
+    with pytest.raises(TurntableError) as error:
+        drive.pulse(1390, .06, time.monotonic()+1)
+    message = str(error.value)
+    assert 'Arduino rejected DRIVE 1390 60 1450' in message
+    assert 'firmware V2' in message and 'BAD_COMMAND' in message
+    assert len(writes) == 1

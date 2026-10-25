@@ -37,12 +37,13 @@ class Webcam:
     def _run(self):
         camera = None
         try:
-            backend = cv2.CAP_AVFOUNDATION if sys.platform == 'darwin' else cv2.CAP_ANY
+            backend = (cv2.CAP_AVFOUNDATION if sys.platform == 'darwin'
+                       else cv2.CAP_DSHOW if sys.platform == 'win32' else cv2.CAP_ANY)
             camera = cv2.VideoCapture(self.index, backend)
             camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
             if not camera.isOpened():
-                raise RuntimeError(f'Cannot open webcam index {self.index}.')
+                raise RuntimeError(f'Cannot open USB webcam index {self.index}. Close other camera apps and retry.')
             while not self.closed.is_set():
                 ok, frame = camera.read()
                 if not ok:
@@ -60,24 +61,31 @@ class Webcam:
                 camera.release()
 
     def read(self, deadline: float):
-        with self.condition:
-            # Skip two frames captured after this request to clear buffered exposures.
-            required_sequence = self.sequence + 3
-            while self.sequence < required_sequence:
-                if self.error:
-                    raise TurntableError('camera_unavailable', self.error)
-                if self.closed.is_set():
-                    raise TurntableError('camera_unavailable', 'Webcam has been closed.')
-                self.condition.wait(timeout=remaining(deadline))
-            remaining(deadline)
-            return self.frame.copy()
+        try:
+            with self.condition:
+                # Skip two frames captured after this request to clear buffered exposures.
+                required_sequence = self.sequence + 3
+                while self.sequence < required_sequence:
+                    if self.error:
+                        raise TurntableError('camera_unavailable', self.error)
+                    if self.closed.is_set():
+                        raise TurntableError('camera_unavailable', 'Webcam has been closed.')
+                    self.condition.wait(timeout=remaining(deadline))
+                remaining(deadline)
+                return self.frame.copy()
+        except TurntableError as exc:
+            if exc.code == 'timeout':
+                raise TurntableError('camera_timeout',
+                    f'USB camera index {self.index} did not deliver fresh frames before the deadline. '
+                    'Close other camera apps, check the USB connection, and refresh the preview.', 504) from exc
+            raise
 
     def close(self):
         self.closed.set()
         with self.condition:
             self.condition.notify_all()
         if self.thread is not None:
-            self.thread.join(timeout=0.2)
+            self.thread.join(timeout=2.0)
 
 
 class CharucoFeedback:

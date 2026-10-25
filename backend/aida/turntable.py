@@ -288,7 +288,7 @@ class TurntableService:
 
     @contextmanager
     def capture_session(self, output_directory, tolerance=1.0, move_timeout_s=30.0):
-        """Reserve one object scan; keep camera/serial open between agent calls."""
+        """Reserve the camera and serial connection for all four object views."""
         from .scan.camera import CameraCalibration
 
         self.ensure_zero_ready()

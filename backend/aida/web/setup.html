@@ -13,7 +13,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}.muted{color:#b6c
 <h1>Aida scanner setup</h1>
 <p class="muted" id="camera-status">USB webcam required · 1280 × 720 requested · servo neutral 1450 µs</p>
 <section><h2>1. Select and calibrate the USB camera</h2>
-<p>Plug the USB webcam into the Mac. Keep its focus and zoom fixed once calibrated.</p>
+<p>Plug the USB webcam into the computer. Keep its focus and zoom fixed once calibrated.</p>
 <button id="cameras">Refresh camera devices</button><select id="camera" aria-label="USB camera"></select>
 <button id="save-camera">Use selected USB camera</button>
 <p>Use the printed 10 × 10 ChArUco board with 20 mm squares. Print at actual size.
@@ -22,7 +22,7 @@ and up/down, varying distance and position across the image. Keep the full board
 Flat turntable rotation alone cannot calibrate the lens. These setup photos do not count toward an object's four-view limit.</p>
 <button id="preview">Refresh camera preview</button><button id="sample">Take calibration sample</button>
 <button id="solve">Solve calibration</button><button id="reset">Reset samples</button>
-<p id="calibration"></p><img id="frame" alt="Camera preview appears here after capture" hidden></section>
+<p id="calibration"></p><p id="preview-status" role="status"></p><img id="frame" alt="Camera preview appears here after capture" hidden></section>
 <section><h2>2. Automatic zero</h2>
 <p>Mount the board flat on the turntable and fix the USB camera on its stand. Keep
 board corners visible around the object at every rotation. The camera must see both the board and the object.
@@ -36,20 +36,20 @@ If startup ran before the hardware was ready, retry initialization after mountin
 <p>An empty-table reference is optional for diagnostics. Object-only SAM segmentation does not require it.
 To save one, remove the object first; this does not change zero.</p>
 <button id="reference">Capture empty-table reference</button></section>
-<section><h2>3. Scan an object and start CAD</h2>
-<p>Place the object on the board. Leave the USB camera and board mounting fixed.
-The agent can acquire up to four cardinal views. Automatic scaling needs front plus at least one side view.
-The mesh is handed to CAD only after its metric fit passes. Agent mode and CAD use your configured Claude account.</p>
-<textarea id="prompt">Scan this object and create an editable parametric CAD model. Explain uncertain details.</textarea>
-<label>Capture policy <select id="policy"><option value="agent">Agent chooses 2–4 views</option>
-<option value="four_views">Four views (no capture-agent call)</option></select></label>
-<label>Mesh quality <select id="workflow"><option value="full">Full — refined geometry + PBR textures</option><option value="fast">Fast — refined geometry</option></select></label>
-<label><input id="cad" type="checkbox" checked> Start CAD agent after fitting</label><p>
+<section><h2>3. Scan into a workspace</h2>
+<p>Place the object on the board. Keep the camera and board mounting fixed.
+The scanner captures front, left, back and right, then adds the mesh to your open workspace
+only after automatic metric fitting succeeds. You can also ask Aida to scan directly in chat.</p>
+<label>Open workspace ID <input id="session" placeholder="ID from the workspace URL /w/…"></label>
+<label>Mesh quality <select id="workflow"><option value="full">Full — refined geometry + PBR textures</option><option value="fast">Fast — refined geometry</option></select></label><p>
 <button id="start">Start scan</button><button id="cancel" disabled>Cancel after current operation</button></p>
 <p id="job"></p><div id="files"></div></section>
 <section><h2>Activity</h2><pre id="activity" aria-live="polite">Ready.</pre></section>
 <script>
-const $=id=>document.getElementById(id);let currentJob=null,previewURL=null;
+const $=id=>document.getElementById(id);let currentJob=null,previewURL=null,hardwareBusy=false,scanRunning=false,cameraAvailable=false;
+const hardwareControls=['cameras','save-camera','preview','sample','solve','reset','ports','save-port','initialize','reference','start'];
+function updateControls(){for(const id of hardwareControls)$(id).disabled=hardwareBusy||scanRunning;
+ $('save-camera').disabled=hardwareBusy||scanRunning||!cameraAvailable; $('cancel').disabled=!scanRunning;}
 function log(value,error=false){$('activity').textContent=typeof value==='string'?value:JSON.stringify(value,null,2);$('activity').classList.toggle('error',error)}
 async function api(path,method='GET',body){const response=await fetch(path,{method,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
  const data=await response.json();if(!response.ok)throw new Error(typeof data.detail==='object'?JSON.stringify(data.detail):data.detail||response.statusText);return data}
@@ -57,14 +57,23 @@ async function state(){const data=await api('/api/v1/camera/calibration');$('cal
 async function cameras(){const data=await api('/api/v1/camera/devices');$('camera').replaceChildren();
  for(const device of data.devices.filter(d=>d.is_usb)){const option=document.createElement('option');option.value=device.device_id;option.textContent=`${device.name} · index ${device.index}`;$('camera').append(option)}
  if(data.selected)$('camera').value=data.selected.device_id;
- $('save-camera').disabled=!data.devices.some(d=>d.is_usb);
+ cameraAvailable=data.devices.some(d=>d.is_usb);updateControls();
  $('camera-status').textContent=data.selected?`USB webcam: ${data.selected.name} · index ${data.selected.index} · 1280 × 720 requested · neutral 1450 µs`:data.selection_error;}
-async function preview(){const response=await fetch('/api/v1/camera/frame.jpg');if(!response.ok){const data=await response.json();throw new Error(JSON.stringify(data.detail))}
- if(previewURL)URL.revokeObjectURL(previewURL);previewURL=URL.createObjectURL(await response.blob());$('frame').src=previewURL;$('frame').hidden=false;}
-function action(id,callback){$(id).onclick=async()=>{$(id).disabled=true;try{await callback()}catch(error){log(error.message,true)}finally{$(id).disabled=false}}}
+async function preview(){
+ $('preview-status').textContent='Loading camera preview…';$('preview-status').classList.remove('error');
+ try{const response=await fetch('/api/v1/camera/frame.jpg');
+  if(!response.ok){const data=await response.json().catch(()=>({}));
+   throw new Error(data.detail?.message||data.detail||`Camera preview failed (${response.status})`)}
+  const nextURL=URL.createObjectURL(await response.blob());if(previewURL)URL.revokeObjectURL(previewURL);
+  previewURL=nextURL;$('frame').src=previewURL;$('frame').hidden=false;
+  $('preview-status').textContent='Camera preview loaded. Refresh for a new frame.';
+ }catch(error){$('preview-status').textContent=error.message;$('preview-status').classList.add('error');throw error}
+}
+function action(id,callback){$(id).onclick=async()=>{if(hardwareBusy||scanRunning)return;
+ hardwareBusy=true;updateControls();try{await callback()}catch(error){log(error.message,true)}finally{hardwareBusy=false;updateControls()}}}
 action('preview',preview);
 action('cameras',cameras);
-action('save-camera',async()=>{log(await api('/api/v1/camera/selection','POST',{device_id:$('camera').value}));$('frame').hidden=true;await cameras();await state()});
+action('save-camera',async()=>{log(await api('/api/v1/camera/selection','POST',{device_id:$('camera').value}));$('frame').hidden=true;await cameras();await state();await preview()});
 action('sample',async()=>{log(await api('/api/v1/camera/calibration/samples','POST'));await state()});
 action('solve',async()=>{log(await api('/api/v1/camera/calibration/solve','POST'));await state()});
 action('reset',async()=>{log(await api('/api/v1/camera/calibration/samples','DELETE'));await state()});
@@ -77,13 +86,17 @@ async function startupState(){const data=await api('/api/v1/turntable/status');
 action('initialize',async()=>{try{log(await api('/api/v1/turntable/initialize','POST'))}finally{await startupState()}});
 action('reference',async()=>{log(await api('/api/v1/turntable/reference','POST',{}));await startupState()});
 function showFiles(data){$('files').replaceChildren();for(const [name,url] of Object.entries(data.files||{})){const link=document.createElement('a');link.textContent=name;link.href=url;link.target='_blank';link.rel='noopener';link.style.marginRight='16px';$('files').append(link)}
- if(data.viewer_url){const link=document.createElement('a');link.href=data.viewer_url;link.textContent='Open live CAD viewer';link.style.display='block';$('files').prepend(link)}}
+ if(data.viewer_url){const link=document.createElement('a');link.href=data.viewer_url;link.textContent='Open workspace';link.style.display='block';$('files').prepend(link)}}
 async function poll(){if(!currentJob)return;try{const data=await api(`/api/v1/acquisitions/${currentJob}`);$('job').textContent=`${data.status} · ${data.stage}`;showFiles(data);
- if(['failed','succeeded','cancelled'].includes(data.status)){log(data,data.status==='failed');$('start').disabled=false;$('cancel').disabled=true;return}
- setTimeout(poll,1500)}catch(error){log(error.message,true);$('start').disabled=false;}}
-$('start').onclick=async()=>{$('start').disabled=true;try{const data=await api('/api/v1/acquisitions','POST',{prompt:$('prompt').value,policy:$('policy').value,workflow:$('workflow').value,start_cad:$('cad').checked});
- currentJob=data.job_id;$('cancel').disabled=false;log(data);poll()}catch(error){log(error.message,true);$('start').disabled=false}};
-action('cancel',async()=>log(await api(`/api/v1/acquisitions/${currentJob}/cancel`,'POST')));
-state().catch(error=>log(error.message,true));ports().catch(error=>log(error.message,true));cameras().catch(error=>log(error.message,true));startupState().catch(error=>log(error.message,true));
+ if(['failed','succeeded','cancelled'].includes(data.status)){scanRunning=false;updateControls();log(data,data.status==='failed');return}
+ setTimeout(poll,1500)}catch(error){scanRunning=false;updateControls();log(error.message,true);}}
+$('start').onclick=async()=>{if(hardwareBusy||scanRunning)return;hardwareBusy=true;updateControls();try{const data=await api('/api/v1/acquisitions','POST',{session_id:$('session').value.trim(),workflow:$('workflow').value});
+ currentJob=data.job_id;scanRunning=true;log(data);poll()}catch(error){log(error.message,true)}finally{hardwareBusy=false;updateControls()}};
+$('cancel').onclick=async()=>{if(!scanRunning)return;$('cancel').disabled=true;try{log(await api(`/api/v1/acquisitions/${currentJob}/cancel`,'POST'))}catch(error){log(error.message,true);updateControls()}};
+$('session').value=new URLSearchParams(location.search).get('session')||'';
+async function initializePage(){hardwareBusy=true;updateControls();
+ try{await Promise.all([state(),ports(),cameras(),startupState()]);if(cameraAvailable)await preview()}
+ catch(error){log(error.message,true)}finally{hardwareBusy=false;updateControls()}}
+void initializePage();
 </script>
 </html>
