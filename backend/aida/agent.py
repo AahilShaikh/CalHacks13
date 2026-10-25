@@ -262,7 +262,16 @@ async def run_turn(client, prompt, artifacts, on_event=None):
                                                'args': block.input})
         elif isinstance(message, ResultMessage):
             final = message
-            summary = {'turns': message.num_turns, 'cost_usd': message.total_cost_usd,
+            # total_cost_usd is the conversation's running total; report what this turn cost.
+            total = message.total_cost_usd
+            spent = getattr(client, 'aida_cost_so_far', 0.0) or 0.0
+            turn_cost = total - spent if total is not None and total >= spent else total
+            if total is not None:
+                try:
+                    client.aida_cost_so_far = total
+                except AttributeError:
+                    pass  # a client that takes no attributes reports the running total
+            summary = {'turns': message.num_turns, 'cost_usd': turn_cost,
                        'duration_s': round(message.duration_ms / 1000, 1), 'subtype': message.subtype}
             artifacts.log('turn_summary', summary)
             if on_event is not None:

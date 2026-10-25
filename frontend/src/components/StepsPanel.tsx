@@ -51,6 +51,14 @@ export function StepsPanel() {
   const toolCount = useMemo(() => feed.filter((i) => i.kind === 'tool').length, [feed]);
   const running = feed.some((i) => i.kind === 'tool' && i.status === 'running');
 
+  // When the window gets narrow, fold the panel so the 3D view keeps its room.
+  useEffect(() => {
+    const narrow = window.matchMedia('(max-width: 1099px)');
+    const fold = () => narrow.matches && setOpen(false);
+    narrow.addEventListener('change', fold);
+    return () => narrow.removeEventListener('change', fold);
+  }, [setOpen]);
+
   if (!open) {
     return (
       <aside className="flex w-11 shrink-0 flex-col items-center gap-2 border-l border-line bg-surface py-2">
