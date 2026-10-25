@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aida · Camera and scanner setup</title>
+<style>
+body{font:16px/1.6 system-ui;margin:40px auto;padding:0 24px;max-width:1000px;background:#10151e;color:#eef3fa}
+h1{font-size:32px}h2{font-size:21px;margin-top:0}section{background:#1a2331;padding:24px;border-radius:12px;margin:20px 0}
+button,textarea,select{font:inherit;border:1px solid #576880;border-radius:6px;padding:10px;background:#25354b;color:inherit}
+button{cursor:pointer;margin:4px 6px 4px 0}button:disabled{opacity:.45;cursor:wait}a{color:#91caff}
+textarea{display:block;width:95%;min-height:80px}img{max-width:100%;border-radius:8px;margin:12px 0}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}.muted{color:#b6c4d5}.error{color:#ffb2a8}
+</style>
+<h1>Aida scanner setup</h1>
+<p class="muted" id="camera-status">USB webcam required · 1280 × 720 requested · servo neutral 1450 µs</p>
+<section><h2>1. Select and calibrate the USB camera</h2>
+<p>Plug the USB webcam into the Mac. Keep its focus and zoom fixed once calibrated.</p>
+<button id="cameras">Refresh camera devices</button><select id="camera" aria-label="USB camera"></select>
+<button id="save-camera">Use selected USB camera</button>
+<p>Use the printed 10 × 10 ChArUco board with 20 mm squares. Print at actual size.
+Hold the board in front of the USB camera. Take 12–20 sharp samples, tilting it left/right
+and up/down, varying distance and position across the image. Keep the full board in view where possible.
+Flat turntable rotation alone cannot calibrate the lens. These setup photos do not count toward an object's four-view limit.</p>
+<button id="preview">Refresh camera preview</button><button id="sample">Take calibration sample</button>
+<button id="solve">Solve calibration</button><button id="reset">Reset samples</button>
+<p id="calibration"></p><img id="frame" alt="Camera preview appears here after capture" hidden></section>
+<section><h2>2. Mount the board and set zero</h2>
+<p>Mount the board flat on the turntable, leave it empty, and fix the USB camera on its stand. Keep
+board corners visible around the object at every rotation. The camera must see both the board and the object.
+Close Arduino Serial Monitor, connect the Mega and ensure the 1450 µs firmware is uploaded.</p>
+<button id="ports">Refresh USB ports</button><select id="port" aria-label="Arduino USB port"></select>
+<button id="save-port">Save Arduino port</button><p id="port-status"></p>
+<button id="zero">Set zero and save empty-table reference</button></section>
+<section><h2>3. Scan an object and start CAD</h2>
+<p>Place the object on the board. Leave the USB camera and board mounting fixed.
+The agent can acquire up to four cardinal views. Automatic scaling needs front plus at least one side view.
+The mesh is handed to CAD only after its metric fit passes. Agent mode and CAD use your configured Claude account.</p>
+<textarea id="prompt">Scan this object and create an editable parametric CAD model. Explain uncertain details.</textarea>
+<label>Capture policy <select id="policy"><option value="agent">Agent chooses 2–4 views</option>
+<option value="four_views">Four views (no capture-agent call)</option></select></label>
+<label><input id="cad" type="checkbox" checked> Start CAD agent after fitting</label><p>
+<button id="start">Start scan</button><button id="cancel" disabled>Cancel after current operation</button></p>
+<p id="job"></p><div id="files"></div></section>
+<section><h2>Activity</h2><pre id="activity" aria-live="polite">Ready.</pre></section>
+<script>
+const $=id=>document.getElementById(id);let currentJob=null,previewURL=null;
+function log(value,error=false){$('activity').textContent=typeof value==='string'?value:JSON.stringify(value,null,2);$('activity').classList.toggle('error',error)}
+async function api(path,method='GET',body){const response=await fetch(path,{method,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
+ const data=await response.json();if(!response.ok)throw new Error(typeof data.detail==='object'?JSON.stringify(data.detail):data.detail||response.statusText);return data}
+async function state(){const data=await api('/api/v1/camera/calibration');$('calibration').textContent=`${data.samples} samples · `+(data.calibration?`Calibrated: ${data.calibration.rms_px.toFixed(3)} px RMS, ${data.calibration.size.join(' × ')}${data.calibration.camera_matches?'':' — camera selection changed'}`:'Not calibrated yet');}
+async function cameras(){const data=await api('/api/v1/camera/devices');$('camera').replaceChildren();
+ for(const device of data.devices.filter(d=>d.is_usb)){const option=document.createElement('option');option.value=device.device_id;option.textContent=`${device.name} · index ${device.index}`;$('camera').append(option)}
+ if(data.selected)$('camera').value=data.selected.device_id;
+ $('save-camera').disabled=!data.devices.some(d=>d.is_usb);
+ $('camera-status').textContent=data.selected?`USB webcam: ${data.selected.name} · index ${data.selected.index} · 1280 × 720 requested · neutral 1450 µs`:data.selection_error;}
+async function preview(){const response=await fetch('/api/v1/camera/frame.jpg');if(!response.ok){const data=await response.json();throw new Error(JSON.stringify(data.detail))}
+ if(previewURL)URL.revokeObjectURL(previewURL);previewURL=URL.createObjectURL(await response.blob());$('frame').src=previewURL;$('frame').hidden=false;}
+function action(id,callback){$(id).onclick=async()=>{$(id).disabled=true;try{await callback()}catch(error){log(error.message,true)}finally{$(id).disabled=false}}}
+action('preview',preview);
+action('cameras',cameras);
+action('save-camera',async()=>{log(await api('/api/v1/camera/selection','POST',{device_id:$('camera').value}));$('frame').hidden=true;await cameras();await state()});
+action('sample',async()=>{log(await api('/api/v1/camera/calibration/samples','POST'));await state()});
+action('solve',async()=>{log(await api('/api/v1/camera/calibration/solve','POST'));await state()});
+action('reset',async()=>{log(await api('/api/v1/camera/calibration/samples','DELETE'));await state()});
+async function ports(){const data=await api('/api/v1/turntable/configuration');$('port').replaceChildren();
+ for(const device of data.ports){const option=document.createElement('option');option.value=device.port;option.textContent=`${device.port} · ${device.description}`;$('port').append(option)}
+ if(data.port)$('port').value=data.port;$('port-status').textContent=data.ports.length?`Saved port: ${data.port||'none'}`:'No USB serial device detected. Connect the Mega, then refresh.';}
+action('ports',ports);action('save-port',async()=>{log(await api('/api/v1/turntable/configuration','POST',{port:$('port').value}));await ports()});
+action('zero',async()=>log(await api('/api/v1/turntable/zero','POST',{empty_table_reference:true})));
+function showFiles(data){$('files').replaceChildren();for(const [name,url] of Object.entries(data.files||{})){const link=document.createElement('a');link.textContent=name;link.href=url;link.target='_blank';link.rel='noopener';link.style.marginRight='16px';$('files').append(link)}
+ if(data.viewer_url){const link=document.createElement('a');link.href=data.viewer_url;link.textContent='Open live CAD viewer';link.style.display='block';$('files').prepend(link)}}
+async function poll(){if(!currentJob)return;try{const data=await api(`/api/v1/acquisitions/${currentJob}`);$('job').textContent=`${data.status} · ${data.stage}`;showFiles(data);
+ if(['failed','succeeded','cancelled'].includes(data.status)){log(data,data.status==='failed');$('start').disabled=false;$('cancel').disabled=true;return}
+ setTimeout(poll,1500)}catch(error){log(error.message,true);$('start').disabled=false;}}
+$('start').onclick=async()=>{$('start').disabled=true;try{const data=await api('/api/v1/acquisitions','POST',{prompt:$('prompt').value,policy:$('policy').value,start_cad:$('cad').checked});
+ currentJob=data.job_id;$('cancel').disabled=false;log(data);poll()}catch(error){log(error.message,true);$('start').disabled=false}};
+action('cancel',async()=>log(await api(`/api/v1/acquisitions/${currentJob}/cancel`,'POST')));
+state().catch(error=>log(error.message,true));ports().catch(error=>log(error.message,true));cameras().catch(error=>log(error.message,true));
+</script>
+</html>

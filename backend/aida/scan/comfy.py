@@ -13,8 +13,8 @@ workflows) uses fixed node ids shared by all four shipped variants:
 - ``377`` left, ``380`` back, ``383`` right ``LoadImage`` (optional views)
 - ``285`` ``MeshToFile3D`` (writes the generated mesh file)
 
-Only the nodes present in the template are wired; a template exported without
-the optional views simply ignores them.
+The bundled front-image preparation path is expanded for optional views.
+Supplied views must reach the output node; unsupported exports fail explicitly.
 """
 import json
 import time
@@ -41,7 +41,7 @@ class ComfyError(RuntimeError):
 class ComfyConfig:
     host: str = '127.0.0.1:8188'
     workflow_path: Path = DEFAULT_WORKFLOW_PATH
-    timeout: float = 300.0
+    timeout: float = 900.0
     poll_interval: float = 2.0
     load_image_nodes: dict = field(default_factory=lambda: dict(LOAD_IMAGE_NODES))
     output_node: str = OUTPUT_NODE
@@ -58,22 +58,62 @@ def wire_workflow(workflow: dict, images: dict, config: ComfyConfig) -> dict:
     """Return a copy of ``workflow`` with uploaded image names set per view.
 
     ``images`` maps view names (front/left/back/right) to ComfyUI image names
-    as returned by :meth:`ComfyClient.upload_image`. Views whose LoadImage node
-    is absent from the workflow are skipped.
+    as returned by :meth:`ComfyClient.upload_image`. For the bundled workflow,
+    optional views receive their own background removal and crop path.
     """
     wired = json.loads(json.dumps(workflow))
+    conditioning = wired.get('324', {})
+    bundled_preparation = (
+        conditioning.get('class_type') == 'Pixal3DMultiViewConditioning' and
+        wired.get('192', {}).get('class_type') == 'RemoveBackground' and
+        wired.get('312', {}).get('class_type') == 'ImageCropToMask' and
+        wired['192']['inputs'].get('image') == [config.load_image_nodes.get('front'), 0] and
+        wired['312']['inputs'].get('images') == [config.load_image_nodes.get('front'), 0]
+    )
+    for view, name in images.items():
+        if name and view not in VIEW_ORDER:
+            raise ComfyError(f'Unsupported view: {view}')
     for view in VIEW_ORDER:
         name = images.get(view)
         node_id = config.load_image_nodes.get(view)
-        if not name or node_id is None or node_id not in wired:
+        if not name:
+            if conditioning.get('class_type') == 'Pixal3DMultiViewConditioning':
+                conditioning['inputs'].pop(view, None)
             continue
+        if node_id is None:
+            raise ComfyError(f'No LoadImage mapping configured for {view}')
+        if node_id not in wired:
+            if not bundled_preparation or view == 'front':
+                raise ComfyError(f'Workflow cannot consume the supplied {view} view (node {node_id} missing)')
+            mask_id, prepare_id = f'aida_{view}_mask', f'aida_{view}_prepare'
+            if mask_id in wired or prepare_id in wired:
+                raise ComfyError(f'Workflow contains reserved preparation IDs for {view}')
+            wired[node_id] = {'class_type': 'LoadImage', 'inputs': {'image': name}}
+            wired[mask_id] = json.loads(json.dumps(wired['192']))
+            wired[mask_id]['inputs']['image'] = [node_id, 0]
+            wired[prepare_id] = json.loads(json.dumps(wired['312']))
+            wired[prepare_id]['inputs'].update(images=[node_id, 0], masks=[mask_id, 0])
+            conditioning['inputs'][view] = [prepare_id, 0]
         node = wired[node_id]
         if node.get('class_type') != 'LoadImage':
             raise ComfyError(f'Workflow node {node_id} is not a LoadImage node')
         node['inputs']['image'] = name
-    if not any(config.load_image_nodes.get(view) in wired
-               for view, name in images.items() if name):
-        raise ComfyError('No LoadImage node in the workflow matches the supplied views')
+    # Reject silent omissions even when an export contains disconnected image nodes.
+    reachable = set()
+    def visit(node_id):
+        if node_id in reachable or node_id not in wired:
+            return
+        reachable.add(node_id)
+        for value in wired[node_id].get('inputs', {}).values():
+            if (isinstance(value, list) and len(value) == 2 and
+                    isinstance(value[0], str) and isinstance(value[1], int)):
+                visit(value[0])
+    visit(config.output_node)
+    for view, name in images.items():
+        if name and config.load_image_nodes.get(view) not in reachable:
+            raise ComfyError(f'The supplied {view} image is not connected to mesh output {config.output_node}')
+    if not any(images.values()):
+        raise ComfyError('No images supplied')
     return wired
 
 
@@ -151,6 +191,47 @@ class ComfyClient:
         if not prompt_id:
             raise ComfyError(f'ComfyUI rejected the workflow: {queued}')
         return self._wait_for_mesh(prompt_id, output_path)
+
+    def run_pixal3d_with_masks(self, images: dict, output_dir: Path):
+        """Generate geometry plus foreground masks in original photo coordinates."""
+        if not images.get('front'):
+            raise ComfyError('Pixal3D requires a front image')
+        output_dir = Path(output_dir)
+        wired = wire_workflow(json.loads(Path(self.config.workflow_path).read_text()), images, self.config)
+        save_nodes = {}
+        for view, name in images.items():
+            if not name:
+                continue
+            try:
+                prepare = wired[wired['324']['inputs'][view][0]]
+                mask_link = prepare['inputs']['masks']
+            except KeyError as exc:
+                raise ComfyError('Automatic scaling requires the bundled mask/crop preparation paths.') from exc
+            image_id, save_id = f'aida_{view}_mask_image', f'aida_{view}_mask_save'
+            wired[image_id] = {'class_type': 'MaskToImage', 'inputs': {'mask': mask_link}}
+            wired[save_id] = {'class_type': 'SaveImage', 'inputs': {
+                'images': [image_id, 0], 'filename_prefix': f'aida/{uuid.uuid4().hex}_{view}_mask'}}
+            save_nodes[view] = save_id
+        queued = self._json('/prompt', {'prompt': wired, 'client_id': str(uuid.uuid4())})
+        if not queued.get('prompt_id'):
+            raise ComfyError(f'ComfyUI rejected the workflow: {queued}')
+        deadline = time.monotonic() + self.config.timeout
+        while time.monotonic() < deadline:
+            entry = (self._json(f"/history/{queued['prompt_id']}") or {}).get(queued['prompt_id'])
+            if entry:
+                self._raise_on_error(entry)
+                record = self._find_mesh_record(entry)
+                if record:
+                    mesh = self._download(record, output_dir / 'unscaled_model.glb')
+                    masks = {}
+                    for view, save_id in save_nodes.items():
+                        records = entry.get('outputs', {}).get(save_id, {}).get('images', [])
+                        if not records:
+                            raise ComfyError(f'ComfyUI did not return the original-coordinate {view} mask')
+                        masks[view] = self._download(records[0], output_dir / f'{view}_mask.png')
+                    return mesh, masks
+            time.sleep(self.config.poll_interval)
+        raise ComfyError(f'Pixal3D exceeded {self.config.timeout:.0f}s including foreground masks')
 
     def _wait_for_mesh(self, prompt_id: str, output_path: Path) -> Path:
         deadline = time.monotonic() + self.config.timeout

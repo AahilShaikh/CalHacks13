@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config import REPO_ROOT, load_local_env
@@ -31,6 +31,11 @@ from ..scan.pipeline import run_scan
 from .cad_sessions import CadSessionManager, router as cad_sessions_router
 from .jobs import JobManager
 from .replays import router as replays_router
+from .turntable import router as turntable_router
+from .camera import router as camera_router
+from .acquisition import router as acquisition_router
+from ..hardware.control import TurntableError
+from ..scan.charuco import CalibrationError
 
 load_local_env()
 
@@ -60,6 +65,18 @@ app = FastAPI(
 
 manager = JobManager(DEFAULT_STORAGE)
 cad_manager = CadSessionManager(CAD_STORAGE)
+
+
+@app.exception_handler(TurntableError)
+async def hardware_error(request, exc):
+    return JSONResponse(status_code=exc.http_status, content={
+        'detail': {'code': exc.code, 'message': str(exc)}})
+
+
+@app.exception_handler(CalibrationError)
+async def calibration_error(request, exc):
+    return JSONResponse(status_code=409, content={
+        'detail': {'code': 'calibration_required', 'message': str(exc)}})
 
 
 def _comfy_config() -> ComfyConfig:
@@ -138,6 +155,9 @@ def get_scan_file(job_id: str, filename: str):
 
 
 app.include_router(cad_sessions_router)
+app.include_router(turntable_router)
+app.include_router(camera_router)
+app.include_router(acquisition_router)
 app.include_router(replays_router)
 # The web UI is mounted last so API routes match first.
 if (FRONTEND_DIST / 'index.html').is_file():
