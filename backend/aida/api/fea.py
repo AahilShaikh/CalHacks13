@@ -86,13 +86,13 @@ def start_analysis(session, revision: int, settings: FeaSettings, source: str = 
         raise FeaError(409, 'FEA requires known millimeter units. Start a CAD session with mesh units set to mm.')
     entry = next((m for m in session.meshes if m['revision'] == revision and m['generated']), None)
     if entry is None or not entry['path'].is_file():
-        raise FeaError(404, f'No generated CAD for revision {revision}')
+        raise FeaError(404, f'No generated CAD for geometry {revision}')
     if any(job['status'] in {'queued', 'running'} for job in session.fea_jobs.values()):
         raise FeaError(409, 'An FEA run is already in progress for this session.')
     parts = entry.get('parts') or []
     if not entry.get('step_path') and len(parts) > 1:
-        raise FeaError(409, f'FEA tests one solid at a time, and revision {revision} shows {len(parts)} parts '
-                            f'({", ".join(parts)}). Show a single part, then run FEA on that revision.')
+        raise FeaError(409, f'FEA tests one solid at a time, and this geometry shows {len(parts)} parts '
+                            f'({", ".join(parts)}). Show a single part, then run FEA on that geometry.')
     try:
         step = require_step(entry.get('step_path'))
     except ValueError as exc:
@@ -115,7 +115,7 @@ async def list_faces(session, revision: int) -> dict:
     """The revision's CAD faces (numbers, kinds, positions) and a labelled picture, cached on disk."""
     entry = next((m for m in session.meshes if m['revision'] == revision and m['generated']), None)
     if entry is None:
-        raise FeaError(404, f'No generated CAD for revision {revision}')
+        raise FeaError(404, f'No generated CAD for geometry {revision}')
     try:
         step = require_step(entry.get('step_path'))
     except ValueError as exc:

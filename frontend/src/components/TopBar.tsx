@@ -2,9 +2,9 @@ import { ChevronRight } from 'lucide-react';
 import { useState } from 'react';
 import { useActivity, useElapsed, type ActivityTone } from '../lib/activity';
 import { linkProps } from '../lib/router';
-import { generatedRevisions, useStore } from '../store';
+import { useStore } from '../store';
 import { DownloadMenu } from './DownloadMenu';
-import { RevisionScrubber } from './viewer/Controls';
+import { CommitScrubber } from './viewer/Controls';
 import { RenameField, Spinner, cx } from './ui';
 
 const DOT: Record<ActivityTone, string> = {
@@ -38,46 +38,20 @@ export function TopBar() {
         <span className="text-[14px] font-semibold tracking-[-0.01em]">Aida</span>
       </a>
       <ChevronRight size={14} className="text-line-strong" aria-hidden />
-      {replay ? <span className="truncate text-[13px] font-medium">Recorded run</span> : <WorkspaceName />}
+      <div className="w-64 min-w-0 max-w-[256px] shrink">{replay ? <span className="truncate text-[13px] font-medium">Recorded run</span> : <WorkspaceName />}</div>
       {replay && (
         <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 text-[11px] font-medium text-accent-ink">
           Replay · {replay.speed}×
         </span>
       )}
 
-      <div className="flex flex-1 items-center justify-center gap-3">
+      <div className="flex min-w-0 flex-1 items-center justify-center gap-3">
         <StatusChip />
-        <RevisionScrubber />
+        <CommitScrubber />
       </div>
 
-      <FeaButton />
       <DownloadMenu />
     </header>
-  );
-}
-
-/** Opens the structural test in the right panel; pulses while an analysis runs. */
-function FeaButton() {
-  const revisions = useStore((s) => s.revisions);
-  const feaJob = useStore((s) => s.feaJob);
-  const feaStarting = useStore((s) => s.feaStarting);
-  const ready = generatedRevisions(revisions).length > 0;
-  const busy = feaStarting || feaJob?.status === 'queued' || feaJob?.status === 'running';
-  return (
-    <button
-      type="button"
-      disabled={!ready}
-      title={ready ? 'Configure a structural test of the displayed CAD revision' : 'Build a CAD model to enable FEA'}
-      onClick={() => {
-        const state = useStore.getState();
-        state.setPanelTab('fea');
-        state.setStepsOpen(true);
-      }}
-      className="flex h-7 items-center gap-1.5 rounded-md border border-accent/40 bg-accent-soft px-2.5 text-[12px] font-medium text-accent-ink hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-40"
-    >
-      {busy && <span className="size-1.5 animate-pulse-dot rounded-full bg-accent" aria-hidden />}
-      {busy ? 'FEA running…' : 'FEA test'}
-    </button>
   );
 }
 
@@ -91,7 +65,7 @@ function WorkspaceName() {
   if (editing) {
     return (
       <RenameField
-        className="w-64 text-[13px]"
+        className="min-w-0 text-[13px]"
         initial={named ? name : ''}
         placeholder={name || 'Untitled workspace'}
         onDone={(text) => {
@@ -107,7 +81,7 @@ function WorkspaceName() {
       disabled={!sessionId}
       onClick={() => setEditing(true)}
       title="Rename"
-      className="min-w-0 truncate rounded-md px-1.5 py-1 text-[13px] font-medium hover:bg-subtle"
+      className="max-w-full min-w-0 truncate rounded-md px-1.5 py-1 text-[13px] font-medium hover:bg-subtle"
     >
       {name || 'Untitled workspace'}
     </button>
@@ -117,7 +91,6 @@ function WorkspaceName() {
 /** The agent's current step; hover or focus for revision, time and cost. */
 function StatusChip() {
   const activity = useActivity();
-  const revisions = useStore((s) => s.revisions);
   const cost = useStore((s) => s.cost);
   const startedAt = useStore((s) => s.startedAt);
   const endedAt = useStore((s) => s.endedAt);
@@ -125,9 +98,9 @@ function StatusChip() {
   const lastEventAt = useStore((s) => s.lastEventAt);
   // A replay's clock is the recorded timeline, not the wall clock.
   const elapsed = useElapsed(startedAt, endedAt ?? (replay ? lastEventAt ?? startedAt : null));
-  const rev = generatedRevisions(revisions).length;
+  const rev = useStore((s) => s.currentCommit);
   const details = [
-    ['Revision', rev ? String(rev) : '—'],
+    ['Commit', rev ? String(rev) : '—'],
     ['Session time', elapsed ?? '—'],
     ['Agent cost', cost > 0 ? `$${cost.toFixed(2)}` : '—'],
   ];

@@ -99,7 +99,7 @@ ASK_SCHEMA = {
     'required': ['questions'],
 }
 
-HOST_TOOLS = {'run_fea', 'fea_faces', 'ask_user'}
+HOST_TOOLS = {'run_fea', 'fea_faces', 'ask_user', 'commit_changes'}
 
 
 def fea_summary(job: dict) -> dict:
@@ -107,7 +107,7 @@ def fea_summary(job: dict) -> dict:
     result = job['result']
     settings = result['settings']
     return {
-        'viewer_revision': job.get('viewer_revision', result['revision']),
+        'design': job.get('design', 'Live geometry'),
         'material': {k: settings[k] for k in ('youngs_modulus_mpa', 'poisson_ratio', 'yield_strength_mpa')},
         'held_faces': result.get('support_faces'),
         'loaded_faces': result.get('load_faces'),
@@ -145,9 +145,9 @@ def _png(path) -> list[dict]:
 
 
 def host_tools(host, on_event=None):
-    """Tools that need the live web session: FEA jobs and questions in the UI."""
+    """Tools bound to the live workspace, including hardware operations."""
 
-    @tool('fea_faces', 'List the latest CAD revision\'s faces for FEA: number, flat or curved, outward '
+    @tool('fea_faces', 'List the current CAD solid\'s faces for FEA: number, flat or curved, outward '
           'normal, area, centre and bounds, with a picture of the part from two sides with every face '
           'numbered. Use it to pick support_faces and load_faces for run_fea.', {})
     async def fea_faces(args):
@@ -193,7 +193,21 @@ def host_tools(host, on_event=None):
                              'now with a one-line note of what you need; do not call more tools. Their '
                              'answers arrive as the next message.'}]}
 
-    return [fea_faces, run_fea, ask_user]
+    @tool('commit_changes', 'Save a coherent completed design change as a workspace commit. '
+          'Call after finishing changes and before your final reply; use a short meaningful message. '
+          'Questions, inspection and analysis alone do not need commits. Multiple milestones may be '
+          'committed within one prompt. Unchanged designs return Nothing to commit.', {'message': str})
+    async def commit_changes(args):
+        try:
+            result = await host.commit_changes(args.get('message', ''))
+            text = json.dumps(result)
+            await _emit(on_event, {'type': 'tool_result', 'name': 'commit_changes', 'ok': True, 'text': text})
+            return {'content': [{'type': 'text', 'text': text}]}
+        except Exception as exc:
+            await _emit(on_event, {'type': 'tool_result', 'name': 'commit_changes', 'ok': False, 'text': str(exc)})
+            return {'is_error': True, 'content': [{'type': 'text', 'text': str(exc)}]}
+
+    return [fea_faces, run_fea, ask_user, commit_changes]
 
 
 def make_tools(cad, artifacts, on_event=None, workspace=None, host=None):
@@ -203,7 +217,11 @@ def make_tools(cad, artifacts, on_event=None, workspace=None, host=None):
 
         async def handler(args, name=name):
             try:
-                result = await cad.call(name, args)
+                if host is not None and name == 'execute':
+                    async with host.session.parts_lock:
+                        result = await cad.call(name, args)
+                else:
+                    result = await cad.call(name, args)
                 # Agent SDK handlers use is_error; MCP wire results use isError.
                 payload = {**result, 'is_error': result.get('isError', False)}
                 await _emit(on_event, {'type': 'tool_result', 'name': name,
@@ -269,7 +287,11 @@ def make_tools(cad, artifacts, on_event=None, workspace=None, host=None):
     workspace, table = model_tools(cad, artifacts, workspace)
     for name, description, schema, operation in table:
         async def model_handler(args, operation=operation, name=name):
-            result = await operation(args)
+            if host is not None:
+                async with host.session.parts_lock:
+                    result = await operation(args)
+            else:
+                result = await operation(args)
             payload = {**result, 'is_error': result.get('isError', False)}
             await _emit(on_event, {'type': 'tool_result', 'name': name,
                                    'ok': not payload['is_error'],
@@ -299,6 +321,10 @@ Asking the user:
   with clickable choices (best guess first) instead of assuming, then end your turn. Ask once,
   for everything you need, rather than one question per turn. Do not ask what you can measure.
 
+Design history: use commit_changes(message) to save each coherent completed design change before
+replying. Commits are explicit; prompts never save checkpoints automatically. Commit milestones
+within a long task, but do not commit inspection, reports or explanations with no design changes.
+
 Structural testing (FEA), when the user asks whether a part is strong or stiff enough:
 - An FEA answer is only as good as its setup: where the part is held and where the force goes.
   First write down, in one or two sentences, how the part is used: what holds it (screws, a wall,
@@ -323,8 +349,8 @@ Structural testing (FEA), when the user asks whether a part is strong or stiff e
   region (thickness, width, fillet radius) with model_set_params, then run_fea again with the
   same material, load and resolution. Face numbers can change when the shape changes: call
   fea_faces again after each rebuild and check the setup picture. At most 5 runs per request. End with a short table of
-  revision, the change, peak stress, safety factor and max displacement. Number revisions by
-  run_fea's viewer_revision: those are the numbers the user sees in the viewer and Runs table.
+  commit (or Live geometry), the change, peak stress, safety factor and max displacement.
+  Use run_fea's design label; geometry artifact IDs are not user-facing history numbers.
 - It is a linear elastic screening analysis: no plasticity, buckling, contact or fatigue, and
   stress at the clamped edge and sharp inner corners is a local peak that grows with mesh
   refinement. Say this once in the summary, briefly.
@@ -332,7 +358,7 @@ Structural testing (FEA), when the user asks whether a part is strong or stiff e
 
 
 def options_for(cad, artifacts, units=None, max_turns=None, on_event=None, workspace=None, host=None):
-    """``host`` (the web session) adds run_fea and ask_user; the CLI has neither."""
+    """``host`` adds session tools for scanning, captures, commits, FEA and questions."""
     from .workspace import Workspace
 
     workspace = workspace or Workspace.load(cad, artifacts)

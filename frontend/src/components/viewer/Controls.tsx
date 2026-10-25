@@ -2,7 +2,7 @@ import { ChevronDown, Crosshair, Pause, Play } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toolLabel, type Deviation } from '../../lib/events';
 import { FEA_GRADIENT, feaNumber, type FeaResult } from '../../lib/fea';
-import { activeFea, generatedRevisions, heatmapOf, revisionNumber, useStore, type ViewMode } from '../../store';
+import { activeFea, selectedRevision, heatmapOf, geometryLabel, commitHistory, useStore, type ViewMode } from '../../store';
 import { Badge, FloatCard, cx, type Tone } from '../ui';
 
 const MODES: { id: ViewMode; label: string }[] = [
@@ -15,10 +15,7 @@ const MODES: { id: ViewMode; label: string }[] = [
 
 /** The generated revision the viewer is showing (the latest unless the user scrubbed back). */
 function useShownRevision() {
-  const revisions = useStore((s) => s.revisions);
-  const shownRevision = useStore((s) => s.shownRevision);
-  const generated = generatedRevisions(revisions);
-  return shownRevision === null ? generated.at(-1) : generated.find((r) => r.revision === shownRevision);
+  return useStore(selectedRevision);
 }
 
 /** The shown revision's heatmap for the followed part, if computed. */
@@ -45,7 +42,7 @@ export function ViewModeToggle() {
             role="radio"
             aria-checked={viewMode === m.id}
             disabled={!ready(m.id)}
-            title={ready(m.id) ? undefined : m.id.startsWith('fea-') ? 'Run FEA on this CAD revision first' : 'Available once this revision has been compared with the scan'}
+            title={ready(m.id) ? undefined : m.id.startsWith('fea-') ? 'Run FEA on this design first' : 'Available once this geometry has been compared with the scan'}
             onClick={() => { setViewMode(m.id); if (m.id.startsWith('fea-')) useStore.getState().setFollow(false); }}
             className={cx('h-7 rounded-md px-2.5 text-[12px] font-medium transition-colors',
               viewMode === m.id ? 'bg-ink text-white' : 'text-muted hover:bg-subtle hover:text-ink',
@@ -82,11 +79,11 @@ export function FollowControl() {
   return (
     <FloatCard>
       <button type="button" aria-pressed={followAgent} onClick={() => setFollow(!followAgent)}
-        title={followAgent ? 'The camera follows what Aida looks at. Drag to look around yourself.' : 'Follow what Aida looks at'}
+        title="Follow Aida’s inspection camera and slice planes. Drag the camera to stop following. Nothing moves until Aida inspects a view."
         className={cx('flex h-8 items-center gap-2 rounded-lg px-3 text-[12px] font-medium',
           followAgent ? 'text-accent-ink' : 'text-muted hover:text-ink')}>
         <Crosshair size={14} strokeWidth={1.75} aria-hidden />
-        {followAgent ? 'Following Aida' : 'Follow Aida'}
+        {followAgent ? 'Following Aida’s camera' : 'Follow Aida’s camera'}
       </button>
     </FloatCard>
   );
@@ -110,7 +107,7 @@ export function Legend() {
 
 function FeaLegend({ result, deformed }: { result: FeaResult; deformed: boolean }) {
   const animate = useStore((s) => s.feaAnimate);
-  const revisions = useStore((s) => s.revisions);
+  const feed = useStore((s) => s.feed);
   const setAnimate = useStore((s) => s.setFeaAnimate);
   // Where yield sits on the stress scale (the scale's top is the peak stress).
   const yieldAt = result.settings.yield_strength_mpa / result.max_von_mises_mpa;
@@ -122,7 +119,7 @@ function FeaLegend({ result, deformed }: { result: FeaResult; deformed: boolean 
           className="flex items-center gap-1 rounded px-1 text-[10.5px] font-normal text-accent-ink hover:bg-subtle">
           {animate ? <Pause size={11} aria-hidden /> : <Play size={11} aria-hidden />}{animate ? 'Pause' : 'Play'}
         </button>
-      ) : <span>rev {revisionNumber(revisions, result.revision)}</span>}
+      ) : <span>{geometryLabel({ feed }, result.revision)}</span>}
     </div>
     <div className="relative h-2 rounded-full" style={{ background: FEA_GRADIENT }}>
       {!deformed && yieldAt <= 1 && (
@@ -244,65 +241,40 @@ function Sparkline({ deviations }: { deviations: Deviation[] }) {
   );
 }
 
-/** Step through every generated CAD revision; play replays the build. Lives in the top bar. */
-export function RevisionScrubber() {
-  const revisions = useStore((s) => s.revisions);
-  const shownRevision = useStore((s) => s.shownRevision);
-  const showRevision = useStore((s) => s.showRevision);
+/** Two synchronized presentations of the same explicit commit history. */
+export function CommitScrubber() {
+  const feed = useStore((s) => s.feed);
+  const selected = useStore((s) => s.selectedCommit);
+  const current = useStore((s) => s.currentCommit);
+  const dirty = useStore((s) => s.dirty);
+  const select = useStore((s) => s.selectCommit);
   const [playing, setPlaying] = useState(false);
-  const generated = generatedRevisions(revisions);
-  const count = generated.length;
-  const index = shownRevision === null ? count - 1 : generated.findIndex((r) => r.revision === shownRevision);
-
+  const commits = commitHistory({ feed });
+  const entries = [...commits.map((c) => ({ number: c.number as number | null, label: `Commit ${c.number}: ${c.message}` })),
+    ...(dirty ? [{ number: null, label: 'Live changes' }] : [])];
+  const chosen = selected ?? (dirty ? null : current);
+  const index = Math.max(0, entries.findIndex((e) => e.number === chosen));
   useEffect(() => {
     if (!playing) return;
-    const timer = setInterval(() => {
-      const { revisions: all, shownRevision: current } = useStore.getState();
-      const list = generatedRevisions(all);
-      const at = current === null ? list.length - 1 : list.findIndex((r) => r.revision === current);
-      if (at >= list.length - 1) {
-        setPlaying(false);
-        showRevision(null); // back to following the latest revision
-      } else {
-        showRevision(list[at + 1].revision);
-      }
-    }, 700);
-    return () => clearInterval(timer);
-  }, [playing, showRevision]);
-
-  if (count < 2) {
-    return count === 1 ? <span className="font-mono text-[11px] text-muted">rev 1</span> : null;
-  }
-
-  return (
-    <div className="flex items-center gap-2" role="group" aria-label="CAD revisions">
-      <button
-        type="button"
-        aria-label={playing ? 'Pause' : 'Play the build from the first revision'}
-        onClick={() => {
-          if (!playing && index >= count - 1) showRevision(generated[0].revision);
-          setPlaying(!playing);
-        }}
-        className="flex size-6 shrink-0 items-center justify-center rounded-md text-ink hover:bg-subtle"
-      >
-        {playing ? <Pause size={12} fill="currentColor" strokeWidth={0} aria-hidden />
-          : <Play size={12} fill="currentColor" strokeWidth={0} aria-hidden />}
+    if (index >= entries.length - 1) { setPlaying(false); return; }
+    const timer = setTimeout(() => select(entries[index + 1].number), 700);
+    return () => clearTimeout(timer);
+  }, [playing, index, entries.length, select, feed]);
+  if (!entries.length) return null;
+  return <div className="flex min-w-0 items-center gap-2" role="group" aria-label="Commit history">
+    {entries.length > 1 && <>
+      <button type="button" aria-label={playing ? 'Pause commit playback' : 'Play commits'}
+        onClick={() => { if (!playing && index === entries.length - 1) select(entries[0].number); setPlaying(!playing); }}
+        className="flex size-6 shrink-0 items-center justify-center rounded-md hover:bg-subtle">
+        {playing ? <Pause size={12} /> : <Play size={12} />}
       </button>
-      <input
-        type="range"
-        min={0}
-        max={count - 1}
-        value={Math.max(0, index)}
-        aria-label="Revision"
-        aria-valuetext={`Revision ${index + 1} of ${count}`}
-        onChange={(e) => {
-          setPlaying(false);
-          const i = Number(e.target.value);
-          showRevision(i === count - 1 ? null : generated[i].revision);
-        }}
-        className="h-1 w-28 cursor-pointer accent-accent-ink"
-      />
-      <span className="shrink-0 font-mono text-[11px] text-muted">rev {index + 1}/{count}</span>
-    </div>
-  );
+      <input type="range" min={0} max={entries.length - 1} value={index} aria-label="Commit"
+        aria-valuetext={entries[index]?.label}
+        onChange={(e) => { setPlaying(false); select(entries[Number(e.target.value)].number); }}
+        className="h-1 w-28 shrink-0 cursor-pointer accent-accent-ink" />
+    </>}
+    <span className="max-w-56 truncate text-[11px] text-muted" title={entries[index]?.label}>{entries[index]?.label}</span>
+    {selected !== null && <button type="button" onClick={() => { setPlaying(false); select(null); }}
+      className="shrink-0 text-[11px] text-accent-ink">Back to live</button>}
+  </div>;
 }

@@ -1,7 +1,7 @@
 import { Check, ChevronDown } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { DEFAULT_FEA, FEA_STAGES, MATERIALS, feaBusy, governingSafety, meshChange, feaNumber as n, oppositeFace, type Face, type FeaJob, type FeaResult, type FeaSettings } from '../lib/fea';
-import { activeFea, revisionNumber, selectedRevision, useStore } from '../store';
+import { activeFea, canShowGeometry, geometryLabel, selectedRevision, useStore } from '../store';
 import { Spinner, cx } from './ui';
 
 const FACES: Face[] = ['x-', 'x+', 'y-', 'y+', 'z-', 'z+'];
@@ -10,8 +10,8 @@ const SECTION = 'text-[11px] font-semibold uppercase tracking-[0.04em] text-fain
 
 /** The number shown for a CAD revision, matching the revision scrubber. */
 function useRevisionNumber() {
-  const revisions = useStore((s) => s.revisions);
-  return (revision: number | undefined) => revisionNumber(revisions, revision);
+  const feed = useStore((s) => s.feed);
+  return (revision: number | undefined) => revision === undefined ? undefined : geometryLabel({ feed }, revision);
 }
 
 /**
@@ -29,7 +29,7 @@ export function FeaPanel() {
   const shownResult = useStore(activeFea);
   const label = useRevisionNumber();
   const busy = starting || feaBusy(job);
-  // The result for the revision in view; else the latest run's, flagged as another revision.
+  // The result for the revision in view; else the latest run's, flagged as different geometry.
   const result = shownResult ?? runs.at(-1)?.result ?? null;
   const ready = revision !== undefined && sessionUnits === 'mm' && !replay;
 
@@ -50,13 +50,13 @@ export function FeaPanel() {
 }
 
 /** Live stages of the running test. */
-function Progress({ job, number }: { job: FeaJob; number: number | undefined }) {
+function Progress({ job, number }: { job: FeaJob; number: string | undefined }) {
   const stages = FEA_STAGES.filter((s) => s.id !== 'checking mesh' || job.settings?.check_mesh);
   const current = stages.findIndex((s) => s.id === job.stage);
   return (
     <section aria-live="polite" className="rounded-md border border-accent/30 bg-accent-soft/50 p-3">
       <div className="mb-2 flex items-center justify-between font-semibold text-accent-ink">
-        <span>{job.source === 'agent' ? 'Aida is testing' : 'Testing'} rev {number}</span>
+        <span>{job.source === 'agent' ? 'Aida is testing' : 'Testing'} {number}</span>
         {job.settings && <span className="font-mono text-[11px] font-normal">{n(job.settings.force_n)} N · {job.settings.load_direction.toUpperCase()}</span>}
       </div>
       <ol className="flex flex-col gap-1.5">
@@ -78,7 +78,8 @@ function Progress({ job, number }: { job: FeaJob; number: number | undefined }) 
   );
 }
 
-function Results({ result, number, current }: { result: FeaResult; number: number | undefined; current: boolean }) {
+function Results({ result, number, current }: { result: FeaResult; number: string | undefined; current: boolean }) {
+  const available = useStore((s) => canShowGeometry(s, result.revision));
   const { value: safety, awayFromSupports } = governingSafety(result);
   const change = meshChange(result);
   const verdict = safety === null ? null : safety >= 2 ? { text: 'Passes', tone: 'text-ok bg-ok/10' }
@@ -92,10 +93,10 @@ function Results({ result, number, current }: { result: FeaResult; number: numbe
   return (
     <section className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
-        <h3 className={SECTION}>Result · rev {number}</h3>
+        <h3 className={SECTION}>Result · {number}</h3>
         {verdict && <span className={cx('rounded-full px-2 py-0.5 text-[11px] font-semibold', verdict.tone)}>{verdict.text}</span>}
       </div>
-      {!current && <p className="rounded-sm bg-warn/10 p-2 text-warn">The viewer shows another revision. This result is for rev {number}.</p>}
+      {!current && <p className="rounded-sm bg-warn/10 p-2 text-warn">The viewer shows different geometry. This result is for {number}.</p>}
       {result.setup_url && (
         <a href={result.setup_url} target="_blank" rel="noreferrer" title="Open the setup picture"
           className="block overflow-hidden rounded-md border border-line hover:border-accent">
@@ -114,8 +115,8 @@ function Results({ result, number, current }: { result: FeaResult; number: numbe
         <Metric label="Mesh check" value={change === null ? 'not run' : `${n(change * 100)}% change`} tone={change === null ? 'text-muted' : change > 0.1 ? 'text-warn' : 'text-ok'} />
       </div>
       <div className="flex gap-2">
-        <button type="button" onClick={() => show('fea-stress')} className="flex-1 rounded-sm border border-line-strong px-2 py-1.5 text-accent-ink hover:bg-subtle">View stress</button>
-        <button type="button" onClick={() => show('fea-displacement')} className="flex-1 rounded-sm border border-line-strong px-2 py-1.5 text-accent-ink hover:bg-subtle">Animate deformation</button>
+        <button type="button" disabled={!available} title={available ? undefined : 'This uncommitted geometry is no longer current.'} onClick={() => show('fea-stress')} className="flex-1 rounded-sm border border-line-strong px-2 py-1.5 text-accent-ink hover:bg-subtle">View stress</button>
+        <button type="button" disabled={!available} title={available ? undefined : 'This uncommitted geometry is no longer current.'} onClick={() => show('fea-displacement')} className="flex-1 rounded-sm border border-line-strong px-2 py-1.5 text-accent-ink hover:bg-subtle">Animate deformation</button>
       </div>
       <details className="group rounded-md border border-line text-[11px] leading-relaxed text-muted">
         <summary className="flex cursor-pointer list-none items-center gap-1 px-2.5 py-2 font-medium text-ink">
@@ -133,10 +134,11 @@ function Results({ result, number, current }: { result: FeaResult; number: numbe
 }
 
 /** Every finished run, so the design loop's progress is visible. Click a row to see it. */
-function Runs({ runs, label }: { runs: FeaJob[]; label: (revision: number | undefined) => number | undefined }) {
+function Runs({ runs, label }: { runs: FeaJob[]; label: (revision: number | undefined) => string | undefined }) {
   const shown = useStore((s) => selectedRevision(s)?.revision);
   const open = (revision: number) => {
     const s = useStore.getState();
+    if (!canShowGeometry(s, revision)) return;
     s.showRevision(revision);
     s.setViewMode('fea-stress');
   };
@@ -145,7 +147,7 @@ function Runs({ runs, label }: { runs: FeaJob[]; label: (revision: number | unde
       <h3 className={SECTION}>All runs</h3>
       <table className="w-full overflow-hidden rounded-md border border-line text-left text-[11.5px]">
         <thead className="bg-subtle text-[10px] text-muted">
-          <tr><th className="px-2.5 py-1.5 font-normal">Rev</th><th className="py-1.5 font-normal">Safety</th><th className="py-1.5 font-normal">Peak MPa</th><th className="py-1.5 pr-2.5 font-normal">Defl. mm</th></tr>
+          <tr><th className="px-2.5 py-1.5 font-normal">Design</th><th className="py-1.5 font-normal">Safety</th><th className="py-1.5 font-normal">Peak MPa</th><th className="py-1.5 pr-2.5 font-normal">Defl. mm</th></tr>
         </thead>
         <tbody className="font-mono">
           {runs.map((run) => {
@@ -170,7 +172,7 @@ function Runs({ runs, label }: { runs: FeaJob[]; label: (revision: number | unde
 }
 
 function NewTest({ ready, busy, revision, hasResult, reason }: {
-  ready: boolean; busy: boolean; revision: number | undefined; hasResult: boolean; reason: string;
+  ready: boolean; busy: boolean; revision: string | undefined; hasResult: boolean; reason: string;
 }) {
   const job = useStore((s) => s.feaJob);
   const runFea = useStore((s) => s.runFea);
@@ -187,7 +189,7 @@ function NewTest({ ready, busy, revision, hasResult, reason }: {
     <section className="flex flex-col gap-3 border-t border-line pt-3">
       <button type="button" onClick={() => setOpen(!expanded)} aria-expanded={expanded} disabled={!hasResult}
         className="flex items-center gap-1 text-left disabled:cursor-default">
-        <h3 className={SECTION}>Run a new test{revision === undefined ? '' : ` on rev ${revision}`}</h3>
+        <h3 className={SECTION}>Run a new test{revision === undefined ? '' : ` on ${revision}`}</h3>
         {hasResult && <ChevronDown size={13} className={cx('ml-auto text-faint transition-transform', !expanded && '-rotate-90')} aria-hidden />}
       </button>
       {!ready && <p className="rounded-md bg-warn/10 p-2 text-warn">{reason}</p>}
@@ -243,7 +245,7 @@ function NewTest({ ready, busy, revision, hasResult, reason }: {
           </fieldset>
           <button type="submit" disabled={!ready || busy}
             className="rounded-md bg-accent-ink px-3 py-2 font-semibold text-white hover:bg-accent-ink-hover disabled:cursor-not-allowed disabled:opacity-40">
-            {busy ? `Testing rev ${revision}…` : `Run FEA${revision === undefined ? '' : ` on rev ${revision}`}`}
+            {busy ? `Testing ${revision}…` : `Run FEA${revision === undefined ? '' : ` on ${revision}`}`}
           </button>
         </form>
       )}

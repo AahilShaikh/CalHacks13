@@ -65,7 +65,7 @@ export function ReplayList() {
   const [replays, setReplays] = useState<ReplaySummary[]>([]);
   useEffect(() => {
     listReplays()
-      .then((list) => setReplays(list.filter((r) => r.revisions > 0).slice(0, 5)))
+      .then((list) => setReplays(list.filter((r) => r.commits > 0).slice(0, 5)))
       .catch(() => setReplays([]));
   }, []);
   if (!replays.length) return null;
@@ -82,7 +82,7 @@ export function ReplayList() {
           <span className="flex min-w-0 flex-col gap-0.5">
             <span className="truncate text-[12.5px] text-ink">{r.prompt || 'Untitled run'}</span>
             <span className="font-mono text-[11px] text-faint">
-              {r.revisions} rev · {Math.max(1, Math.round(r.duration_s / 60))} min ·{' '}
+              {r.commits} commits · {Math.max(1, Math.round(r.duration_s / 60))} min ·{' '}
               {new Date(r.started_at * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}
             </span>
           </span>

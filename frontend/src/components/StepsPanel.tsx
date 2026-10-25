@@ -15,7 +15,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { duration, useActivity } from '../lib/activity';
 import { toolLabel, type Phase } from '../lib/events';
-import { useStore, type FeedItem, type ToolItem } from '../store';
+import { useStore, commitHistory, type FeedItem, type ToolItem } from '../store';
 import { FeaPanel } from './FeaPanel';
 import { IconButton, Spinner, cx } from './ui';
 
@@ -23,23 +23,30 @@ const PHASE_ICON: Record<Phase, LucideIcon> = { inspect: Eye, build: Hammer, ver
 const PHASE_NAME: Record<Phase, string> = { inspect: 'Inspect', build: 'Build', verify: 'Verify' };
 
 type Note = Extract<FeedItem, { kind: 'note' }>;
-type Version = Extract<FeedItem, { kind: 'version' }>;
-type Group = { key: number; prompt: string | null; steps: (ToolItem | Note)[]; version: Version | null };
+type Commit = Extract<FeedItem, { kind: 'commit' }>;
+type Group = { key: number; prompt: string | null; steps: (ToolItem | Note)[]; commit: Commit | null };
 
-/** Split the feed at each prompt the user sent; agent text goes to the reply card instead. */
+/** A commit closes a group of tool steps, regardless of prompt boundaries. */
 function groupFeed(feed: FeedItem[]): Group[] {
-  const groups: Group[] = [];
-  for (const item of feed) {
-    if (item.kind === 'user') {
-      groups.push({ key: item.id, prompt: item.text, steps: [], version: null });
-      continue;
+  const groups: Group[] = commitHistory({ feed }).map((commit) => {
+    const steps: (ToolItem | Note)[] = [];
+    for (const event of commit.stepEvents) {
+      if (event.type === 'tool_call') {
+        const tool = feed.find((i): i is ToolItem => i.kind === 'tool' && i.name === event.name && i.startedAt === event.at);
+        if (tool) steps.push(tool);
+      } else if (event.type === 'user_prompt' || event.type === 'notice') {
+        steps.push({ kind: 'note', id: -event.seq, text: event.text ?? '', tone: 'muted' });
+      }
     }
-    if (item.kind === 'agent' || item.kind === 'question') continue; // shown in the agent dock
-    if (!groups.length) groups.push({ key: 0, prompt: null, steps: [], version: null });
-    const group = groups[groups.length - 1];
-    if (item.kind === 'version') group.version = item;
-    else group.steps.push(item);
+    return { key: commit.id, prompt: `Commit ${commit.number}: ${commit.message}`, steps, commit };
+  });
+  const boundary = feed.findLastIndex((i) => i.kind === 'commit' || (i.kind === 'note' && i.text.startsWith('Restored commit ')));
+  const steps: (ToolItem | Note)[] = [];
+  for (const item of feed.slice(boundary + 1)) {
+    if (item.kind === 'user') steps.push({ kind: 'note', id: item.id, text: item.text, tone: 'muted' });
+    else if (item.kind === 'note' || (item.kind === 'tool' && item.name !== 'commit_changes')) steps.push(item);
   }
+  if (steps.length) groups.push({ key: -1, prompt: 'Live activity', steps, commit: null });
   return groups;
 }
 
@@ -50,7 +57,14 @@ export function StepsPanel() {
   const tab = useStore((s) => s.panelTab);
   const setTab = useStore((s) => s.setPanelTab);
   const feed = useStore((s) => s.feed);
-  const groups = useMemo(() => groupFeed(feed), [feed]);
+  const dirty = useStore((s) => s.dirty);
+  const groups = useMemo(() => {
+    const groups = groupFeed(feed);
+    const live = groups.find((g) => g.commit === null);
+    if (live) live.prompt = dirty ? 'Live changes' : 'Live activity';
+    else if (dirty) groups.push({ key: -1, prompt: 'Live changes', steps: [], commit: null });
+    return groups;
+  }, [feed, dirty]);
   const toolCount = useMemo(() => feed.filter((i) => i.kind === 'tool').length, [feed]);
   const running = feed.some((i) => i.kind === 'tool' && i.status === 'running');
 
@@ -99,7 +113,7 @@ function EmptySteps() {
       <div className="flex flex-col gap-3">
         <p className="text-[13px] leading-[1.5] text-muted">
           Every step Aida takes shows up here as it happens: what it inspects, what it builds, and how each
-          revision checks out.
+          commit checks out.
         </p>
         <ul className="flex flex-col gap-2">
           {(['inspect', 'build', 'verify'] as const).map((phase) => {
@@ -164,48 +178,38 @@ function StepList({ groups, feed }: { groups: Group[]; feed: FeedItem[] }) {
   );
 }
 
-/** A prompt you sent: click to show or hide its steps. Its version can be viewed or restored. */
+/** Select the same checkpoint as the top-bar slider, or expand its tool steps. */
 function GroupHeader({ group, open, running, onToggle }: {
   group: Group;
   open: boolean;
   running: boolean;
   onToggle: () => void;
 }) {
-  const tools = group.steps.filter((step) => step.kind === 'tool').length;
-  const outcome = group.steps.findLast((step): step is Note => step.kind === 'note' && step.tone !== 'muted');
-  const failed = outcome?.tone === 'error';
-  return (
-    <div className="flex flex-col gap-1 px-3 pb-1">
-      <button type="button" onClick={onToggle} aria-expanded={open}
-        className="group flex w-full items-start gap-1.5 rounded-md bg-subtle px-2 py-1.5 text-left hover:bg-line/60">
-        <ChevronRight size={13} aria-hidden
-          className={cx('mt-[3px] shrink-0 text-faint transition-transform', open && 'rotate-90')} />
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className={cx('text-[12px] leading-[1.45] text-ink', open ? 'line-clamp-3' : 'line-clamp-1')}
-            title={group.prompt ?? undefined}>
-            {group.prompt}
-          </span>
-          <span className="flex items-center gap-1.5 text-[11px] text-faint">
-            {running && <Spinner size={11} className="text-accent" />}
-            <span>{tools} step{tools === 1 ? '' : 's'}</span>
-            {outcome && !running && (
-              <span className={cx('truncate', failed && 'text-error')}>· {outcome.text}</span>
-            )}
-          </span>
-        </span>
+  const selected = useStore((s) => s.selectedCommit);
+  const current = useStore((s) => s.currentCommit);
+  const dirty = useStore((s) => s.dirty);
+  const select = useStore((s) => s.selectCommit);
+  const active = group.commit ? (selected ?? (dirty ? null : current)) === group.commit.number : selected === null && dirty;
+  return <div className="flex flex-col gap-1 px-3 pb-1">
+    <div className={cx('flex items-start rounded-md', active ? 'bg-accent-soft' : 'bg-subtle')}>
+      <button type="button" onClick={onToggle} aria-expanded={open} aria-label={`Expand ${group.prompt}`}
+        className="p-2"><ChevronRight size={13} className={cx(open && 'rotate-90')} /></button>
+      <button type="button" onClick={() => select(group.commit?.number ?? null)} aria-pressed={active}
+        className="min-w-0 flex-1 px-1 py-1.5 text-left text-[12px] leading-relaxed">
+        {group.prompt}{running && <Spinner size={11} className="ml-1 inline text-accent" />}
       </button>
-      {group.version && <VersionRow version={group.version} />}
     </div>
-  );
+    {group.commit && <CommitRow commit={group.commit} />}
+  </div>;
 }
 
-/** The design as this prompt left it: view it in 3D, or go back to it. */
-function VersionRow({ version }: { version: Version }) {
-  const current = useStore((s) => s.currentVersion === version.number);
-  const shown = useStore((s) => version.meshRevision !== null && s.shownRevision === version.meshRevision);
-  const latestShown = useStore((s) => s.shownRevision === null);
-  const showRevision = useStore((s) => s.showRevision);
-  const restore = useStore((s) => s.restoreVersion);
+/** Previewing is separate from restoring the editable workspace. */
+function CommitRow({ commit }: { commit: Commit }) {
+  const current = useStore((s) => s.currentCommit === commit.number);
+  const shown = useStore((s) => s.selectedCommit === commit.number);
+  const dirty = useStore((s) => s.dirty);
+  const selectCommit = useStore((s) => s.selectCommit);
+  const restore = useStore((s) => s.restoreCommit);
   const { working } = useActivity();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -219,22 +223,22 @@ function VersionRow({ version }: { version: Version }) {
     <div className="flex items-center gap-1.5 pl-[22px] text-[11px]">
       <span className={cx('rounded-sm px-1.5 py-px font-mono font-medium',
         current ? 'bg-accent-soft text-accent-ink' : 'bg-subtle text-muted')}>
-        v{version.number}
+        Commit {commit.number}
       </span>
-      {current && <span className="text-faint">current</span>}
+      {current && <span className="text-faint">{dirty ? 'base' : 'current'}</span>}
       <span className="flex-1" />
-      {version.meshRevision !== null && (
+      {commit.meshRevision !== null && (
         <button type="button" aria-pressed={shown}
-          onClick={() => showRevision(shown || (current && latestShown) ? null : version.meshRevision)}
+          onClick={() => selectCommit(shown ? null : commit.number)}
           className={cx('rounded-sm px-1.5 py-0.5 hover:bg-subtle', shown ? 'font-medium text-accent-ink' : 'text-muted hover:text-ink')}>
           {shown ? 'Viewing' : 'View'}
         </button>
       )}
-      {!current && (
+      {(!current || dirty) && (
         <button
           type="button"
           disabled={working || busy}
-          title={working ? 'Wait for Aida to finish, or stop it' : 'Put the design back to this version (later versions are kept)'}
+          title={working ? 'Wait for Aida to finish, or stop it' : 'Put the design back to this commit (later commits are kept)'}
           onClick={async () => {
             if (!confirming) {
               setConfirming(true);
@@ -242,14 +246,14 @@ function VersionRow({ version }: { version: Version }) {
             }
             setConfirming(false);
             setBusy(true);
-            await restore(version.number);
+            await restore(commit.number);
             setBusy(false);
           }}
           className={cx('flex items-center gap-1 rounded-sm px-1.5 py-0.5 disabled:cursor-not-allowed disabled:opacity-40',
             confirming ? 'bg-accent-ink font-medium text-white' : 'text-muted hover:bg-subtle hover:text-ink')}
         >
           {busy ? <Spinner size={11} /> : <RotateCcw size={11} strokeWidth={2} aria-hidden />}
-          {confirming ? `Restore v${version.number}?` : 'Restore'}
+          {confirming ? `Restore commit ${commit.number}?` : 'Restore'}
         </button>
       )}
     </div>

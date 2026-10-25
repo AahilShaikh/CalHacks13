@@ -763,11 +763,14 @@ def agent_event_bridge(session: CadSession):
                                      'url': f'/api/v1/cad-sessions/{session.id}/files/{name}'})
                     break
         session.publish(event)
+        if event.get('type') == 'workspace_state' and session.workspace is not None:
+            from .commits import publish_working_state
+            publish_working_state(session)
 
     return bridge
 
 
-def snapshot_hook(cad, session: CadSession, workspace=None):
+def snapshot_hook(cad, session: CadSession, workspace=None, strict=False):
     """Export the generated CAD and publish the new GLB scene (plus per-part heatmaps)."""
     async def snapshot():
         revision = len(session.meshes)
@@ -788,6 +791,8 @@ def snapshot_hook(cad, session: CadSession, workspace=None):
                         await cad.snapshot_stl(target, object_name)
                         exported[object_name] = target
                     except Exception:
+                        if strict:
+                            raise
                         exported[object_name] = None  # 2D sketches etc. cannot become a mesh
                 return exported[object_name]
 
@@ -807,6 +812,8 @@ def snapshot_hook(cad, session: CadSession, workspace=None):
                     if stl is not None:
                         items.append((name, stl, [(f'{part}|{part}', IDENTITY)]))
             if not items:
+                if strict:
+                    raise ValueError('Could not mesh the current design; commit was not saved.')
                 session.publish({'type': 'mesh_skipped',
                                  'reason': 'generated objects could not be meshed'})
                 return
@@ -846,6 +853,8 @@ def snapshot_hook(cad, session: CadSession, workspace=None):
                     if stl is not None:
                         await publish_heatmap(session, revision, part, reference, stl)
         except Exception as exc:
+            if strict:
+                raise
             session.publish({'type': 'mesh_skipped', 'reason': str(exc)[:400]})
         finally:
             session.set_stage('agent_running')
@@ -911,6 +920,15 @@ async def run_cad_session(session: CadSession):
 
             options = options_for(cad, session.artifacts, session.units, on_event=bridge,
                                   workspace=workspace, host=SessionHost(session))
+            from .commits import list_commits, public_commit, publish_working_state
+            # Commit directories are authoritative even if the convenience event log was interrupted.
+            recorded = {e['number'] for e in session.events if e['type'] == 'commit'}
+            for commit in list_commits(session.artifacts.root):
+                if commit['number'] not in recorded:
+                    for event in commit['steps']:
+                        session.publish({k: v for k, v in event.items() if k != 'seq'})
+                    session.publish({'type': 'commit', **public_commit(commit)})
+            publish_working_state(session)
             client = await connect_agent(session, options, workspace)
             try:
                 session.client = client
@@ -919,15 +937,9 @@ async def run_cad_session(session: CadSession):
                     prompt = await session.turns.get()
                     if prompt is None:
                         break
-                    asked = prompt
                     prompt = compose_turn(session, prompt)
                     session.set_stage('agent_running')
                     final = await run_turn(client, prompt, session.artifacts, on_event=bridge)
-                    try:
-                        from .versions import save_version
-                        save_version(session, asked)  # one version per prompt that changed the design
-                    except OSError as exc:
-                        session.artifacts.log('version_error', {'error': str(exc)})
                     if getattr(final, 'session_id', None):
                         # Reopening the workspace resumes this conversation.
                         update_meta(session.artifacts.root, agent_session=final.session_id)
@@ -1101,6 +1113,9 @@ async def add_cad_meshes(session_id: str, mesh: list[UploadFile] = File(...), un
             added['summary'] += ' Their units are unknown: do not claim physical dimensions.'
         for event in finish_ingest(session, added):
             session.publish(event)
+        if session.workspace is not None:
+            from .commits import publish_working_state
+            publish_working_state(session)
     return {'parts': [spec['name'] for spec in added['specs']], 'notes': added['notes']}
 
 

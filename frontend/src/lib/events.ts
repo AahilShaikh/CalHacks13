@@ -43,8 +43,10 @@ export type ServerEvent = Stamp &
     | ({ type: 'model_state' } & ModelState)
     | ({ type: 'workspace_state' } & WorkspaceState)
     | { type: 'references'; items: ReferenceItem[] }
-    | { type: 'version'; number: number; prompt: string; mesh_revision: number | null }
-    | { type: 'version_restored'; number: number }
+    | { type: 'workspace_units'; units: 'mm' }
+    | { type: 'commit'; number: number; message: string; geometry_id: number | null; geometry: { revision: number; triangles: number; extents: number[]; parts?: string[] } | null; steps: { type: string; at: number; seq: number; name?: string; text?: string }[] }
+    | { type: 'commit_restored'; number: number }
+    | { type: 'working_state'; current_commit: number | null; dirty: boolean; geometry_id: number | null }
     | ({ type: 'fea_started' | 'fea_done' | 'fea_failed' } & FeaJob)
     | { type: 'fea_stage'; analysis_id: string; stage: string }
     | { type: 'question'; id: string; questions: Question[] }
@@ -131,6 +133,7 @@ const fmt = (value: unknown) =>
 export function argSummary(tool: string, args: Record<string, unknown>): string {
   const a = args ?? {};
   if (tool === 'execute') return 'python';
+  if (tool === 'capture_angle' && a.angle !== undefined) return `${fmt(a.angle)}°`;
   if (a.slice_axis !== undefined && a.slice_at !== undefined) return `${a.slice_axis} = ${fmt(a.slice_at)}`;
   if (a.slice_axis !== undefined) return `along ${a.slice_axis}`;
   if (a.axis !== undefined && a.at !== undefined) return `${a.axis} = ${fmt(a.at)}`;
@@ -298,7 +301,7 @@ export function resultSummary(tool: string, text: string): string {
   const dev = deviationFrom(tool, text);
   if (dev) {
     const parts = [`p95 ${dev.p95.toFixed(3)}`, dev.verdict];
-    if (dev.revision !== undefined) parts.unshift(`rev ${dev.revision}`);
+    if (dev.revision !== undefined) parts.unshift(`model operation ${dev.revision}`);
     if (dev.trend && dev.trend !== 'first') parts.push(dev.trend);
     return parts.join(' · ');
   }
@@ -311,6 +314,13 @@ export function resultSummary(tool: string, text: string): string {
     return `${view} · ${round(width)} × ${round(height)}${units && units !== 'unknown' ? ` ${units}` : ''} in frame`;
   }
   const data = tryJson(text);
+  if (tool === 'scan_object' && data?.dimensions_mm) {
+    const d = data.dimensions_mm;
+    return `${data.parts?.join(', ') ?? 'Scan'} · ${round(d.width_x)} × ${round(d.depth_y)} × ${round(d.height_z)} mm`;
+  }
+  if (tool === 'capture_angle' && typeof data?.measured_angle === 'number') {
+    return `${round(data.measured_angle)}° · photograph saved`;
+  }
   if (tool === 'slice_mesh' && text.includes('"plane"')) {
     const offset = numField(after(text, 'plane'), 'offset');
     const axis = after(text, 'plane').match(/"axis":\s*"([xyz])"/)?.[1];
@@ -323,10 +333,10 @@ export function resultSummary(tool: string, text: string): string {
   }
   if (tool === 'run_fea' && data && typeof data.peak_von_mises_mpa === 'number') {
     const safety = typeof data.safety_factor_vs_yield === 'number' ? ` · safety ${round(data.safety_factor_vs_yield)}×` : '';
-    return `rev ${data.revision} · peak ${round(data.peak_von_mises_mpa)} MPa${safety}`;
+    return `Peak ${round(data.peak_von_mises_mpa)} MPa${safety}`;
   }
   if (data && typeof data.action === 'string') {
-    const parts = [data.revision !== undefined ? `rev ${data.revision}` : null, data.action.replaceAll('_', ' ')];
+    const parts = [data.revision !== undefined ? `model operation ${data.revision}` : null, data.action.replaceAll('_', ' ')];
     if (Array.isArray(data.features)) parts.push(`${data.features.length} features`);
     return parts.filter(Boolean).join(' · ');
   }
@@ -371,6 +381,8 @@ const TOOL_LABEL: Record<string, string> = {
   assembly_edit_feature: 'Edit layout',
   assembly_undo: 'Undo layout change',
   assembly_check: 'Check assembly',
+  scan_object: 'Scan turntable object',
+  capture_angle: 'Photograph object',
   run_fea: 'Run FEA',
   fea_faces: 'List faces for FEA',
   ask_user: 'Ask you',

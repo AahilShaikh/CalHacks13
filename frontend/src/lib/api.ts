@@ -35,7 +35,7 @@ export type WorkspaceSummary = {
   named: boolean;
   prompt: string;
   parts: string[];
-  revisions: number;
+  commits: number;
   created_at: number;
   updated_at: number;
   thumbnail: string | null;
@@ -61,10 +61,10 @@ export async function openWorkspace(id: string) {
   return json<{ session_id: string; reopened: boolean; units?: string | null }>(
     await fetch(`/api/v1/workspaces/${encodeURIComponent(id)}/open`, { method: 'POST' }));
 }
-/** Put the open workspace back to a saved version (one is saved per prompt that changed it). */
-export async function restoreVersion(id: string, number: number) {
+/** Put the open workspace back to a saved commit (explicitly saved by Aida). */
+export async function restoreCommit(id: string, number: number) {
   return json<{ restored: number; notes: string[] }>(await fetch(
-    `/api/v1/workspaces/${encodeURIComponent(id)}/versions/${number}/restore`, { method: 'POST' }));
+    `/api/v1/workspaces/${encodeURIComponent(id)}/commits/${number}/restore`, { method: 'POST' }));
 }
 
 export async function putThumbnail(id: string, png: Blob) {
@@ -135,7 +135,7 @@ export const downloadUrl = (sessionId: string, kind: DownloadKind) =>
 export type ReplaySummary = {
   id: string;
   prompt: string;
-  revisions: number;
+  commits: number;
   events: number;
   started_at: number;
   duration_s: number;

@@ -1,4 +1,4 @@
-"""What the agent's session-bound tools (run_fea, ask_user) do in a live web session."""
+"""Session-bound Aida tools: scanning, photographs, commits, FEA and questions."""
 import uuid
 
 from ..analysis.settings import FeaSettings
@@ -37,6 +37,19 @@ class SessionHost:
     def __init__(self, session):
         self.session = session
 
+    async def commit_changes(self, message: str) -> dict:
+        from .commits import save_commit
+        from .cad_sessions import snapshot_hook
+
+        async with self.session.parts_lock:
+            async with self.session.cad.lock:
+                if self.session.workspace.objects() and self.session.cad.on_execute is not None:
+                    # Refresh even when the preceding operation only changed parameters.
+                    await snapshot_hook(self.session.cad, self.session, self.session.workspace, strict=True)()
+                commit = save_commit(self.session, message)
+        return {'committed': True, **{k: commit[k] for k in ('number', 'message', 'at', 'geometry_id')}} if commit else {
+            'committed': False, 'message': 'Nothing to commit.'}
+
     async def run_fea(self, args: dict) -> dict:
         from .fea import FeaError, start_analysis
 
@@ -49,9 +62,10 @@ class SessionHost:
         except FeaError as exc:
             raise ValueError(str(exc)) from exc
         await job['done'].wait()
-        # The number the user sees: the viewer counts generated revisions from 1.
-        job['viewer_revision'] = sum(1 for m in self.session.meshes
-                                     if m['generated'] and m['revision'] <= job['revision'])
+        from .commits import list_commits
+        commit = next((c for c in reversed(list_commits(self.session.artifacts.root))
+                       if c['geometry_id'] == job['revision']), None)
+        job['design'] = f"Commit {commit['number']}" if commit else 'Live geometry'
         return job
 
     def _latest(self) -> int:

@@ -36,7 +36,7 @@ from .cad_sessions import CadSessionManager, router as cad_sessions_router
 from .fea import router as fea_router
 from .jobs import JobManager
 from .replays import router as replays_router
-from .versions import router as versions_router
+from .commits import router as commits_router
 from .workspaces import router as workspaces_router
 from .turntable import router as turntable_router
 from .camera import router as camera_router
@@ -177,7 +177,7 @@ app.include_router(camera_router)
 app.include_router(acquisition_router)
 app.include_router(replays_router)
 app.include_router(workspaces_router)
-app.include_router(versions_router)
+app.include_router(commits_router)
 # The scanner setup page stays reachable when the built studio serves the root.
 @app.get('/setup.html', include_in_schema=False)
 def scanner_setup():

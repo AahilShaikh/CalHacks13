@@ -68,10 +68,10 @@ def list_replays():
                 continue
             events = _read_events(folder)
             prompt = next((e.get('text') for e in events if e.get('type') == 'user_prompt'), '')
-            revisions = sum(1 for e in events if e.get('type') == 'mesh' and e.get('generated'))
+            commits = sum(1 for e in events if e.get('type') == 'commit')
             if not events:
                 continue
-            out.append({'id': folder.name, 'prompt': prompt, 'revisions': revisions,
+            out.append({'id': folder.name, 'prompt': prompt, 'commits': commits,
                         'events': len(events), 'started_at': events[0].get('at'),
                         'duration_s': round(events[-1].get('at', 0) - events[0].get('at', 0), 1)})
     return sorted(out, key=lambda r: r['started_at'] or 0, reverse=True)

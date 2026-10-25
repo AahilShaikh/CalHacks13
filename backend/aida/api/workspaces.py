@@ -42,19 +42,6 @@ def _first_prompt(folder: Path) -> str:
     return ''
 
 
-def _revisions(folder: Path) -> int:
-    """Generated CAD revisions, counted from the event log (scans are revisions too)."""
-    log = folder / REPLAY_LOG
-    if not log.is_file():
-        return 0
-    count = 0
-    with log.open(encoding='utf-8') as lines:
-        for line in lines:
-            if '"type": "mesh"' in line and '"generated": true' in line:
-                count += 1
-    return count
-
-
 def summary(folder: Path) -> dict:
     """What the home screen shows for one workspace."""
     from ..workspace import read_workspace
@@ -71,7 +58,7 @@ def summary(folder: Path) -> dict:
         'named': bool(name),
         'prompt': prompt,
         'parts': parts,
-        'revisions': _revisions(folder),
+        'commits': len(list((folder / 'commits').glob('c*/commit.json'))),
         'created_at': meta.get('created_at') or folder.stat().st_ctime,
         'updated_at': max([*stamps, meta.get('updated_at') or 0]) or folder.stat().st_mtime,
         'thumbnail': f'/api/v1/workspaces/{folder.name}/thumbnail.png' if (folder / THUMBNAIL).is_file() else None,

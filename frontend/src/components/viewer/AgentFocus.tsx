@@ -121,7 +121,7 @@ export function AgentCamera({ x }: { x: number }) {
   const key = spec && tool ? `${tool.id}|${x}` : null;
 
   useEffect(() => {
-    if (!spec) return;
+    if (!spec) { flight.current = null; return; }
     const target = toWorld(spec.focal).add(new THREE.Vector3(x, 0, 0));
     const dir = toWorld(spec.dir).normalize();
     // Orbit controls keep world Y up; nudge straight-down/up views so the agent's

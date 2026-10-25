@@ -1,7 +1,7 @@
 import { Bounds, GizmoHelper, GizmoViewport, OrbitControls, useBounds } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { Suspense, useEffect, useRef } from 'react';
-import { activeFea, activeTool, generatedRevisions, heatmapOf, referenceRevision, useStore } from '../../store';
+import { activeFea, activeTool, selectedRevision, generatedRevisions, heatmapOf, referenceRevision, useStore } from '../../store';
 import { AgentCamera, AgentPlanes } from './AgentFocus';
 import { FeaDeformation } from './FeaDeformation';
 import { FeaMarkers } from './FeaMarkers';
@@ -19,7 +19,7 @@ function Refit({ token }: { token: string }) {
 
 function Models() {
   const revisions = useStore((s) => s.revisions);
-  const shownRevision = useStore((s) => s.shownRevision);
+  const shown = useStore(selectedRevision);
   const viewMode = useStore((s) => s.viewMode);
   const previews = useStore((s) => s.meshPreviews);
   const workspace = useStore((s) => s.workspace);
@@ -38,7 +38,6 @@ function Models() {
 
   const reference = referenceRevision(revisions);
   const generated = generatedRevisions(revisions);
-  const shown = shownRevision === null ? generated.at(-1) : generated.find((r) => r.revision === shownRevision);
   // Keep showing the last loaded revision while the next one downloads.
   const lastShown = useRef<string | null>(null);
   const fallback = lastShown.current && lastShown.current !== shown?.url ? lastShown.current : null;

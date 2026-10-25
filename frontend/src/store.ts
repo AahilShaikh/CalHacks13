@@ -43,8 +43,8 @@ export type FeedItem =
   | { kind: 'agent'; id: number; text: string }
   | { kind: 'user'; id: number; text: string }
   | { kind: 'note'; id: number; text: string; tone: 'muted' | 'error' | 'ok' }
-  /** The design as it stood after a prompt: restorable, shown in the viewer at meshRevision. */
-  | { kind: 'version'; id: number; number: number; meshRevision: number | null }
+  /** An explicit workspace checkpoint and its immutable geometry artifact. */
+  | { kind: 'commit'; id: number; number: number; message: string; meshRevision: number | null; geometry?: Revision; stepEvents: { type: string; at: number; seq: number; name?: string; text?: string }[] }
   /** Questions Aida asked (ask_user); ``answer`` is the user's next message. */
   | { kind: 'question'; id: number; qid: string; questions: Question[]; answer?: string }
   | ToolItem;
@@ -121,8 +121,12 @@ type State = {
   hiddenParts: string[];
   /** Scans and photos the agent can use, as the server last reported them. */
   references: ReferenceItem[];
-  /** The version the design is at now: the latest saved, or the one restored. */
-  currentVersion: number | null;
+  /** The checkpoint the editable workspace is based on. */
+  currentCommit: number | null;
+  selectedCommit: number | null;
+  dirty: boolean;
+  liveGeometryId: number | null;
+  selectCommit: (number: number | null) => void;
   /** A tool card the user clicked to see in 3D; null follows the agent (if followAgent). */
   focusId: number | null;
   followAgent: boolean;
@@ -140,7 +144,7 @@ type State = {
   /** Stop following the open workspace (it keeps running on the server until idle). */
   leaveWorkspace: () => void;
   renameWorkspace: (name: string) => Promise<void>;
-  restoreVersion: (number: number) => Promise<void>;
+  restoreCommit: (number: number) => Promise<void>;
   addMeshes: (files: File[]) => Promise<void>;
   selectPart: (part: string | null) => void;
   setUnits: (units: 'mm' | '') => void;
@@ -198,7 +202,7 @@ const REPLAY_MAX_GAP_S = 3;
 const freshSession = {
   error: null, feed: [], revisions: [], deviations: [], features: [], cost: 0, workspace: null, selectedPart: null,
   changedParams: [], pendingCode: null, shownRevision: null, focusId: null, followAgent: true, replyDismissedId: null,
-  hiddenParts: [], references: [], currentVersion: null,
+  hiddenParts: [], references: [], currentCommit: null, selectedCommit: null, dirty: false, liveGeometryId: null,
   stage: '', startedAt: null, endedAt: null, lastEventAt: null,
   sessionUnits: null, feaJob: null, feaRuns: [], feaStarting: false, feaError: null, viewMode: 'overlay',
   question: null,
@@ -245,7 +249,7 @@ export const useStore = create<State>((set, get) => ({
   replyDismissedId: null,
   hiddenParts: [],
   references: [],
-  currentVersion: null,
+  currentCommit: null, selectedCommit: null, dirty: false, liveGeometryId: null,
   focusId: null,
   followAgent: true,
   replay: null,
@@ -304,15 +308,15 @@ export const useStore = create<State>((set, get) => ({
     })();
     return opening;
   },
-  restoreVersion: async (number) => {
+  restoreCommit: async (number) => {
     const { sessionId } = get();
     if (!sessionId) return;
     set({ error: null });
     try {
-      await whileOpen(() => api.restoreVersion(sessionId, number));
-      set({ shownRevision: null }); // follow the restored shape
+      await whileOpen(() => api.restoreCommit(sessionId, number));
+      set({ shownRevision: null, selectedCommit: null }); // follow the restored shape
     } catch (err) {
-      set({ error: `Could not restore version ${number}: ${(err as Error).message}` });
+      set({ error: `Could not restore commit ${number}: ${(err as Error).message}` });
     }
   },
   leaveWorkspace: () => {
@@ -405,7 +409,7 @@ export const useStore = create<State>((set, get) => ({
   apply: (events) =>
     set((s) => {
       let { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error, endedAt,
-        references, workspaceName, currentVersion, feaJob, feaRuns, feaError, question, panelTab, stepsOpen } = s;
+        references, workspaceName, currentCommit, dirty, liveGeometryId, sessionUnits, feaJob, feaRuns, feaError, question, panelTab, stepsOpen } = s;
       feed = [...feed];
       // FEA run to show as stress once applied; only for fresh events, not a reopened history.
       let showFea: number | null = null;
@@ -461,6 +465,7 @@ export const useStore = create<State>((set, get) => ({
             break;
           }
           case 'mesh':
+            if (e.generated) liveGeometryId = e.revision;
             revisions = [...revisions.filter((r) => r.revision !== e.revision), e].sort((a, b) => a.revision - b.revision);
             break;
           case 'model_state':
@@ -491,16 +496,27 @@ export const useStore = create<State>((set, get) => ({
           case 'notice':
             feed.push(note(e.text, 'muted'));
             break;
+          case 'workspace_units':
+            sessionUnits = e.units;
+            break;
           case 'references':
             references = e.items;
             break;
-          case 'version':
-            feed.push({ kind: 'version', id: nextId++, number: e.number, meshRevision: e.mesh_revision });
-            currentVersion = e.number;
+          case 'commit':
+            feed = [...feed.filter((i) => i.kind !== 'commit' || i.number !== e.number), { kind: 'commit', id: nextId++, number: e.number, message: e.message, meshRevision: e.geometry_id, stepEvents: e.steps,
+              geometry: e.geometry ? { ...e.geometry, generated: true,
+                url: s.sessionId && !s.replay ? `/api/v1/workspaces/${encodeURIComponent(s.sessionId)}/commits/${e.number}/mesh.glb`
+                  : revisions.find((r) => r.revision === e.geometry_id)?.url ?? '' } : undefined }];
+            currentCommit = e.number;
             break;
-          case 'version_restored':
-            feed.push(note(`Restored version ${e.number}`, 'ok'));
-            currentVersion = e.number;
+          case 'working_state':
+            currentCommit = e.current_commit;
+            dirty = e.dirty;
+            liveGeometryId = e.geometry_id;
+            break;
+          case 'commit_restored':
+            feed.push(note(`Restored commit ${e.number}`, 'ok'));
+            currentCommit = e.number;
             break;
           case 'heatmap_skipped':
           case 'mesh_skipped':
@@ -570,20 +586,29 @@ export const useStore = create<State>((set, get) => ({
         }
       }
       const lastEventAt = events.length ? events[events.length - 1].at : s.lastEventAt;
-      const after = { ...s, revisions, feaRuns };
+      const after = { ...s, feed, revisions, feaRuns, liveGeometryId };
       let viewMode = s.viewMode.startsWith('fea-') && !activeFea(after) ? 'overlay' : s.viewMode;
       // A run that just finished on the revision in view: show its stress.
       if (showFea !== null && selectedRevision(after)?.revision === showFea && !viewMode.startsWith('fea-')) {
         viewMode = 'fea-stress';
       }
       return { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error,
-        endedAt, lastEventAt, references, workspaceName, currentVersion, viewMode, feaJob, feaRuns, feaError, question,
+        endedAt, lastEventAt, references, workspaceName, currentCommit, dirty, liveGeometryId, sessionUnits, viewMode, feaJob, feaRuns, feaError, question,
         panelTab, stepsOpen };
     }),
 
-  showRevision: (shownRevision) => set((s) => ({ shownRevision,
-    ...(s.viewMode.startsWith('fea-') && !activeFea({ ...s, shownRevision }) ? { viewMode: 'overlay' as const } : {}),
-  })),
+  selectCommit: (selectedCommit) => set((s) => {
+    const commit = selectedCommit === null ? null : commitHistory(s).find((c) => c.number === selectedCommit);
+    const shownRevision = commit ? commit.meshRevision ?? -1 : null;
+    return { selectedCommit, shownRevision,
+      ...(s.viewMode.startsWith('fea-') && !activeFea({ ...s, selectedCommit, shownRevision }) ? { viewMode: 'overlay' as const } : {}) };
+  }),
+  showRevision: (revision) => {
+    const s = get();
+    const commit = commitHistory(s).find((c) => c.meshRevision === revision);
+    if (revision === null || commit) s.selectCommit(commit?.number ?? null);
+    else if (revision === s.liveGeometryId) s.selectCommit(null);
+  },
   setViewMode: (viewMode) => set({ viewMode }),
   setStepsOpen: (stepsOpen) => set({ stepsOpen }),
   setPanelTab: (panelTab) => set({ panelTab }),
@@ -752,21 +777,30 @@ export function activeTool(s: Pick<State, 'feed' | 'focusId' | 'followAgent'>): 
 }
 
 export const generatedRevisions = (revisions: Revision[]) => revisions.filter((r) => r.generated);
-/** The number people see for a CAD revision: its place among generated revisions, from 1. */
-export function revisionNumber(revisions: Revision[], revision: number | undefined) {
-  if (revision === undefined) return undefined;
-  const index = generatedRevisions(revisions).findIndex((r) => r.revision === revision);
-  return index < 0 ? revision : index + 1;
-}
-export const referenceRevision =(revisions: Revision[]) => revisions.find((r) => !r.generated) ?? null;
+export const referenceRevision =(revisions: Revision[]) => revisions.findLast((r) => !r.generated) ?? null;
 
-export function selectedRevision(s: Pick<State, 'revisions' | 'shownRevision'>) {
-  const generated = generatedRevisions(s.revisions);
-  return s.shownRevision === null ? generated.at(-1) : generated.find((r) => r.revision === s.shownRevision);
+export function selectedRevision(s: Pick<State, 'revisions' | 'shownRevision' | 'selectedCommit' | 'feed' | 'liveGeometryId'>) {
+  if (s.selectedCommit !== null) return commitHistory(s).find((c) => c.number === s.selectedCommit)?.geometry;
+  return s.revisions.find((r) => r.generated && r.revision === s.liveGeometryId);
 }
 
 /** The latest result for the CAD revision in view: results show only on the exact revision tested. */
-export function activeFea(s: Pick<State, 'feaRuns' | 'revisions' | 'shownRevision'>) {
+export function activeFea(s: Pick<State, 'feaRuns' | 'revisions' | 'shownRevision' | 'selectedCommit' | 'feed' | 'liveGeometryId'>) {
   const revision = selectedRevision(s)?.revision;
   return s.feaRuns.findLast((run) => run.result?.revision === revision)?.result ?? null;
+}
+
+/** The sole user-facing design history, shared by both history controls. */
+export type DesignCommit = Extract<FeedItem, { kind: 'commit' }>;
+export function commitHistory(s: Pick<State, 'feed'>): DesignCommit[] {
+  return s.feed.filter((i): i is DesignCommit => i.kind === 'commit').sort((a, b) => a.number - b.number);
+}
+export function geometryLabel(s: Pick<State, 'feed'>, geometry: number | undefined): string {
+  const commit = commitHistory(s).findLast((c) => c.meshRevision === geometry);
+  return commit ? `Commit ${commit.number}` : 'Live geometry';
+}
+
+/** Historical transient meshes are not checkpoints and cannot be selected as history. */
+export function canShowGeometry(s: Pick<State, 'feed' | 'liveGeometryId'>, geometry: number): boolean {
+  return s.liveGeometryId === geometry || commitHistory(s).some((c) => c.meshRevision === geometry);
 }

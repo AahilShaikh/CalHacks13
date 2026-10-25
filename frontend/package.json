@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test": "node --test tests/history.test.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "typecheck": "tsc",

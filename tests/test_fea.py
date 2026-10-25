@@ -176,12 +176,12 @@ async def test_agent_run_fea_tool_tests_the_latest_revision_and_summarises(live_
     from aida.api.agent_host import SessionHost
 
     events = []
-    _, run_fea, _ = host_tools(SessionHost(live_session), on_event=events.append)
+    run_fea = {t.name: t for t in host_tools(SessionHost(live_session), on_event=events.append)}['run_fea']
     result = await run_fea.handler({'youngs_modulus_mpa': 3500, 'poisson_ratio': .35, 'yield_strength_mpa': 50,
                                     'force_n': 20, 'fixed_face': 'x-', 'load_direction': 'z-', 'resolution': 10})
     assert not result.get('is_error'), result
     summary = json.loads(result['content'][0]['text'])
-    assert summary['viewer_revision'] == 1
+    assert summary['design'] == 'Live geometry'
     assert summary['material']['youngs_modulus_mpa'] == 3500
     # Root bending stress for 20 N on a 60 mm, 10x10 mm cantilever is about 7.2 MPa.
     assert 6 < summary['peak_von_mises_mpa'] < 12
@@ -192,14 +192,14 @@ async def test_agent_run_fea_tool_tests_the_latest_revision_and_summarises(live_
 
     bad = await run_fea.handler({'youngs_modulus_mpa': 3500, 'poisson_ratio': .35, 'yield_strength_mpa': 50,
                                  'force_n': 20, 'fixed_face': 'x-', 'load_direction': 'z-', 'revision': 7})
-    assert bad['is_error'] and 'revision 7' in bad['content'][0]['text']
+    assert bad['is_error'] and 'geometry 7' in bad['content'][0]['text']
 
 
 async def test_agent_ask_user_publishes_a_clean_question(live_session):
     from aida.agent import host_tools
     from aida.api.agent_host import SessionHost
 
-    _, _, ask_user = host_tools(SessionHost(live_session))
+    ask_user = {t.name: t for t in host_tools(SessionHost(live_session))}['ask_user']
     result = await ask_user.handler({'questions': [
         {'id': 'material', 'prompt': 'What will you print it in?', 'kind': 'choice',
          'options': [{'label': 'PLA', 'detail': 'E 3500 MPa'}, {'label': 'PETG'}, {'nope': 1}]},
@@ -223,7 +223,8 @@ async def test_agent_fea_faces_tool_returns_the_listing_and_a_picture(live_sessi
     from aida.agent import host_tools
     from aida.api.agent_host import SessionHost
 
-    fea_faces, run_fea, _ = host_tools(SessionHost(live_session))
+    tools = {t.name: t for t in host_tools(SessionHost(live_session))}
+    fea_faces, run_fea = tools['fea_faces'], tools['run_fea']
     result = await fea_faces.handler({})
     assert not result.get('is_error'), result
     text, image = result['content']
