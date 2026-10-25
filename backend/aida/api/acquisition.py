@@ -85,7 +85,9 @@ async def attach_scan(session, job, result):
                       for name in ('front', 'left', 'back', 'right', 'blueprints')
                       if (job.directory / f'{name}.png').is_file()}
             for spec in added['specs']:
-                workspace.add_reference_part(spec['name'], spec['reference'], 'Turntable scan; reference mesh in millimeters.')
+                description = 'Turntable scan; reference mesh in millimeters.'
+                warning = result.cad_specs.get('registration', {}).get('warning')
+                workspace.add_reference_part(spec['name'], spec['reference'], description + (' ' + warning if warning else ''))
             workspace.active = added['specs'][0]['name']
             workspace.save()
             session.units = 'mm'
@@ -111,6 +113,9 @@ async def attach_scan(session, job, result):
             raise
         for event in events:
             session.publish(event)
+        warning = result.cad_specs.get('registration', {}).get('warning')
+        if warning:
+            session.publish({'type': 'notice', 'text': warning})
         session.publish({'type': 'workspace_units', 'units': 'mm'})
         session.publish({'type': 'workspace_state', **workspace.snapshot()})
         publish_working_state(session)

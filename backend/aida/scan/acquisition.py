@@ -55,7 +55,7 @@ def reconstruct(captures, calibration, directory, client, progress):
                                 record['measured_angle']))
     progress('fitting_metric_scale')
     metric_mesh = directory / 'metric_model.glb'
-    specs = fit_metric_mesh(raw_mesh, views, calibration, metric_mesh)
+    specs = fit_metric_mesh(raw_mesh, views, calibration, metric_mesh, allow_approximate=True)
     specs['workflow'] = getattr(getattr(client, 'config', None), 'workflow', 'custom')
     specs['camera_calibration'] = calibration.to_dict()
     specs['capture_poses'] = {name: {k: v for k, v in record.items() if k != 'path'}

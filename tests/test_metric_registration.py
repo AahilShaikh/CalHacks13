@@ -72,4 +72,23 @@ def test_inconsistent_geometry_is_rejected(tmp_path):
     views[1].mask = cv2.resize(views[1].mask, None, fx=1.8, fy=1)
     views[1].mask = views[1].mask[:, 320:1120].copy()
     with pytest.raises(ScalingError):
-        fit_metric_mesh(path, views, calibration, tmp_path/'metric.glb')
+        fit_metric_mesh(path, views, calibration, tmp_path/'metric.glb', allow_approximate=True)
+
+
+def test_approximate_reference_preserves_scale_with_moderate_shape_error(tmp_path):
+    path, views, calibration = scene(tmp_path)
+    mesh = trimesh.load(path, force='mesh')
+    mesh.apply_scale([1.25, 1, 1])
+    mesh.export(path)
+    with pytest.raises(ScalingError, match='silhouettes'):
+        fit_metric_mesh(path, views, calibration, tmp_path/'strict.glb')
+    result = fit_metric_mesh(path, views, calibration, tmp_path/'approximate.glb', allow_approximate=True)
+    registration = result['registration']
+    assert registration['quality'] == 'approximate'
+    assert 'not verified' in registration['warning']
+    assert result['scale_multiplier_applied'] == pytest.approx(40, rel=.2)
+    assert registration['estimated_relative_scale_std'] < .035
+    from aida.scan.pipeline import agent_prompt_for
+    prompt = agent_prompt_for(result)
+    assert 'approximation' in prompt and 'physical verification' in prompt
+    assert '1:1' not in prompt

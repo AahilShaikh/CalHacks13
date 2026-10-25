@@ -43,6 +43,16 @@ class ScanResult:
 def agent_prompt_for(cad_specs: dict) -> str:
     """Build the ready-to-paste prompt handed to the CAD agent (build123d-mcp)."""
     box = cad_specs['bounding_box_mm']
+    warning = cad_specs.get('registration', {}).get('warning')
+    if warning:
+        return (
+            'Build a parametric CAD approximation of this object using build123d. '
+            f'{warning} Estimated bounding dimensions: '
+            f"{box['width_x']}mm (W) x {box['depth_y']}mm (D) x {box['height_z']}mm (H). "
+            'Base sits at Z=0. Inspect the photos, orthographic blueprints, and dimensions JSON '
+            '(object_dimensions.json) before modeling. Preserve the reported fit evidence and '
+            'tell the user these dimensions need physical verification before a precision fit.'
+        )
     return (
         'Build a 1:1 parametric CAD model of this object using build123d. '
         f"Bounding dimensions: {box['width_x']}mm (W) x {box['depth_y']}mm (D) x "

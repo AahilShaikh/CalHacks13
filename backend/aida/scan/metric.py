@@ -57,7 +57,8 @@ def _orientations():
                 yield Rotation.from_matrix(matrix).as_rotvec()
 
 
-def fit_metric_mesh(mesh_path, views: list[MetricView], calibration: CameraCalibration, output_path):
+def fit_metric_mesh(mesh_path, views: list[MetricView], calibration: CameraCalibration, output_path,
+                    *, allow_approximate=False):
     if len(views) < 2 or len({v.name for v in views}) != len(views):
         raise ScalingError('Automatic scaling needs at least two distinct object views.')
     # Front/back alone is weak for many thin or symmetric objects; demand a side baseline.
@@ -118,12 +119,16 @@ def fit_metric_mesh(mesh_path, views: list[MetricView], calibration: CameraCalib
     mse, best = solutions[0]
     errors = residual(best.x).reshape(len(views), -1)
     relative_errors = [float(np.sqrt(np.mean(e**2))/d) for e, d in zip(errors, diagonals)]
+    limit = 0.05 if allow_approximate else 0.025
     diagnostics = {'optimizer_success': bool(best.success), 'support_rms_px': math.sqrt(mse),
                    'per_view_relative_rms': dict(zip([v.name for v in views], relative_errors)),
-                   'maximum_relative_rms': 0.025}
+                   'maximum_relative_rms': 0.025, 'accepted_relative_rms_limit': limit}
     Path(output_path).with_name('fit_diagnostics.json').write_text(json.dumps(diagnostics, indent=2)+'\n')
-    if not best.success or max(relative_errors) > 0.025:
-        raise ScalingError('Generated mesh does not fit the calibrated silhouettes; capture another view '
+    # An imperfect generated shape can still have a useful uniform metric scale.
+    # Approximate reference fits remain subject to all scale observability checks.
+    if not best.success or max(relative_errors) > limit:
+        raise ScalingError(f'Generated mesh does not fit the calibrated silhouettes '
+                           f'(maximum outline error {max(relative_errors):.2%}, limit {limit:.2%}); capture another view '
                            'or improve object separation from the board/background.')
     scale = math.exp(best.x[0])
     similar = [math.exp(fit.x[0]) for loss, fit in solutions if loss <= mse + 1]
@@ -139,6 +144,11 @@ def fit_metric_mesh(mesh_path, views: list[MetricView], calibration: CameraCalib
     else:
         scale_information = 1.0 / float(np.linalg.inv(J.T @ J)[0, 0])
     uncertainty = math.sqrt(max(1.0, mse) / max(scale_information, 1e-12))
+    approximate = max(relative_errors) > 0.025
+    diagnostics.update(estimated_relative_scale_std=uncertainty,
+                       accepted_relative_rms_limit=limit,
+                       quality='approximate' if approximate else 'validated')
+    Path(output_path).with_name('fit_diagnostics.json').write_text(json.dumps(diagnostics, indent=2)+'\n')
     if uncertainty > 0.035 or scale < 1.01 or scale > 990:
         raise ScalingError('Metric scale is poorly constrained; add a side view or improve calibration.')
     rotation = Rotation.from_rotvec(best.x[1:4]).as_matrix()
@@ -161,6 +171,10 @@ def fit_metric_mesh(mesh_path, views: list[MetricView], calibration: CameraCalib
                                     [round(float(x), 3) for x in mesh.extents])),
         'coordinate_frame': {'origin': 'Center of base footprint at Z=0', 'ground_plane': 'Z=0'},
         'registration': {
+            'quality': 'approximate' if approximate else 'validated',
+            'warning': ('Approximate metric reference: generated shape disagrees with the observed outlines. '
+                        'Millimeter dimensions are estimates, not verified object measurements. '
+                        'Silhouette mismatch is not a dimensional accuracy bound.' if approximate else None),
             'method': 'calibrated_multiview_convex_silhouette_fit',
             'raw_to_board_mm': board_transform.tolist(), 'raw_to_cad_mm': cad_transform.tolist(),
             'support_rms_px': math.sqrt(mse), 'per_view_relative_rms': dict(zip(

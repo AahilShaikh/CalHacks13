@@ -280,6 +280,15 @@ webcam poses; uploading arbitrary uncalibrated photos cannot establish metric sc
 
 ## Verification
 
+Turntable references accept moderate silhouette mismatch (up to 5% of each
+image silhouette's diagonal) as an **approximate** metric fit. The strict fit
+threshold remains 2.5%. Approximate fits still require converged registration,
+unambiguous scale, and the existing scale-observability checks. These thresholds
+are acceptance policies, not dimensional accuracy guarantees. Fit diagnostics,
+part descriptions, and Aida's CAD handoff explicitly identify approximate
+dimensions; precision fits require physical verification. More inconsistent
+meshes and poorly constrained scales still fail without workspace attachment.
+
 Tests cover camera calibration from synthetic perspective images; metric scale
 recovery without a supplied object dimension, including a rotated raw mesh;
 foreground separation and rotating-board compensation; capture budgets and
