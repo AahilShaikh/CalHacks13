@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as api from './lib/api';
+import { duration } from './lib/format';
 import {
   argSummary,
   deviationFrom,
@@ -171,6 +172,8 @@ const freshSession = {
   stage: '', startedAt: null, endedAt: null, lastEventAt: null,
 } satisfies Partial<State>;
 
+const UNTITLED = 'Untitled workspace';
+
 export const MESH_EXTENSIONS = ['.stl', '.obj', '.ply', '.glb'];
 export type MeshPreview = { url: string; kind: 'stl' | 'obj' | 'ply' | 'glb' };
 export const isMeshFile = (file: File) => MESH_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext));
@@ -198,7 +201,7 @@ export const useStore = create<State>((set, get) => ({
   pendingCode: null,
   shownRevision: null,
   viewMode: 'overlay',
-  stepsOpen: true,
+  stepsOpen: typeof window === 'undefined' || window.innerWidth >= 1200,
   replyDismissedId: null,
   hiddenParts: [],
   references: [],
@@ -334,7 +337,7 @@ export const useStore = create<State>((set, get) => ({
   apply: (events) =>
     set((s) => {
       let { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error, endedAt,
-        references } = s;
+        references, workspaceName } = s;
       feed = [...feed];
       const updateLastTool = (name: string | null, change: (t: ToolItem) => ToolItem) => {
         for (let i = feed.length - 1; i >= 0; i--) {
@@ -439,19 +442,23 @@ export const useStore = create<State>((set, get) => ({
             feed.push(note(turnLine(e), e.is_error ? 'error' : 'ok'));
             break;
           case 'session_done':
-            feed.push(note('Session finished', 'muted'));
+            feed.push(note('Workspace paused', 'muted'));
             break;
           case 'user_prompt':
             feed.push({ kind: 'user', id: nextId++, text: e.text });
+            // An unnamed workspace goes by its first prompt (as on the home screen).
+            if (!s.replay && !s.workspaceNamed && (!workspaceName || workspaceName === UNTITLED)) {
+              workspaceName = e.text.slice(0, 60).trim();
+            }
             break;
           case 'interrupted':
-            feed.push(note('Stopped. Send a prompt to continue.', 'muted'));
+            feed.push(note('Stopped. Send a message to continue.', 'muted'));
             break;
         }
       }
       const lastEventAt = events.length ? events[events.length - 1].at : s.lastEventAt;
       return { feed, revisions, deviations, features, workspace, changedParams, pendingCode, cost, status, stage, error,
-        endedAt, lastEventAt, references };
+        endedAt, lastEventAt, references, workspaceName };
     }),
 
   showRevision: (revision) => set({ shownRevision: revision }),
@@ -590,11 +597,11 @@ function note(text: string, tone: 'muted' | 'error' | 'ok'): FeedItem {
 }
 
 function turnLine(e: Extract<ServerEvent, { type: 'turn_end' }>) {
-  if (e.subtype === 'error_max_turns') return 'Turn limit reached. Ask Aida to continue.';
-  if (e.is_error) return e.subtype === 'success' ? 'The turn failed; see the message above.' : `Turn stopped (${e.subtype})`;
-  const parts = ['Turn complete'];
-  if (e.turns) parts.push(`${e.turns} steps`);
-  if (e.duration_s) parts.push(`${Math.round(e.duration_s)}s`);
+  if (e.subtype === 'error_max_turns') return 'Aida reached its step limit. Ask it to continue.';
+  if (e.is_error) return e.subtype === 'success' ? 'Aida stopped with an error; see its reply.' : `Aida stopped (${e.subtype.replaceAll('_', ' ')})`;
+  const parts = ['Done'];
+  if (e.duration_s) parts.push(duration(e.duration_s));
+  if (typeof e.cost_usd === 'number' && e.cost_usd > 0) parts.push(`$${e.cost_usd.toFixed(2)}`);
   return parts.join(' · ');
 }
 

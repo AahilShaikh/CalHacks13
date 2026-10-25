@@ -177,7 +177,9 @@ function Sparkline({ deviations }: { deviations: Deviation[] }) {
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline gap-1.5">
         <span className="font-mono text-[18px] font-medium tracking-[-0.02em]">{last.p95.toFixed(3)}</span>
-        <span className="text-[11px] text-faint">p95 deviation</span>
+        <span className="text-[11px] text-faint" title="95% of the scan's surface is within this distance of the CAD">
+          p95 deviation from the scan
+        </span>
       </div>
       <div className="relative h-11 w-full">
         <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 size-full" preserveAspectRatio="none" role="img"

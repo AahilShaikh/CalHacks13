@@ -1,5 +1,5 @@
 import { AlertCircle, ArrowUp, ImageIcon, MessagesSquare, Square, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useActivity } from '../lib/activity';
 import { isMeshFile, useStore, type FeedItem } from '../store';
 import { Markdown } from './Markdown';
@@ -92,10 +92,40 @@ function ReplyCard() {
         <IconButton icon={MessagesSquare} size="sm" label="Show the conversation" onClick={() => setHistory(true)} />
         <IconButton icon={X} size="sm" label="Dismiss" onClick={() => dismissReply(reply.id)} />
       </div>
-      <div aria-live="polite" className="scroll-thin max-h-[32vh] overflow-y-auto px-3.5 pb-3 pt-1 text-[13px] leading-[1.55] text-ink">
-        <Markdown text={reply.text} />
-      </div>
+      <ReplyBody key={reply.id} text={reply.text} />
     </FloatCard>
+  );
+}
+
+/** About five lines of the reply, so the model stays in view; "Show more" opens the rest. */
+function ReplyBody({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && !expanded) setOverflows(el.scrollHeight > el.clientHeight + 2);
+  }, [text, expanded]);
+  return (
+    <div className="flex flex-col px-3.5 pb-2.5 pt-1">
+      <div
+        ref={ref}
+        aria-live="polite"
+        className={cx('relative text-[13px] leading-[1.55] text-ink',
+          expanded ? 'scroll-thin max-h-[40vh] overflow-y-auto' : 'max-h-[7.9em] overflow-hidden')}
+      >
+        <Markdown text={text} />
+        {!expanded && overflows && (
+          <span aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-surface to-transparent" />
+        )}
+      </div>
+      {(overflows || expanded) && (
+        <button type="button" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}
+          className="self-start pt-1 text-[12px] font-medium text-accent-ink hover:underline">
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </div>
   );
 }
 

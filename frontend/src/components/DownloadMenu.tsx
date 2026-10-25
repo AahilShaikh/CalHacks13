@@ -23,8 +23,13 @@ export function DownloadMenu() {
   useEffect(() => {
     if (!open) return;
     const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const escape = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
     document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', escape);
+    };
   }, [open]);
 
   if (!sessionId || !hasCad) return null;

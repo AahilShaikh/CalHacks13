@@ -214,8 +214,13 @@ function WorkspaceCard({ workspace: w, onChanged }: { workspace: api.WorkspaceSu
   useEffect(() => {
     if (!menu) return;
     const close = (e: MouseEvent) => !menuRef.current?.contains(e.target as Node) && setMenu(false);
+    const escape = (e: KeyboardEvent) => e.key === 'Escape' && setMenu(false);
     document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', escape);
+    };
   }, [menu]);
 
   const parts = w.parts.length;
@@ -223,7 +228,7 @@ function WorkspaceCard({ workspace: w, onChanged }: { workspace: api.WorkspaceSu
 
   return (
     <li className="group relative flex flex-col overflow-hidden rounded-xl border border-line bg-surface transition-shadow hover:shadow-float">
-      <a {...linkProps(workspacePath(w.id))} className="flex flex-col" aria-label={`Open ${w.name}`}>
+      <a {...linkProps(workspacePath(w.id))} className="flex flex-col" tabIndex={-1} aria-hidden>
         <div className="flex h-[150px] items-center justify-center border-b border-line bg-[#eef0f3]">
           {w.thumbnail ? (
             <img src={`${w.thumbnail}?t=${Math.round(w.updated_at)}`} alt="" className="size-full object-cover" loading="lazy" />

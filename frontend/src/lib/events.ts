@@ -138,6 +138,17 @@ export type Deviation = {
 };
 
 function tryJson(text: string): Record<string, any> | null {
+  // Pretty-printed results span several lines: try everything up to the last closing brace.
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try {
+      const whole = JSON.parse(text.slice(start, end + 1));
+      if (whole && typeof whole === 'object') return whole;
+    } catch {
+      /* several values, or truncated; fall back to single lines */
+    }
+  }
   // Results are often a JSON line followed by "[SEND: path]"; try each JSON-looking line.
   for (const line of text.split('\n')) {
     const trimmed = line.trim();
@@ -301,7 +312,7 @@ export function resultSummary(tool: string, text: string): string {
   const line = text
     .split('\n')
     .map((l) => l.trim())
-    .find((l) => l && !l.startsWith('[SEND:'));
+    .find((l) => l && !l.startsWith('[SEND:') && !/^[[\]{}(),]+$/.test(l));
   return (line ?? '').slice(0, 220);
 }
 

@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useStore, type ToolItem } from '../store';
 import { toolLabel, type Phase } from './events';
+import { duration } from './format';
+
+export { duration };
 
 const STAGES: Record<string, string> = {
   preparing: 'Preparing workspace',
@@ -60,8 +63,3 @@ export function useElapsed(start: number | null, end: number | null) {
   return duration(Math.max(0, (end ?? now) - start));
 }
 
-export function duration(seconds: number) {
-  if (seconds < 10) return `${seconds.toFixed(1)}s`;
-  const s = Math.round(seconds);
-  return s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`;
-}

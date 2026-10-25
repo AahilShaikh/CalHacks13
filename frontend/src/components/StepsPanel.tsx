@@ -15,7 +15,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { duration } from '../lib/activity';
 import { toolLabel, type Phase } from '../lib/events';
 import { useStore, type FeedItem, type ToolItem } from '../store';
-import { ReplayList } from './Replay';
 import { IconButton, Spinner, cx } from './ui';
 
 const PHASE_ICON: Record<Phase, LucideIcon> = { inspect: Eye, build: Hammer, verify: BadgeCheck };
@@ -94,7 +93,6 @@ function EmptySteps() {
           })}
         </ul>
       </div>
-      <ReplayList />
     </div>
   );
 }
@@ -179,6 +177,7 @@ function ToolRow({ item }: { item: ToolItem }) {
           </span>
           <span className={cx('shrink-0 text-[12.5px]', running ? 'font-medium text-ink' : 'text-ink')}>
             {toolLabel(item.name)}
+            <span className="sr-only">{running ? ', running' : failed ? ', failed' : `, ${PHASE_NAME[item.phase].toLowerCase()} step`}</span>
           </span>
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-faint">
             {[part, item.argText].filter(Boolean).join(' · ')}
