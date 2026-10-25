@@ -31,6 +31,7 @@ from ..scan.pipeline import run_scan
 from .cad_sessions import CadSessionManager, router as cad_sessions_router
 from .jobs import JobManager
 from .replays import router as replays_router
+from .versions import router as versions_router
 from .workspaces import router as workspaces_router
 
 load_local_env()
@@ -143,6 +144,7 @@ def get_scan_file(job_id: str, filename: str):
 app.include_router(cad_sessions_router)
 app.include_router(replays_router)
 app.include_router(workspaces_router)
+app.include_router(versions_router)
 # The web UI is mounted last so API routes match first.
 if (FRONTEND_DIST / 'index.html').is_file():
     # The app's own pages (a workspace, a replay) all load index.html; the app routes them.

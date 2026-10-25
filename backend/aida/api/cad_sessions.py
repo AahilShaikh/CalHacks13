@@ -204,6 +204,19 @@ def write_scene(items, glb_path: Path) -> dict:
             'bytes': glb_path.stat().st_size}
 
 
+def scene_signature(items) -> str:
+    """A hash of a scene's geometry and placements (STL headers are ignored)."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    for geometry, source, nodes in sorted(items, key=lambda item: item[0]):
+        digest.update(geometry.encode())
+        data = Path(source).read_bytes() if isinstance(source, (str, Path)) else repr(source).encode()
+        digest.update(data[80:] if data[:5] != b'solid' else data)
+        digest.update(json.dumps(nodes, default=str).encode())
+    return digest.hexdigest()
+
+
 def _matrix4(rows):
     """A 3x4 affine matrix (as the assembly reports it) padded to 4x4."""
     return [list(rows[0]), list(rows[1]), list(rows[2]), [0.0, 0.0, 0.0, 1.0]]
@@ -389,6 +402,8 @@ class CadSession:
         self.closing = False
         # Built from a saved folder: rebuild its models and resume its agent conversation.
         self.reopened = False
+        # Geometry of the latest generated revision, to skip snapshots that change nothing.
+        self.scene_signature = None
 
     # -- URLs ---------------------------------------------------------------
     def add_revision(self, glb: Path, generated: bool, stats: dict, **extra) -> dict:
@@ -784,6 +799,15 @@ def snapshot_hook(cad, session: CadSession, workspace=None):
                 session.publish({'type': 'mesh_skipped',
                                  'reason': 'generated objects could not be meshed'})
                 return
+            # Most tool calls (a new empty part, parameters only) leave the shape as it was:
+            # those do not become a new revision in the viewer.
+            signature = await asyncio.to_thread(scene_signature, items)
+            if signature == session.scene_signature:
+                for stl in {path for _, path, _ in items}:
+                    Path(stl).unlink(missing_ok=True)
+                session.publish({'type': 'mesh_skipped', 'reason': 'unchanged'})
+                return
+            session.scene_signature = signature
             glb = root / f'mesh-{revision:03d}.glb'
             stats = await asyncio.to_thread(write_scene, items, glb)
             parts = sorted({node.split('|')[0] for _, _, nodes in items for node, _ in nodes})
@@ -871,9 +895,15 @@ async def run_cad_session(session: CadSession):
                     prompt = await session.turns.get()
                     if prompt is None:
                         break
+                    asked = prompt
                     prompt = compose_turn(session, prompt)
                     session.set_stage('agent_running')
                     final = await run_turn(client, prompt, session.artifacts, on_event=bridge)
+                    try:
+                        from .versions import save_version
+                        save_version(session, asked)  # one version per prompt that changed the design
+                    except OSError as exc:
+                        session.artifacts.log('version_error', {'error': str(exc)})
                     if getattr(final, 'session_id', None):
                         # Reopening the workspace resumes this conversation.
                         update_meta(session.artifacts.root, agent_session=final.session_id)
