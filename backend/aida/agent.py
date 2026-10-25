@@ -136,12 +136,12 @@ def _round(value, digits):
 
 def _png(path) -> list[dict]:
     from pathlib import Path
-    import base64
 
     path = Path(path)
     if not path.is_file():
         return []
-    return [{'type': 'image', 'mimeType': 'image/png', 'data': base64.b64encode(path.read_bytes()).decode()}]
+    from .artifacts import image_block
+    return [image_block(path)]
 
 
 def host_tools(host, on_event=None):
@@ -502,6 +502,8 @@ Only the supplied CAD and image tools are available. Do not attempt shell or fil
         mcp_servers={'aida': server}, setting_sources=[], strict_mcp_config=True,
         permission_mode='dontAsk',
         max_turns=resolve_max_turns(max_turns), cwd=str(artifacts.root),
+        # Tool results carry base64 images; the SDK's 1 MB default rejects a single camera photo.
+        max_buffer_size=64 * 1024 * 1024,
         # Four captures plus foreground segmentation and Pixal3D can exceed the CAD timeout.
         env={'MCP_TOOL_TIMEOUT': '7200000',
              'CLAUDE_CONFIG_DIR': str(artifacts.root / 'claude-runtime')},

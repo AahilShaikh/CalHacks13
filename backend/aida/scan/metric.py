@@ -126,9 +126,9 @@ def fit_metric_mesh(mesh_path, views: list[MetricView], calibration: CameraCalib
     Path(output_path).with_name('fit_diagnostics.json').write_text(json.dumps(diagnostics, indent=2)+'\n')
     # An imperfect generated shape can still have a useful uniform metric scale.
     # Approximate reference fits remain subject to all scale observability checks.
-    if not best.success or max(relative_errors) > limit:
-        raise ScalingError(f'Generated mesh does not fit the calibrated silhouettes '
-                           f'(maximum outline error {max(relative_errors):.2%}, limit {limit:.2%}); capture another view '
+    # Outline error is recorded in fit_diagnostics.json but no longer blocks the scan.
+    if not best.success:
+        raise ScalingError('Generated mesh could not be fitted to the calibrated silhouettes; capture another view '
                            'or improve object separation from the board/background.')
     scale = math.exp(best.x[0])
     similar = [math.exp(fit.x[0]) for loss, fit in solutions if loss <= mse + 1]

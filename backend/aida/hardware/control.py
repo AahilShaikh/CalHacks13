@@ -56,6 +56,7 @@ class ControlConfig:
     probe_s: float = 0.06
     max_step_degrees: float = 12.0
     stall_samples: int = 5
+    neutral_us: float | None = None  # servo stop pulse; defaults to the coarse-pulse midpoint
 
     def __post_init__(self):
         rates = (self.positive_deg_per_s, self.negative_deg_per_s,
@@ -102,6 +103,9 @@ class PositionController:
         self.rates = {(True, False): c.positive_deg_per_s, (False, False): c.negative_deg_per_s,
                       (True, True): c.fine_positive_deg_per_s, (False, True): c.fine_negative_deg_per_s}
         self.learned = set()
+        # Midpoint of the coarse pulses; unchanged by polarity swaps and torque increases.
+        self.neutral_us = (c.neutral_us if c.neutral_us is not None
+                           else (c.positive_pulse_us + c.negative_pulse_us) / 2)
         self.direction_verified = False
 
     def _emit(self, event, **data):
@@ -237,6 +241,17 @@ class PositionController:
                         self.learned.discard(key)
                         no_motion[key] = 0
                         self._emit('deadband_adjusted', pulse_us=self.pulses[key], positive=positive)
+                elif not fine and no_motion[key] >= 2:
+                    # Push through mechanical friction with a stronger (faster) pulse, bounded
+                    # to 300 us from the neutral midpoint; once capped, the stall check applies.
+                    away = 1 if pulse > self.neutral_us else -1
+                    limit = self.neutral_us + away * 300
+                    stronger = int(max(1000, min(2000, pulse + away * 25)))
+                    if (stronger - limit) * away <= 0 and stronger != pulse:
+                        self.pulses[key] = stronger
+                        no_motion[key] = 0
+                        stalled = 0
+                        self._emit('torque_increased', pulse_us=stronger, positive=positive)
                 if stalled >= c.stall_samples:
                     raise TurntableError('stalled', 'No measurable turntable movement after repeated bounded pulses. '
                                          'Check servo power, linkage and neutral/deadband calibration.')

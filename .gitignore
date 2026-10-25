@@ -6,3 +6,4 @@ __pycache__/
 artifacts/
 ComfyUI/
 *.egg-info/
+.cache/

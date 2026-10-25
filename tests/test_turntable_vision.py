@@ -69,7 +69,7 @@ def test_changed_resolution_requires_zero_again(tmp_path):
         feedback.read_angle(time.monotonic() + 5)
 
 
-@pytest.mark.parametrize('platform,backend', [('win32',cv2.CAP_DSHOW),('darwin',cv2.CAP_AVFOUNDATION),('linux',cv2.CAP_ANY)])
+@pytest.mark.parametrize('platform,backend', [('win32',cv2.CAP_MSMF),('darwin',cv2.CAP_AVFOUNDATION),('linux',cv2.CAP_ANY)])
 def test_webcam_uses_native_backend_and_releases_capture(monkeypatch, platform, backend):
     from aida.hardware.vision import Webcam
     camera = Webcam(1)
@@ -84,6 +84,7 @@ def test_webcam_uses_native_backend_and_releases_capture(monkeypatch, platform, 
     def open_capture(index, selected_backend):
         opened.append((index, selected_backend))
         return Capture()
+    monkeypatch.delenv('AIDA_TURNTABLE_CAMERA_FOCUS', raising=False)
     monkeypatch.setattr('aida.hardware.vision.sys.platform', platform)
     monkeypatch.setattr('aida.hardware.vision.cv2.VideoCapture', open_capture)
     camera._run()

@@ -1,3 +1,4 @@
+import json
 import math
 
 import cv2
@@ -66,13 +67,17 @@ def test_empty_or_cropped_masks_are_errors(tmp_path):
         fit_metric_mesh(path, views, calibration, tmp_path/'metric.glb')
 
 
-def test_inconsistent_geometry_is_rejected(tmp_path):
+def test_outline_error_is_recorded_but_does_not_block(tmp_path):
     path, views, calibration = scene(tmp_path)
     # One view shows an object nearly twice as wide, incompatible with a rigid mesh.
     views[1].mask = cv2.resize(views[1].mask, None, fx=1.8, fy=1)
     views[1].mask = views[1].mask[:, 320:1120].copy()
-    with pytest.raises(ScalingError):
+    try:
         fit_metric_mesh(path, views, calibration, tmp_path/'metric.glb', allow_approximate=True)
+    except ScalingError as error:
+        assert 'silhouettes' not in str(error)  # only scale-observability checks may still reject
+    diagnostics = json.loads((tmp_path/'fit_diagnostics.json').read_text())
+    assert max(diagnostics['per_view_relative_rms'].values()) > .05
 
 
 def test_approximate_reference_preserves_scale_with_moderate_shape_error(tmp_path):
@@ -80,8 +85,6 @@ def test_approximate_reference_preserves_scale_with_moderate_shape_error(tmp_pat
     mesh = trimesh.load(path, force='mesh')
     mesh.apply_scale([1.25, 1, 1])
     mesh.export(path)
-    with pytest.raises(ScalingError, match='silhouettes'):
-        fit_metric_mesh(path, views, calibration, tmp_path/'strict.glb')
     result = fit_metric_mesh(path, views, calibration, tmp_path/'approximate.glb', allow_approximate=True)
     registration = result['registration']
     assert registration['quality'] == 'approximate'

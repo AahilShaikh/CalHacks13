@@ -53,6 +53,7 @@ class HardwareSettings:
                 fine_negative_deg_per_s=setting('FINE_NEGATIVE_DPS', 'fine_negative_deg_per_s', 30, float),
                 max_pulse_s=float(os.environ.get('AIDA_TURNTABLE_MAX_PULSE_S', '0.45')),
                 pulse_gain=0.75,
+                neutral_us=neutral,
                 settle_s=float(os.environ.get('AIDA_TURNTABLE_SETTLE_S', '0.25')),
             )
             if not 1000 <= neutral <= 2000 or neutral in (

@@ -97,7 +97,10 @@ def test_stall_stops_after_bounded_attempts(no_settling, monkeypatch):
     with pytest.raises(TurntableError) as error:
         PositionController(table, table).rotate(90, 1, 1.0)
     assert error.value.code == 'stalled'
-    assert len(table.pulses) == 5
+    # Pulse strength steps up 25 us at a time, capped 300 us from neutral (1500 us), then stalls.
+    widths = [width for width, _ in table.pulses]
+    assert max(widths) == 1800 and widths == sorted(widths)
+    assert len(table.pulses) == 2 * 8 + 5
     assert table.stops == 2
 
 

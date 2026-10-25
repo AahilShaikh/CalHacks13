@@ -8,6 +8,29 @@ from uuid import uuid4
 
 from PIL import Image
 
+# Claude downsizes images beyond 1568 px anyway; the API rejects images over 5 MB.
+MAX_IMAGE_SIDE = 1568
+MAX_IMAGE_BYTES = 3_500_000
+
+
+def image_block(path) -> dict:
+    """MCP image content for a PNG, shrunk so the model sees the same detail in a small payload."""
+    import io
+    path = Path(path)
+    data, mime = path.read_bytes(), 'image/png'
+    with Image.open(path) as img:
+        if max(img.size) > MAX_IMAGE_SIDE or len(data) > MAX_IMAGE_BYTES:
+            img = img.convert('RGBA' if 'A' in img.getbands() else 'RGB')
+            img.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.LANCZOS)
+            out = io.BytesIO()
+            img.save(out, 'PNG', optimize=True)
+            data = out.getvalue()
+            if len(data) > MAX_IMAGE_BYTES:  # photos compress poorly as PNG
+                out = io.BytesIO()
+                img.convert('RGB').save(out, 'JPEG', quality=90)
+                data, mime = out.getvalue(), 'image/jpeg'
+    return {'type': 'image', 'mimeType': mime, 'data': base64.b64encode(data).decode()}
+
 
 class Artifacts:
     def __init__(self, base: Path):
@@ -70,5 +93,4 @@ class Artifacts:
         with Image.open(path) as img:
             if all(low == high for low, high in img.convert('RGB').getextrema()):
                 raise ValueError('Preview is blank; geometry was not rendered')
-        return {'content': [{'type': 'image', 'mimeType': 'image/png',
-                             'data': base64.b64encode(path.read_bytes()).decode()}]}
+        return {'content': [image_block(path)]}

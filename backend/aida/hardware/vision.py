@@ -7,8 +7,10 @@ tilting the table or changing its height requires setting zero again.
 import json
 import hashlib
 import math
+import os
 import threading
 import sys
+import time
 from pathlib import Path
 
 import cv2
@@ -37,13 +39,23 @@ class Webcam:
     def _run(self):
         camera = None
         try:
+            # Windows uses Media Foundation: it can share a webcam that another app
+            # (e.g. NVIDIA Broadcast) already holds, where DirectShow opens but never delivers frames.
             backend = (cv2.CAP_AVFOUNDATION if sys.platform == 'darwin'
-                       else cv2.CAP_DSHOW if sys.platform == 'win32' else cv2.CAP_ANY)
+                       else cv2.CAP_MSMF if sys.platform == 'win32' else cv2.CAP_ANY)
             camera = cv2.VideoCapture(self.index, backend)
             camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
             if not camera.isOpened():
                 raise RuntimeError(f'Cannot open USB webcam index {self.index}. Close other camera apps and retry.')
+            focus = os.environ.get('AIDA_TURNTABLE_CAMERA_FOCUS')
+            if focus:
+                # Some webcams open with autofocus off and a lens position that blurs the board.
+                camera.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+                camera.set(cv2.CAP_PROP_FOCUS, float(focus))
+                settle = time.monotonic() + 0.8  # let the lens finish moving before publishing frames
+                while time.monotonic() < settle and not self.closed.is_set():
+                    camera.read()
             while not self.closed.is_set():
                 ok, frame = camera.read()
                 if not ok:
