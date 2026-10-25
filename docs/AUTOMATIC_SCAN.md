@@ -50,12 +50,12 @@ ComfyUI is installed separately at
 
 ```bash
 cd "/Users/linweizhi/Documents/CalHacks Project/ComfyUI"
-./start_comfyui.sh --listen 127.0.0.1 --port 8188 --disable-all-custom-nodes
+./start_comfyui.sh --listen 127.0.0.1 --port 8188 --disable-all-custom-nodes --whitelist-custom-nodes aida_scan
 ```
 
 All required model weights are already installed on this machine. Aida uses
-ComfyUI core nodes, with no custom nodes required. Both servers should remain
-bound to localhost.
+ComfyUI core generation/SAM nodes plus the bundled `aida_scan` extension for
+automatic object isolation and optional image inputs. Both servers remain local.
 
 ## Exact first-run steps
 
@@ -90,9 +90,8 @@ bound to localhost.
    camera checks; the server does not drive to a home position. Check that startup
    zero is `ready`. If the server started before the hardware was ready, click
    **Retry startup zero** after correcting the reported problem.
-9. Leave the table **empty** and click **Capture empty-table reference**. This
-   captures the background without changing zero. Do not move the camera, change
-   lighting, remount the board or change focus after saving the reference.
+9. Optionally capture an empty-table reference for diagnostics. Object-only
+   SAM segmentation does not require it; keep camera calibration and board mounting fixed.
 10. Place a small opaque, matte object at the center. Leave at least **eight
    visible ChArUco corners spanning 60 mm in both board directions** around it
    in every view. Keep hands out of the scene during capture.
@@ -136,7 +135,7 @@ old zero reference. Do not reuse a zero reference from another camera.
 ```bash
 curl --fail-with-body -X POST http://127.0.0.1:8000/api/v1/acquisitions \
   -H 'Content-Type: application/json' \
-  -d '{"prompt":"Reconstruct this object as editable CAD.","policy":"agent","start_cad":true}'
+  -d '{"prompt":"Reconstruct this object as editable CAD.","policy":"agent","workflow":"full","start_cad":true}'
 ```
 
 The response is 202 with a `job_id` and `status_url`. Individual moves remain
@@ -157,14 +156,54 @@ resets between photos and preventing unrelated moves from changing the object
 scan. A hardware/camera/Comfy failure disables further agent motion. Shutdown
 attempts a confirmed STOP even on failure; firmware locally bounds every burst.
 
-The empty-table photo is warped using each measured board pose to compensate
-for the rotating print. Foreground differencing locates a substantial object
-region after removing thin registration fringes. A padded region keeps the
-original pixels intact so light objects over white board squares do not acquire
-holes. ComfyUI then segments the object within that region. Original photos
-remain unchanged; derived images and masks retain the original pixel coordinates.
-Inspect the saved masks for missed thin features or board/shadow contamination.
-ComfyUI returns both the generated mesh and original-coordinate foreground masks.
+For ChArUco photos, Aida detects the printed corners and projects the known
+board pattern into the photo. Pattern disagreement locates a loose object box;
+ComfyUI's built-in **SAM 3.1** uses that box to segment the object on the original
+photo. This replaces BiRefNet for board photos, because BiRefNet treats the board
+and object together as foreground. The final SAM silhouette controls the black
+background composite sent to Pixal3D and is returned at original resolution for
+metric fitting. All views use one common crop size; calibrated captures also
+use the crop field of view derived from measured camera intrinsics, preserving
+the relative size of the front and side views. `*_conditioned.png` records
+the exact model input and `framing.json` records crop/FOV evidence.
+The surrounding background may change; **no empty-table photo
+is required**. An optional empty reference is retained for diagnostics only.
+
+Inspect `object_prompts.json`, `*_foreground.png`, and `*_object.png` if separation
+fails. Final masks come from SAM, not from the approximate pattern-difference
+region. Photos without detected ChArUco use BiRefNet as before. The automatic
+locator assumes one substantial object on the print; very large, camouflaged,
+transparent or poorly lit subjects may fail object localization and need improved lighting or framing.
+
+Choose `workflow: "full"` (default) for 1024 geometry refinement plus 2048 PBR
+color, metallic, roughness, normal and ambient-occlusion maps embedded in GLB.
+Choose `workflow: "fast"` for 1024 refined geometry with fewer sampling steps and
+no texture stage. Both use all supplied views and the same metric quality gates.
+The setup page exposes both choices. CLI: `--workflow fast|full`; uploaded scans:
+multipart `workflow=fast|full`. STL cannot carry textures.
+
+In addition to Pixal3D and its VAEs/DINO weights, place the official
+[Comfy-Org SAM 3.1 checkpoint](https://huggingface.co/Comfy-Org/sam3.1)
+`sam3.1_multiplex_fp16.safetensors` in `ComfyUI/models/checkpoints/` (about 1.6 GiB).
+The editor workflows use the repository's `aida_scan` extension to run automatic
+ChArUco object localization, SAM segmentation, and shared framing inside ComfyUI.
+This is required for the direct editor path as well as the API templates.
+Install it once:
+
+```bash
+uv run python examples/install_comfy_scan.py --comfy-root "$HOME/Documents/CalHacks Project/ComfyUI"
+```
+
+Restart ComfyUI; if using `--disable-all-custom-nodes`, also pass
+`--whitelist-custom-nodes aida_scan`. Refresh the browser and **reopen**
+`aida_fast.json`: an already-open BiRefNet graph does not update when its file changes.
+
+Both `aida_fast.json` and `aida_full.json` accept **1, 2, 3 or 4** photos. Upload
+FRONT, then select any additional LEFT/BACK/RIGHT photos. Leave unused side
+inputs at **(none)**. No dummy images, manual disconnections or object boxes are
+needed. Every selected view passes through **Aida: Object Only** before Pixal3D.
+The preview shows exactly the black-background object images used for generation.
+A board-sized mask is rejected rather than generating a turntable.
 
 Metric registration fits a single uniform scale, orientation and ground-plane
 position against **calibrated multi-view convex outer silhouettes**. It uses
@@ -190,7 +229,7 @@ Files under `artifacts/acquisitions/{job_id}/` include:
 
 - `front.png` and any additional views, with `*_pose.json` angle/board evidence;
 - `empty_table.png`, `empty_table.json`, `camera.json`;
-- `*_foreground.png`, `*_object.png`, and ComfyUI `*_mask.png`;
+- `object_prompts.json`, `*_foreground.png`, `*_object.png`, and ComfyUI `*_mask.png`;
 - `motion.jsonl`, containing each verified angle, drive pulse, retry and result;
 - `unscaled_model.glb`, `metric_model.glb`, `metric_model.stl`;
 - `dimensions.json`, `blueprints.png`, `agent_prompt.txt`, capture-agent log.

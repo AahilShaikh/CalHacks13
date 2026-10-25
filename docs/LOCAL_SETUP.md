@@ -59,7 +59,9 @@ Python 3.11 is what the working install uses; ComfyUI itself also supports 3.12,
 but do not reuse Aida's `.venv` — the two projects have independent dependency
 sets and must stay separate.
 
-Pixal3D requires **no custom nodes**. Its nodes ship with ComfyUI core:
+Pixal3D generation ships with ComfyUI core. Aida additionally installs its small
+`aida_scan` extension for automatic object-only preprocessing and optional inputs.
+The generation nodes are:
 
 | Node | Source |
 |---|---|
@@ -137,20 +139,32 @@ a clear "Cannot reach ComfyUI" error) while ComfyUI is down.
 In the ComfyUI web UI, either:
 
 - **Templates → 3D Model → "Pixal3D: Multi Views to 3D"**, or
-- **Load** one of the pre-installed variants in `user/default/workflows/`:
+Aida ships exactly two API-format presets in `backend/aida/scan/assets/`:
 
-| Workflow file | Trade-off |
-|---|---|
-| `4_fastest_instant_mesh.json` | fewest steps, fastest, roughest geometry |
-| `3_turbo_fast_mesh.json` | good speed/quality default |
-| `2_fast_smooth_mesh_hq.json` | smoother mesh, slower |
-| `1_slowest_full_pbr_textured.json` | adds PBR texture generation, slowest |
+| Preset | Workflow asset | Trade-off |
+|---|---|---|
+| `fast` | `pixal3d_fast_api.json` | 12 structure + 14 shape + 8 refinement steps, 1024 geometry, no textures |
+| `full` (default) | `pixal3d_full_api.json` | 12 structure + 20 shape + 12 refinement + 12 texture steps; 1024 geometry; 2048 PBR, normal and AO maps |
 
-Start with `3_turbo_fast_mesh.json` for a quick check and only move up the list
-when you need a smoother result. The bundled file Aida ships
-(`backend/aida/scan/assets/pixal3d_workflow_api.json`) is the API-format version
-of the fast/smooth-mesh family — it contains `MeshSmoothNormals` and both Trellis
-VAE decoders.
+Both consume up to four real views and use the same calibrated metric-fit gates.
+The full preset keeps a 200,000-face mesh with UVs and embedded textures in GLB;
+STL carries geometry only. These are generative reconstructions, so higher
+sampling/detail does not guarantee physical accuracy.
+
+Select with `aida scan run --workflow fast` (or `full`), the setup page's
+**Mesh quality** selector, multipart `workflow` on `/api/v1/scans`, or JSON
+`"workflow":"fast"` on `/api/v1/acquisitions`. Custom API graphs use
+`--workflow-path` or `AIDA_PIXAL3D_WORKFLOW`.
+
+Raw ChArUco photos use the built-in SAM 3.1 segmenter with object boxes
+automatically located from the print. No matching background reference is needed.
+Install `sam3.1_multiplex_fp16.safetensors` from
+[Comfy-Org](https://huggingface.co/Comfy-Org/sam3.1) in `models/checkpoints/`.
+Install `aida_scan` with `uv run python examples/install_comfy_scan.py --comfy-root "PATH_TO_COMFYUI"`.
+Restart ComfyUI with `--whitelist-custom-nodes aida_scan` if custom nodes are disabled.
+Refresh and reopen `aida_fast.json`. Upload FRONT and leave unused side views at `(none)`;
+both presets support 1–4 images and automatically remove the board without manual boxes.
+BiRefNet remains the fallback for ordinary photos without a detected board.
 
 ### 1.5 Smoke-test in the UI
 
@@ -331,7 +345,7 @@ For USB-webcam capture without an object dimension/caliper anchor, use
 `/setup.html` and `POST /api/v1/acquisitions`. See
 [automatic scanner setup](AUTOMATIC_SCAN.md).
 
-This workflow calibrates the actual webcam, saves an empty-table reference,
+This workflow calibrates the actual webcam,
 acquires two to four views through the bounded capture agent, isolates the
 object, and fits the generated mesh's uniform scale and pose against calibrated
 outer silhouettes. It records fit errors, estimated scale uncertainty and the
@@ -351,7 +365,7 @@ camera poses required by automatic registration.
 | Job sits in `generating_mesh` then fails after 300 s | Generation exceeded the client timeout. Use a faster workflow variant, or raise `ComfyConfig.timeout` for programmatic use. |
 | `No scale anchor provided` | Pass `--height-mm`, `--base-dia-mm`, or `--scale-factor`. The job fails before generating on purpose. |
 | `Only N ChArUco corners detected` | Board not framed, too small, blurred, or wrong board type. Inspect with `uv run aida scan inspect --image photo.jpg --board turntable --out annotated.jpg` and look at the annotated output. |
-| `Workflow template not found` | Bad `--workflow` / `AIDA_PIXAL3D_WORKFLOW` path. |
+| `Workflow template not found` | Bad `--workflow-path` / `AIDA_PIXAL3D_WORKFLOW` path. |
 | ComfyUI reports missing models | Filenames and subdirectories must match §1.2 exactly. |
 | Generation is very slow or the process is killed | Expect first-run shader compilation to be slower. Close other memory-heavy apps, use the INT8 checkpoint and a faster variant, and keep the watermark variable from §1.3. |
 | `Address already in use` | ComfyUI: pass `--port`. Aida: `AIDA_API_PORT=8001 uv run aida-api`. |
@@ -369,4 +383,4 @@ camera poses required by automatic registration.
 | `backend/aida/scan/pipeline.py` | stage orchestration shared by CLI and API |
 | `backend/aida/scan/cli.py` | `aida scan run/scale/blueprint/board/inspect` |
 | `backend/aida/api/` | job queue and HTTP endpoints |
-| `backend/aida/scan/assets/pixal3d_workflow_api.json` | bundled API-format Pixal3D workflow |
+| `backend/aida/scan/assets/pixal3d_{fast,full}_api.json` | two API-format Pixal3D presets |

@@ -1,0 +1,371 @@
+{
+  "3": {
+    "inputs": {
+      "seed": 56,
+      "steps": 12,
+      "cfg": 7.5,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1.0,
+      "model": [
+        "108",
+        0
+      ],
+      "positive": [
+        "324",
+        0
+      ],
+      "negative": [
+        "324",
+        1
+      ],
+      "latent_image": [
+        "87",
+        0
+      ]
+    },
+    "class_type": "KSampler"
+  },
+  "15": {
+    "inputs": {
+      "clip_name": "dino_v3_L_naf_fp32.safetensors"
+    },
+    "class_type": "CLIPVisionLoader"
+  },
+  "18": {
+    "inputs": {
+      "seed": 42,
+      "steps": 14,
+      "cfg": 7.5,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1.0,
+      "model": [
+        "126",
+        0
+      ],
+      "positive": [
+        "91",
+        0
+      ],
+      "negative": [
+        "91",
+        1
+      ],
+      "latent_image": [
+        "91",
+        2
+      ]
+    },
+    "class_type": "KSampler"
+  },
+  "87": {
+    "inputs": {
+      "batch_size": 1
+    },
+    "class_type": "EmptyTrellis2LatentStructure"
+  },
+  "91": {
+    "inputs": {
+      "positive": [
+        "324",
+        0
+      ],
+      "negative": [
+        "324",
+        1
+      ],
+      "voxel": [
+        "119",
+        0
+      ]
+    },
+    "class_type": "Trellis2ShapeStage"
+  },
+  "92": {
+    "inputs": {
+      "samples": [
+        "23",
+        0
+      ],
+      "vae": [
+        "117",
+        0
+      ]
+    },
+    "class_type": "VaeDecodeShapeTrellis"
+  },
+  "108": {
+    "inputs": {
+      "shift": 5.0,
+      "model": [
+        "125",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3"
+  },
+  "117": {
+    "inputs": {
+      "vae_name": "trellis_2_shape_vae_bf16.safetensors"
+    },
+    "class_type": "VAELoader"
+  },
+  "119": {
+    "inputs": {
+      "resolution": "32",
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "117",
+        0
+      ]
+    },
+    "class_type": "VaeDecodeStructureTrellis2"
+  },
+  "125": {
+    "inputs": {
+      "multiplier": 0.7,
+      "model": [
+        "199",
+        0
+      ]
+    },
+    "class_type": "RescaleCFG"
+  },
+  "126": {
+    "inputs": {
+      "multiplier": 0.5,
+      "model": [
+        "279",
+        0
+      ]
+    },
+    "class_type": "RescaleCFG"
+  },
+  "193": {
+    "inputs": {
+      "bg_removal_name": "birefnet.safetensors"
+    },
+    "class_type": "LoadBackgroundRemovalModel"
+  },
+  "199": {
+    "inputs": {
+      "cfg": 1.0,
+      "start_percent": 0.667,
+      "end_percent": 1.0,
+      "model": [
+        "319",
+        0
+      ]
+    },
+    "class_type": "CFGOverride"
+  },
+  "238": {
+    "inputs": {
+      "crease_angle": 60.0,
+      "mesh": [
+        "92",
+        0
+      ]
+    },
+    "class_type": "MeshSmoothNormals"
+  },
+  "279": {
+    "inputs": {
+      "cfg": 1.0,
+      "start_percent": 0.769,
+      "end_percent": 1.0,
+      "model": [
+        "319",
+        0
+      ]
+    },
+    "class_type": "CFGOverride"
+  },
+  "285": {
+    "inputs": {
+      "mesh": [
+        "238",
+        0
+      ]
+    },
+    "class_type": "MeshToFile3D"
+  },
+  "319": {
+    "inputs": {
+      "unet_name": "pixal3d_multiview_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader"
+  },
+  "324": {
+    "inputs": {
+      "fov": 20.0,
+      "clip_vision_model": [
+        "15",
+        0
+      ],
+      "front": [
+        "500",
+        0
+      ],
+      "left": [
+        "500",
+        1
+      ],
+      "back": [
+        "500",
+        2
+      ],
+      "right": [
+        "500",
+        3
+      ]
+    },
+    "class_type": "Pixal3DMultiViewConditioning"
+  },
+  "364": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "front.png"
+    }
+  },
+  "372": {
+    "inputs": {
+      "model_3d": [
+        "285",
+        0
+      ],
+      "filename_prefix": "aida/mesh",
+      "width": 1024,
+      "height": 1024,
+      "viewport_state": {}
+    },
+    "class_type": "Save3DAdvanced"
+  },
+  "94": {
+    "class_type": "Trellis2UpsampleStage",
+    "inputs": {
+      "positive": [
+        "324",
+        0
+      ],
+      "negative": [
+        "324",
+        1
+      ],
+      "shape_latent": [
+        "18",
+        0
+      ],
+      "vae": [
+        "117",
+        0
+      ],
+      "target_resolution": 1024
+    }
+  },
+  "23": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 42,
+      "steps": 8,
+      "cfg": 7.5,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": [
+        "126",
+        0
+      ],
+      "positive": [
+        "94",
+        0
+      ],
+      "negative": [
+        "94",
+        1
+      ],
+      "latent_image": [
+        "94",
+        2
+      ]
+    }
+  },
+  "501": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "sam3.1_multiplex_fp16.safetensors"
+    }
+  },
+  "500": {
+    "class_type": "AidaObjectOnlyViews",
+    "inputs": {
+      "model": [
+        "501",
+        0
+      ],
+      "front": [
+        "364",
+        0
+      ],
+      "left": [
+        "377",
+        0
+      ],
+      "back": [
+        "380",
+        0
+      ],
+      "right": [
+        "383",
+        0
+      ],
+      "background_model": [
+        "193",
+        0
+      ],
+      "padding": 1.1
+    }
+  },
+  "377": {
+    "class_type": "AidaOptionalImage",
+    "inputs": {
+      "image": "(none)"
+    }
+  },
+  "380": {
+    "class_type": "AidaOptionalImage",
+    "inputs": {
+      "image": "(none)"
+    }
+  },
+  "383": {
+    "class_type": "AidaOptionalImage",
+    "inputs": {
+      "image": "(none)"
+    }
+  },
+  "502": {
+    "class_type": "PreviewImage",
+    "inputs": {
+      "images": [
+        "500",
+        4
+      ]
+    }
+  },
+  "503": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "500",
+        4
+      ],
+      "filename_prefix": "aida/object_only"
+    }
+  }
+}

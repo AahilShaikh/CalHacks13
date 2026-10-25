@@ -160,7 +160,8 @@ uv run aida-api                       # http://127.0.0.1:8000
 - `GET /api/v1/turntable/captures/{filename}` — download the verified photo.
 - `POST /api/v1/scans` — multipart upload: `front_image` (required),
   `left_image`/`back_image`/`right_image` (optional), plus one scale anchor
-  (`known_height_mm`, `known_base_dia_mm`, or `scale_factor`). Returns 202 with
+  (`known_height_mm`, `known_base_dia_mm`, or `scale_factor`), and `workflow`
+  (`full`, default, or `fast`). Returns 202 with
   a job id; generation runs in the background.
 - `GET /api/v1/scans/{job_id}` — poll `status` (`queued`/`running`/`succeeded`/
   `failed`), `stage`, `cad_specs`, and artifact URLs.
@@ -172,6 +173,17 @@ A scale anchor is required: a unitless Pixal3D mesh cannot be sized from the
 ChArUco photo alone. Without one the job fails with a clear error instead of
 returning wrong millimeter dimensions. Job artifacts are stored under
 `artifacts/scans/` (`AIDA_SCAN_STORAGE` overrides).
+
+Two mesh workflows are bundled: `full` (default) includes 1024 geometry refinement
+and 2048 PBR textures, normal and AO maps; `fast` uses 1024 refinement with fewer
+steps and skips texturing. Select in `/setup.html`, JSON `workflow` on acquisitions,
+multipart `workflow` on uploaded scans, or `aida scan run --workflow fast|full`.
+Both retain the calibrated metric-fit gates. ChArUco photos use built-in SAM 3.1 with object boxes located from the printed
+pattern, replacing BiRefNet for board photos. The surrounding background can
+change; no empty-table photo is required. Install the SAM checkpoint described in
+[the scanner guide](docs/AUTOMATIC_SCAN.md). Direct ComfyUI editor workflows use the bundled `aida_scan` extension to locate
+and isolate the object automatically. Both presets accept 1–4 photos; leave
+unused side views at `(none)`. Refresh and reopen the updated workflow after installation.
 
 ## Web UI (Aida CAD Studio)
 

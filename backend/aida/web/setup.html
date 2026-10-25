@@ -23,8 +23,8 @@ Flat turntable rotation alone cannot calibrate the lens. These setup photos do n
 <button id="preview">Refresh camera preview</button><button id="sample">Take calibration sample</button>
 <button id="solve">Solve calibration</button><button id="reset">Reset samples</button>
 <p id="calibration"></p><img id="frame" alt="Camera preview appears here after capture" hidden></section>
-<section><h2>2. Automatic zero and empty-table reference</h2>
-<p>Mount the board flat on the turntable, leave it empty, and fix the USB camera on its stand. Keep
+<section><h2>2. Automatic zero</h2>
+<p>Mount the board flat on the turntable and fix the USB camera on its stand. Keep
 board corners visible around the object at every rotation. The camera must see both the board and the object.
 Close Arduino Serial Monitor, connect the Mega and ensure the 1450 µs firmware is uploaded.</p>
 <p>The board's current orientation becomes <strong>0° automatically when the server starts</strong>.
@@ -33,8 +33,8 @@ If startup ran before the hardware was ready, retry initialization after mountin
 <button id="ports">Refresh USB ports</button><select id="port" aria-label="Arduino USB port"></select>
 <button id="save-port">Save Arduino port</button><p id="port-status"></p>
 <p id="zero-status" aria-live="polite"></p><button id="initialize">Retry startup zero</button>
-<p>With the table empty, capture its background once before scanning. This does not change zero.
-Retake it after changing the camera position, lighting or board mounting.</p>
+<p>An empty-table reference is optional for diagnostics. Object-only SAM segmentation does not require it.
+To save one, remove the object first; this does not change zero.</p>
 <button id="reference">Capture empty-table reference</button></section>
 <section><h2>3. Scan an object and start CAD</h2>
 <p>Place the object on the board. Leave the USB camera and board mounting fixed.
@@ -43,6 +43,7 @@ The mesh is handed to CAD only after its metric fit passes. Agent mode and CAD u
 <textarea id="prompt">Scan this object and create an editable parametric CAD model. Explain uncertain details.</textarea>
 <label>Capture policy <select id="policy"><option value="agent">Agent chooses 2–4 views</option>
 <option value="four_views">Four views (no capture-agent call)</option></select></label>
+<label>Mesh quality <select id="workflow"><option value="full">Full — refined geometry + PBR textures</option><option value="fast">Fast — refined geometry</option></select></label>
 <label><input id="cad" type="checkbox" checked> Start CAD agent after fitting</label><p>
 <button id="start">Start scan</button><button id="cancel" disabled>Cancel after current operation</button></p>
 <p id="job"></p><div id="files"></div></section>
@@ -72,7 +73,7 @@ async function ports(){const data=await api('/api/v1/turntable/configuration');$
  if(data.port)$('port').value=data.port;$('port-status').textContent=data.ports.length?`Saved port: ${data.port||'none'}`:'No USB serial device detected. Connect the Mega, then refresh.';}
 action('ports',ports);action('save-port',async()=>{log(await api('/api/v1/turntable/configuration','POST',{port:$('port').value}));await ports()});
 async function startupState(){const data=await api('/api/v1/turntable/status');
- $('zero-status').textContent=`Startup zero: ${data.startup_zero.status}${data.startup_zero.message?' · '+data.startup_zero.message:''} · Empty-table reference: ${data.empty_reference_ready?'ready':'needed'}`;}
+ $('zero-status').textContent=`Startup zero: ${data.startup_zero.status}${data.startup_zero.message?' · '+data.startup_zero.message:''} · Empty-table reference: ${data.empty_reference_ready?'saved (optional)':'not saved (optional)'}`;}
 action('initialize',async()=>{try{log(await api('/api/v1/turntable/initialize','POST'))}finally{await startupState()}});
 action('reference',async()=>{log(await api('/api/v1/turntable/reference','POST',{}));await startupState()});
 function showFiles(data){$('files').replaceChildren();for(const [name,url] of Object.entries(data.files||{})){const link=document.createElement('a');link.textContent=name;link.href=url;link.target='_blank';link.rel='noopener';link.style.marginRight='16px';$('files').append(link)}
@@ -80,7 +81,7 @@ function showFiles(data){$('files').replaceChildren();for(const [name,url] of Ob
 async function poll(){if(!currentJob)return;try{const data=await api(`/api/v1/acquisitions/${currentJob}`);$('job').textContent=`${data.status} · ${data.stage}`;showFiles(data);
  if(['failed','succeeded','cancelled'].includes(data.status)){log(data,data.status==='failed');$('start').disabled=false;$('cancel').disabled=true;return}
  setTimeout(poll,1500)}catch(error){log(error.message,true);$('start').disabled=false;}}
-$('start').onclick=async()=>{$('start').disabled=true;try{const data=await api('/api/v1/acquisitions','POST',{prompt:$('prompt').value,policy:$('policy').value,start_cad:$('cad').checked});
+$('start').onclick=async()=>{$('start').disabled=true;try{const data=await api('/api/v1/acquisitions','POST',{prompt:$('prompt').value,policy:$('policy').value,workflow:$('workflow').value,start_cad:$('cad').checked});
  currentJob=data.job_id;$('cancel').disabled=false;log(data);poll()}catch(error){log(error.message,true);$('start').disabled=false}};
 action('cancel',async()=>log(await api(`/api/v1/acquisitions/${currentJob}/cancel`,'POST')));
 state().catch(error=>log(error.message,true));ports().catch(error=>log(error.message,true));cameras().catch(error=>log(error.message,true));startupState().catch(error=>log(error.message,true));

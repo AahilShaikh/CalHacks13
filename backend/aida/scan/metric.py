@@ -3,6 +3,9 @@
 Fits convex outer silhouettes, not internal features or physical ground truth.
 An unobservable scale, bad mask, or inconsistent generated shape is an error.
 """
+import json
+from pathlib import Path
+
 import itertools
 import math
 from dataclasses import dataclass
@@ -115,6 +118,10 @@ def fit_metric_mesh(mesh_path, views: list[MetricView], calibration: CameraCalib
     mse, best = solutions[0]
     errors = residual(best.x).reshape(len(views), -1)
     relative_errors = [float(np.sqrt(np.mean(e**2))/d) for e, d in zip(errors, diagonals)]
+    diagnostics = {'optimizer_success': bool(best.success), 'support_rms_px': math.sqrt(mse),
+                   'per_view_relative_rms': dict(zip([v.name for v in views], relative_errors)),
+                   'maximum_relative_rms': 0.025}
+    Path(output_path).with_name('fit_diagnostics.json').write_text(json.dumps(diagnostics, indent=2)+'\n')
     if not best.success or max(relative_errors) > 0.025:
         raise ScalingError('Generated mesh does not fit the calibrated silhouettes; capture another view '
                            'or improve object separation from the board/background.')

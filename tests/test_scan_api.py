@@ -114,3 +114,19 @@ def test_health_reports_comfy_host(client):
     assert data['status'] == 'ok'
     assert 'comfy_host' in data
     assert 'comfy_reachable' in data
+
+
+def test_scan_workflow_selection_and_validation(client, png_bytes, monkeypatch):
+    seen = []
+    def record(images, output_dir, **kwargs):
+        seen.append(kwargs['client'].config.workflow)
+        return stub_success(images, output_dir, **kwargs)
+    monkeypatch.setattr(server, 'run_scan', record)
+    for preset in ('fast', 'full'):
+        response = client.post('/api/v1/scans',
+            files={'front_image': ('front.png', png_bytes, 'image/png')}, data={'workflow': preset})
+        assert wait_for(client, response.json()['job_id'])['status'] == 'succeeded'
+    assert seen == ['fast', 'full']
+    assert client.post('/api/v1/scans',
+        files={'front_image': ('front.png', png_bytes, 'image/png')},
+        data={'workflow': 'turbo'}).status_code == 422

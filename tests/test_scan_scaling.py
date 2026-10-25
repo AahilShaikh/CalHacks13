@@ -63,3 +63,25 @@ def test_export_stl(tmp_path):
     export_stl(mesh, out)
     stl = trimesh.load(out, force='mesh')
     assert len(stl.faces) > 0
+
+
+def test_metric_glb_preserves_pbr_maps(tmp_path):
+    from PIL import Image
+    import numpy as np
+    from trimesh.visual.material import PBRMaterial
+    from trimesh.visual.texture import TextureVisuals
+    from aida.scan.scaling import scale_mesh, load_mesh
+    mesh = trimesh.creation.box()
+    color = Image.new('RGB', (8, 8), (200, 80, 30))
+    normal = Image.new('RGB', (8, 8), (128, 128, 255))
+    material = PBRMaterial(baseColorTexture=color, normalTexture=normal,
+                           metallicRoughnessTexture=color, occlusionTexture=color)
+    mesh.visual = TextureVisuals(uv=np.zeros((len(mesh.vertices), 2)), material=material)
+    source, target = tmp_path/'raw.glb', tmp_path/'metric.glb'
+    mesh.export(source)
+    scale_mesh(source, target, scale_factor=40)
+    result = load_mesh(target)
+    assert result.extents == pytest.approx([40,40,40])
+    assert result.visual.kind == 'texture'
+    for name in ('baseColorTexture','normalTexture','metallicRoughnessTexture','occlusionTexture'):
+        assert getattr(result.visual.material, name) is not None
